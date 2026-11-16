@@ -1078,7 +1078,18 @@ to start (NoClassDefFoundError). `VideoToolbox` holds the natives for both paths
 Recorded video: `ShadowSimMediaCodec` lists `apksim.avc.decoder` (H.264) and `apksim.hevc.decoder` (HEVC Main/Main10),
 both on VideoToolbox, and `apksim.aac.decoder` / `apksim.mp3.decoder` on AudioToolbox (`native/audio.m`) in
 MediaCodecList, and registers each with Robolectric's MediaCodec under both its type and its name (players create
-codecs by name; a miss falls back to Robolectric's 512-byte fake). Robolectric allocates a codec's 10 input buffers,
+codecs by name; a miss falls back to Robolectric's 512-byte fake). The AAC decoder takes its format from the stream's
+AudioSpecificConfig (csd-0), not the app's rate: AudioToolbox lists the layers it describes and the richest it plays is
+decoded (HE-AAC v2, HE-AAC, AAC-LC), and the codec's output format (`getOutputFormat`, and Media3's asynchronous
+output-format callback, which Robolectric rebuilds from the configure call's keys) gets that layer's rate and channels,
+as a device's decoder reports them. Players read only an HE-AAC config's AAC-LC core (22050 Hz, mono for v2), and before
+(2026-11-15) apksim decoded just that core: half the rate, no SBR band, no parametric stereo (`play aac-he*.m4a` in
+`scripts/media-protocols-check.py`). ADTS and MPEG-TS can signal HE-AAC only in the frames (implicit: an AAC-LC
+config at up to 24 kHz): the first frame goes, behind an ADTS header, to AudioToolbox's own ADTS parser
+(`SimAudio.nativeSniffSbr`), which finds SBR and parametric stereo in it; found, the decoder is made again from the
+explicit config that stands for (`explicitHe`) and the app gets a new output format before any PCM
+(`outputFormatChanged`: the next dequeue's INFO_OUTPUT_FORMAT_CHANGED, or the callback Robolectric posts in async mode),
+as a device's decoder does once it sees SBR. A genuine 22.05 kHz AAC-LC stream stays at its rate. Robolectric allocates a codec's 10 input buffers,
 zero-filled, when it is created, so they start small and `sizeInputs` sizes them at configure from max-input-size
 (else 8 MB: a bound from the picture size can be too small for I_PCM frames): a fixed 8 MB held 80 MB per video codec
 (playing the test clip, whose player sets max-input-size: +100 → +16-33 MB).
@@ -1960,7 +1971,7 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   failing status, a deadline, 300 KB; TLS and plain h2), `apksim://websocket` (OkHttp: text, binary, a burst, 200 KB,
   close; wss with permessage-deflate and ws), `apksim://media` (every sample in `app/src/main/assets/media`, from
   `testapks/composeapp/media/make-samples.sh`: H.264 baseline and High with forced B-frames, HEVC Main and Main10, VP8,
-  VP9, AV1; AAC-LC, HE-AAC, MP3, Opus, FLAC; through Media3, through MediaCodec alone on elementary streams, and encode
+  VP9, AV1; AAC-LC, HE-AAC v1 and v2 (MP4 and ADTS), MP3, Opus, FLAC; through Media3, through MediaCodec alone on elementary streams, and encode
   round trips) and `apksim://media?only=hls` (HLS over HTTP/2). Their server is `testapks/composeapp/fixture`
   (`./gradlew :fixture:installDist`): gRPC-java's own server and OkHttp's MockWebServer, so the network tap is checked
   against real implementations, with a certificate made per run that the screens trust alone (`cert=` in their deep
@@ -1968,7 +1979,7 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
   decoded wrong, out of order, mirrored or not shown is caught; audio is checked by pitch and output rate. The script
   compares every line with an expected table per platform (apksim on the Mac, the API 36 emulator) and, under apksim,
   checks the `--rec net` recording holds the gRPC trailers, WebSocket messages and HLS segments. Known apksim gaps it
-  records: no VP8, AV1, Opus or FLAC decoders, no encoders, and HE-AAC decoded without SBR (PCM at half the rate).
+  records: no VP8, AV1, Opus or FLAC decoders, and no encoders.
 - The owner's own app (R8 and debug builds, the latter 179 MB and exercising method splitting): see
   `~/.config/apksim/NOTES.md`.
 - An app whose native libraries are 4 KB-aligned (a debug build with Flipper): libflipper and libc++_shared load, but

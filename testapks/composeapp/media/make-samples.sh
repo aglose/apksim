@@ -49,6 +49,13 @@ A=(-f lavfi -i sine=frequency=1000:sample_rate=44100:duration=1 -ac 2)
 "${F[@]}" "${A[@]}" -c:a aac -b:a 96k "$OUT/aac-lc.m4a"
 "${F[@]}" "${A[@]}" -c:a aac -b:a 96k -f adts "$OUT/aac-lc.adts"
 "${F[@]}" "${A[@]}" -c:a aac_at -profile:a 4 -b:a 48k "$OUT/aac-he.m4a"
+# HE-AAC v2: SBR and parametric stereo (a mono core the decoder makes stereo).
+"${F[@]}" "${A[@]}" -c:a aac_at -profile:a 28 -b:a 32k "$OUT/aac-he-v2.m4a"
+# The same as ADTS, which can say only the AAC-LC core in its headers (implicit signalling: a decoder finds SBR and PS in
+# the frames, as with HLS and MPEG-TS radio), and a genuine 22.05 kHz AAC-LC stream, which must stay at 22050 Hz.
+"${F[@]}" "${A[@]}" -c:a aac_at -profile:a 4 -b:a 48k -f adts "$OUT/aac-he.adts"
+"${F[@]}" "${A[@]}" -c:a aac_at -profile:a 28 -b:a 32k -f adts "$OUT/aac-he-v2.adts"
+"${F[@]}" -f lavfi -i sine=frequency=1000:sample_rate=22050:duration=1 -ac 2 -c:a aac -b:a 48k -f adts "$OUT/aac-lc-22k.adts"
 "${F[@]}" "${A[@]}" -c:a libmp3lame -b:a 96k "$OUT/mp3.mp3"
 "${F[@]}" -f lavfi -i sine=frequency=1000:sample_rate=48000:duration=1 -ac 2 -c:a libopus -b:a 64k "$OUT/opus.ogg"
 "${F[@]}" "${A[@]}" -c:a flac "$OUT/flac.flac"

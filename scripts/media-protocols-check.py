@@ -50,8 +50,10 @@ SAME = {
     **{f"ws {m} {c}": "ok" for m in ("tls", "plain") for c in ("open", "text", "binary", "burst", "large", "close")},
     "hls stream": "ok",
     "play h264-baseline.mp4": "ok", "play h264-high-bframes.mp4": "ok", "play hevc-main.mp4": "ok", "play vp9.webm": "ok",
-    "play aac-lc.m4a": "ok", "play mp3.mp3": "ok",
+    "play aac-lc.m4a": "ok", "play mp3.mp3": "ok", "play aac-he.m4a": "ok", "play aac-he-v2.m4a": "ok",
+    "play aac-he.adts": "ok", "play aac-he-v2.adts": "ok", "play aac-lc-22k.adts": "ok",
     "codec h264-high-bframes.h264": "ok", "codec hevc-main.h265": "ok", "codec vp9.ivf": "ok", "codec aac-lc.adts": "ok",
+    "codec aac-he.adts": "ok", "codec aac-he-v2.adts": "ok",
 }
 EXPECTED = {
     # apksim on a Mac (VideoToolbox and AudioToolbox): measured 2026-11-15.
@@ -60,7 +62,6 @@ EXPECTED = {
         "play hevc-main10.mp4": "ok",
         "play vp8.webm": "unsupported", "play av1.mp4": "unsupported", "codec vp8.ivf": "unsupported", "codec av1.ivf": "unsupported",
         "play opus.ogg": "unsupported", "play flac.flac": "unsupported",
-        "play aac-he.m4a": ("FAIL", "HE-AAC is decoded without SBR: PCM at 22050 Hz where a device gives the stream's 44100"),
         "encode video/avc": "unsupported", "encode video/hevc": "unsupported", "encode video/x-vnd.on2.vp8": "unsupported",
         "encode video/x-vnd.on2.vp9": "unsupported", "encode audio/mp4a-latm": "unsupported",
     },
@@ -70,7 +71,7 @@ EXPECTED = {
         **SAME,
         "play hevc-main10.mp4": "unsupported",
         "play vp8.webm": "ok", "play av1.mp4": "ok", "codec vp8.ivf": "ok", "codec av1.ivf": "ok",
-        "play opus.ogg": "ok", "play flac.flac": "ok", "play aac-he.m4a": "ok",
+        "play opus.ogg": "ok", "play flac.flac": "ok",
         "encode video/avc": "ok", "encode video/hevc": "ok", "encode video/x-vnd.on2.vp8": "ok", "encode video/x-vnd.on2.vp9": "ok",
         "encode audio/mp4a-latm": "ok",
     },

@@ -196,7 +196,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       LIVE.add(decoder);
       ReflectionHelpers.setField(this, "fakeCodec", decoder);
     } else if (codec == AAC || codec == MP3) {
-      audio = new AudioDecoder(codec == MP3);
+      audio = new AudioDecoder(codec == MP3, this);
       ReflectionHelpers.setField(this, "fakeCodec", audio);
     }
   }
@@ -207,6 +207,33 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
    * macroblocks is bigger than its YUV samples). A fixed 8 MB made every video codec hold 80 MB of zero-filled native
    * memory, freed only when a GC happened to run.
    */
+  /**
+   * A new output format from an audio decoder that has started (HE-AAC found in the stream): what the app's next
+   * dequeueOutputBuffer returns as INFO_OUTPUT_FORMAT_CHANGED in synchronous mode, or the onOutputFormatChanged callback
+   * Robolectric sends in asynchronous mode, posted before the output this input becomes.
+   */
+  void outputFormatChanged(int rate, int channels) {
+    MediaFormat current = ReflectionHelpers.getField(this, "outputFormat");
+    MediaFormat pending = ReflectionHelpers.getField(this, "pendingOutputFormat");
+    MediaFormat base = pending != null ? pending : current;
+    MediaFormat next = base == null ? new MediaFormat() : new MediaFormat(base);
+    if (audio != null) audio.outputFormat(next, rate, channels);
+    if (!(Boolean) ReflectionHelpers.getField(this, "isAsync")) {
+      ReflectionHelpers.setField(this, "pendingOutputFormat", next);
+      return;
+    }
+    java.util.Map<String, Object> map = new java.util.HashMap<>();
+    String[] keys = ReflectionHelpers.getField(this, "initialPendingOutputFormatKeys");
+    Object[] values = ReflectionHelpers.getField(this, "initialPendingOutputFormatValues");
+    if (keys != null && values != null) for (int i = 0; i < keys.length && i < values.length; i++) map.put(keys[i], values[i]);
+    map.put(MediaFormat.KEY_SAMPLE_RATE, rate);
+    map.put(MediaFormat.KEY_CHANNEL_COUNT, channels);
+    ReflectionHelpers.setField(this, "outputFormat", next);
+    ReflectionHelpers.callInstanceMethod(ShadowMediaCodec.class, this, "postFakeNativeEvent",
+        ReflectionHelpers.ClassParameter.from(int.class, 1), ReflectionHelpers.ClassParameter.from(int.class, 4),
+        ReflectionHelpers.ClassParameter.from(int.class, 0), ReflectionHelpers.ClassParameter.from(Object.class, map));
+  }
+
   private void sizeInputs(MediaFormat format) {
     int size = 8 << 20;
     if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE) && format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE) > 0) {
@@ -694,28 +721,113 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
   /** One codec's AudioToolbox converter: an access unit in, 16-bit interleaved PCM out. */
   private static final class AudioDecoder implements CodecConfig.Codec {
     private final boolean mp3;
+    private final ShadowSimMediaCodec codec;
     private long handle;
     private ByteBuffer input;
     private final ByteBuffer pcm = ByteBuffer.allocateDirect(1 << 16);
+    /** The configured AudioSpecificConfig, rate and channels, and whether the first frame was looked into for SBR yet. */
+    private byte[] config;
+    private int rate, channels;
+    private boolean sniffed;
 
-    AudioDecoder(boolean mp3) {
+    AudioDecoder(boolean mp3, ShadowSimMediaCodec codec) {
       this.mp3 = mp3;
+      this.codec = codec;
     }
 
     @Override
     public void onConfigured(MediaFormat format, Surface surface, MediaCrypto crypto, int flags) {
       close();
-      int rate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE);
-      int channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
+      rate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE);
+      channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
       ByteBuffer csd = format.getByteBuffer("csd-0");
-      byte[] config = null;
+      config = null;
+      sniffed = false;
       if (csd != null) {
         config = new byte[csd.remaining()];
         csd.duplicate().get(config);
       }
       handle = SimAudio.nativeDecoderCreate(mp3 ? SimAudio.MP3 : SimAudio.AAC, rate, channels, config);
+      int outRate = handle == 0 ? rate : SimAudio.nativeDecoderRate(handle);
+      int outChannels = handle == 0 ? channels : SimAudio.nativeDecoderChannels(handle);
       System.err.println("[apksim] MediaCodec " + (mp3 ? MP3_DECODER : AAC_DECODER) + " configured: " + rate + " Hz, "
-          + channels + " ch" + (handle == 0 ? ", but AudioToolbox refused it" : ""));
+          + channels + " ch" + (handle == 0 ? ", but AudioToolbox refused it"
+          : outRate != rate || outChannels != channels ? "; the stream gives " + outRate + " Hz, " + outChannels + " ch (HE-AAC: SBR"
+              + (outChannels != channels ? ", parametric stereo" : "") + ")" : ""));
+      if (outRate != rate || outChannels != channels) outputFormat(format, outRate, outChannels);
+      // A plain AAC-LC config at up to 24 kHz may be HE-AAC signalled in the stream alone (ADTS, MPEG-TS): its first frame says.
+      sniffed = mp3 || handle == 0 || config == null || config.length != 2 || outRate != rate || rate > 24_000 || (config[0] >> 3 & 0x1f) != 2;
+    }
+
+    /**
+     * The first frame of an AAC-LC stream at up to 24 kHz, looked into for SBR (implicit signalling: ADTS and MPEG-TS
+     * streams can say HE-AAC no other way). Found, the decoder is made again from the explicit config it stands for,
+     * and the app is told the new output format before any PCM, as a device's decoder tells it once it has seen SBR.
+     */
+    private void sniff(ByteBuffer frame, int n) {
+      sniffed = true;
+      int k = SimAudio.nativeSniffSbr(config, frame, 0, n);
+      if (k == 0) return;
+      byte[] explicit = explicitHe(config, k == 2);
+      long h = SimAudio.nativeDecoderCreate(SimAudio.AAC, rate, channels, explicit);
+      if (h == 0) return;
+      int outRate = SimAudio.nativeDecoderRate(h);
+      int outChannels = SimAudio.nativeDecoderChannels(h);
+      if (outRate == rate && outChannels == channels) {
+        SimAudio.nativeDecoderRelease(h);
+        return;
+      }
+      SimAudio.nativeDecoderRelease(handle);
+      handle = h;
+      System.err.println("[apksim] MediaCodec " + AAC_DECODER + ": the stream carries SBR" + (k == 2 ? " and parametric stereo" : "")
+          + " (HE-AAC signalled in its frames): " + outRate + " Hz, " + outChannels + " ch");
+      codec.outputFormatChanged(outRate, outChannels);
+    }
+
+    /**
+     * The explicit config (ISO 14496-3 1.6.5, backward-compatible: the AAC-LC config, then the 0x2b7 sync extension with
+     * SBR at twice the rate, and 0x548 with parametric stereo) for an AAC-LC config whose stream carries SBR.
+     */
+    static byte[] explicitHe(byte[] lc, boolean ps) {
+      int rateIndex = (lc[0] & 7) << 1 | (lc[1] & 0xff) >> 7;
+      long bits = 0;
+      int n = 0;
+      bits = bits << 16 | ((lc[0] & 0xff) << 8 | (lc[1] & 0xff));  // object type, rate, channels, GASpecificConfig
+      n += 16;
+      bits = bits << 11 | 0x2b7;
+      bits = bits << 5 | 5;  // SBR
+      bits = bits << 1 | 1;
+      bits = bits << 4 | Math.max(0, rateIndex - 3);  // twice the rate
+      n += 21;
+      if (ps) {
+        bits = bits << 11 | 0x548;
+        bits = bits << 1 | 1;
+        n += 12;
+      }
+      int pad = (8 - n % 8) % 8;
+      bits <<= pad;
+      n += pad;
+      byte[] out = new byte[n / 8];
+      for (int i = 0; i < out.length; i++) out[i] = (byte) (bits >> (8 * (out.length - 1 - i)));
+      return out;
+    }
+
+    /**
+     * Tells the app the PCM's real rate and channels, as a device's decoder does in its output format: an HE-AAC config
+     * whose app format has its AAC-LC core's rate (players read only that part, 22050 Hz for a 44100 Hz stream). `format`
+     * is the one Robolectric returns from getOutputFormat in synchronous mode; in asynchronous mode (Media3's) it sends
+     * one rebuilt from the configure call's own keys and values, which are changed too.
+     */
+    void outputFormat(MediaFormat format, int rate, int channels) {
+      format.setInteger(MediaFormat.KEY_SAMPLE_RATE, rate);
+      format.setInteger(MediaFormat.KEY_CHANNEL_COUNT, channels);
+      String[] keys = ReflectionHelpers.getField(codec, "initialPendingOutputFormatKeys");
+      Object[] values = ReflectionHelpers.getField(codec, "initialPendingOutputFormatValues");
+      if (keys == null || values == null) return;
+      for (int i = 0; i < keys.length && i < values.length; i++) {
+        if (MediaFormat.KEY_SAMPLE_RATE.equals(keys[i])) values[i] = rate;
+        else if (MediaFormat.KEY_CHANNEL_COUNT.equals(keys[i])) values[i] = channels;
+      }
     }
 
     @Override
@@ -727,6 +839,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       if (input == null || input.capacity() < n) input = ByteBuffer.allocateDirect(Math.max(n, 1 << 14));
       input.clear();
       input.put(in).flip();
+      if (!sniffed) sniff(input, n);
       int bytes = SimAudio.nativeDecode(handle, input, 0, n, pcm, Math.min(pcm.capacity(), out.capacity()));
       if (bytes < 0) {
         STATS.incrementAndGet(7);
