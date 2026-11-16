@@ -108,7 +108,7 @@ jobs:
             dist/apksim-testapp-${{ env.VERSION }}.apk
             dist/SHA256SUMS
           compression-level: 0
-          retention-days: 1
+          retention-days: 2
 
   # The test app's APKs, once, for both images (each trains its startup cache on the app) and the checks.
   apks:
@@ -117,15 +117,17 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Build the runtime and the test app
+      - name: Build the test app
         uses: ./.github/actions/linux-build
+        with:
+          runtime: 'false'  # the image jobs compile it on their own architectures
       - uses: actions/upload-artifact@v4
         with:
           name: testapp
           path: |
             testapks/composeapp/app/build/outputs/apk
             testapks/composeapp/uiserver/build/outputs/apk
-          retention-days: 1
+          retention-days: 2
 
   image:
     if: github.event_name != 'release'
@@ -165,7 +167,7 @@ jobs:
           name: image-${{ matrix.arch }}
           path: ${{ runner.temp }}/image.tar.zst
           compression-level: 0
-          retention-days: 1
+          retention-days: 2
 
   # Each image's checks in legs side by side (ci.yml's split; ~5-8 min each): app (an instance over the control channel,
   # the adb device on amd64, where the runner has adb; serve), device (network record/replay, data slots, the APK cache),

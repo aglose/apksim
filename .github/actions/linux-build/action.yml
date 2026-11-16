@@ -9,6 +9,9 @@ inputs:
   test-app:
     description: Build the test app (x86_64 runners only)
     default: 'true'
+  runtime:
+    description: Fetch the libraries and compile the runtime (release.yml's `apks` builds only the test app)
+    default: 'true'
 runs:
   using: composite
   steps:
@@ -23,6 +26,7 @@ runs:
       with:
         gradle-version: 8.14.2
     - name: Fetch the runtime's libraries
+      if: inputs.runtime == 'true'
       shell: bash
       env:
         JAVA_HOME: ${{ env.JAVA_HOME_17_X64 || env.JAVA_HOME_17_ARM64 }}
@@ -31,6 +35,7 @@ runs:
         for a in work/lib/*.aar; do unzip -p "$a" classes.jar > "${a%.aar}.jar"; done
         if [ "$RUNNER_ARCH" = ARM64 ]; then gradle -q linuxArm64Runtime --console=plain; fi
     - name: Compile the runtime
+      if: inputs.runtime == 'true'
       shell: bash
       run: scripts/build.sh
     - name: Build the test app
