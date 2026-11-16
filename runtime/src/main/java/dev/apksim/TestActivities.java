@@ -485,6 +485,32 @@ public final class TestActivities {
       }
     }
 
+    /**
+     * recreate() as a device has it: calls while one is pending for this activity are one relaunch, and a relaunch never
+     * runs inside another. Robolectric posts ActivityController.recreate() per call, and its visible() idles the main
+     * looper, so a second queued recreate ran inside the first, on a controller whose activity had been swapped out
+     * (NPE in windowFocusChanged: an in-app theme switch that recreates twice killed the app, issue 410). Running
+     * instances only; test runs keep Robolectric's.
+     */
+    private boolean recreatePending;
+
+    @Implementation
+    @Override
+    protected void recreate() {
+      if (testRun()) {
+        super.recreate();
+        return;
+      }
+      if (recreatePending) return;
+      ActivityController<?> c = controller(realActivity);
+      if (c == null) {
+        super.recreate();
+        return;
+      }
+      recreatePending = true;
+      new android.os.Handler(Looper.getMainLooper()).post(() -> runRecreate(c, () -> recreatePending = false));
+    }
+
     @Implementation
     @Override
     protected void finishAffinity() {
@@ -504,6 +530,26 @@ public final class TestActivities {
       @org.robolectric.util.reflector.Direct
       void onBackPressed();
     }
+  }
+
+  private static boolean recreating;
+  private static final java.util.ArrayDeque<Runnable> DEFERRED_RECREATES = new java.util.ArrayDeque<>();
+
+  /** Runs one recreate at a time on the main thread; one asked for meanwhile (another activity's) waits its turn. */
+  private static void runRecreate(ActivityController<?> c, Runnable done) {
+    if (recreating) {
+      DEFERRED_RECREATES.add(() -> runRecreate(c, done));
+      return;
+    }
+    recreating = true;
+    try {
+      done.run();  // a recreate() from the new activity's own code (onCreate) is a new request
+      c.recreate();
+    } finally {
+      recreating = false;
+    }
+    Runnable next = DEFERRED_RECREATES.poll();
+    if (next != null) new android.os.Handler(Looper.getMainLooper()).post(next);
   }
 
   private static void finished(Activity a) {
