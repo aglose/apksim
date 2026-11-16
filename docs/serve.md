@@ -210,7 +210,7 @@ milliseconds serve's limit of 128 connections not yet upgraded refuses some (the
 
 Measured 2026-11-16 with the viewers on another machine: the server in the Linux image and the swarm on two 4-core,
 8 GB x86_64 cloud sandboxes (Ubuntu 24.04, ~1 Gbit/s each, ~10 ms apart over IPv6). The image's CPU shader draws the
-Shader tab at 9-10 frames a second, so every viewer was offered 9-10; 8 of each run's viewers acknowledged 8 ms late.
+Shader tab at 9-10 frames a second, so every viewer was offered 9-10; 8 of each run's viewers acknowledged each frame 150 ms late (`--slow 8`).
 
 | viewers | frames a second each (median / 5th percentile, of those sent) | sent in all | first frame (median) | result |
 |---|---|---|---|---|
@@ -220,9 +220,11 @@ Shader tab at 9-10 frames a second, so every viewer was offered 9-10; 8 of each 
 | 1500 | 9 / 9 of 9 | 510 Mbit/s | 0.9 s (worst 3.6 s) | passed |
 | 2000 | 5-6 median | 0.82-0.89 Gbit/s | | failed twice |
 
-No viewer's chain broke in any run. At 2000 the server's link was full (the server's CPU was about half busy), its own
-tab fell to 0-2 frames a second and one viewer timed out: on that link the limit is the bytes, ~1500 viewers of this
-stream. The 1500 run turned the server's sharing switch off and on with the session running before the viewers joined.
+No viewer's chain broke in any run. At 2000 the server sent 0.82-0.89 Gbit/s on its ~1 Gbit/s link with its CPU about
+half busy, its own tab fell to 0-2 frames a second and one viewer timed out; the link is the likely limit, but the
+viewers' machine was not ruled out. The 1500 run, and one run each of 100 and 1000, used a server started without
+`--allow-share`: sharing was turned on with `POST /api/share?allow=on`, and the check turned it off and on again with
+the session running before its viewers joined.
 
 Not done: a link that expires or can be revoked alone (turning sharing off revokes all), a second role (handing control to a viewer), viewers' cursors, the
 skin's frame in the viewer page, a JPEG stream beside an H.264 one for browsers that need it, a rate of their own for

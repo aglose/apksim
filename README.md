@@ -416,7 +416,8 @@ Many people watching one session: with `--allow-share`, or after `POST /api/shar
 session's tab has "Copy view-only link". Whoever opens it sees that screen live, without the server's token, and can
 press nothing; the link dies with the session or when sharing is turned off. The server sends the same encoded frames
 to every viewer, so it does not encode again per viewer: 1,000 viewers on the same Mac got 60-120 fps, and 1,500 on
-another machine got every frame of a 9 fps stream (the limit there was the server's 1 Gbit/s link). See
+another machine got every frame of a 9 fps stream (at 2,000 the server's 1 Gbit/s link was nearly full and they fell
+behind). See
 [docs/serve.md](docs/serve.md) "Shared sessions".
 
 Two builds side by side: `/?compare=BASE_ID,NEW_ID` starts a session for each, sends every tap, drag, key and device
