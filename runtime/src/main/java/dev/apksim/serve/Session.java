@@ -1175,15 +1175,17 @@ final class Session {
             // The tab is behind: what waits goes, and so does every frame until a keyframe.
             waiting.clear();
             dropToKey = askKey = true;
-            int p = pacer.dropped(n, tabFrameMs());
+            long[] oldest = flying.peek();
+            int p = pacer.dropped(n, tabFrameMs(), oldest == null ? Pacer.NONE : oldest[0]);
             if (p >= 0) paceAsk = p;
           } else if (!dropToKey) {
             waiting.add(frame);
           }
           notifyAll();
+          // Under the lock, as acked() sends its own: a pace from each thread must reach the instance in the pacer's order.
+          if (paceAsk >= 0) sendStream("pace " + paceAsk + "\n");
         }
         if (askKey) askKey();
-        if (paceAsk >= 0) sendStream("pace " + paceAsk + "\n");
       }
     } catch (IOException e) {
       // the instance went away, or ended the stream (H.264 that kept failing)
@@ -1232,17 +1234,20 @@ final class Session {
   }
 
   private synchronized void acked() {
+    int paceAsk = -1;
     long[] f = flying.poll();
     if (f != null) {
       inFlight--;
       inFlightBytes -= f[1];
       long t = System.nanoTime();
       if (h264) {
-        pacer.acked(t, f[0], pingRttMs());
+        paceAsk = pacer.acked(t, f[0], pingRttMs());
       }
       ackRtts[ackCount++ % ackRtts.length] = (System.nanoTime() - f[0]) / 1e6;
     }
     notifyAll();
+    // Under the lock, as the reader thread sends its own: paces must reach the instance in the pacer's order.
+    if (paceAsk >= 0) sendStream("pace " + paceAsk + "\n");
   }
 
   private synchronized int pacerKeyDrops() {

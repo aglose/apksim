@@ -24,6 +24,7 @@ public final class PacerCheck {
     ackGapIgnoresIdle();
     burstyAcks();
     ackGapIgnoresTheLink();
+    stalledTab();
     if (failures > 0) {
       System.out.println(failures + " pacer check(s) failed");
       System.exit(1);
@@ -128,6 +129,54 @@ public final class PacerCheck {
     check(frame > 45 && frame < 55, "so a frame costs the link's 50 ms, a round trip per 4 in flight (" + frame + ")");
     p.dropped(t + 2 * S, frame);
     check(p.dropped(t + 2 * S + 100 * MS, frame) <= 60, "and the pace stays near 50 ms, not at a round trip (" + p.paceMs + ")");
+  }
+
+  private static void stalledTab() {
+    // Issue 401: a tab that acks nothing for a while (held acks) drops every second or two, which says nothing about
+    // how fast it decodes.
+    Pacer p = new Pacer();
+    long t = 100 * S;
+    for (int i = 1; i <= 10; i++) p.acked(t + i * 5 * MS, t, -1);
+    for (int i = 1; i <= 100; i++) p.dropped(t + 10 * S + i * S, p.busyMs());
+    check(p.paceMs == 0 && p.keyDrops == 100, "drops while no ack arrives leave no pace (" + p.paceMs + ")");
+    // A pace that held stays through a stall, and a drop during an eased trial still puts it back, without backoff.
+    Pacer q = new Pacer();
+    for (int i = 1; i <= 10; i++) q.acked(t + i * 40 * MS, t, -1);
+    q.dropped(t + S, 40);
+    q.dropped(t + S + 100 * MS, 40);  // pace 46
+    q.frame(t + 20 * S);  // a trial, 39
+    check(q.eased && q.dropped(t + 21 * S, 40) == 46 && q.easeWaitNanos == Pacer.EASE_WAIT_NANOS,
+        "a stalled drop during a trial restores the pace without doubling the wait");
+    // A still screen's old last ack is no stall: the drop comes with a frame in flight only just sent.
+    Pacer v = new Pacer();
+    for (int i = 1; i <= 10; i++) v.acked(t + i * 40 * MS, t, -1);
+    v.dropped(t + 30 * S, 40, t + 30 * S - 10 * MS);
+    check(v.dropped(t + 30 * S + 100 * MS, 40, t + 30 * S - 10 * MS) == 46, "a drop after a still spell, frames just sent, counts");
+    // Acks resuming after a stall start again from no pace.
+    Pacer r = new Pacer();
+    for (int i = 1; i <= 10; i++) r.acked(t + i * 40 * MS, t, -1);
+    r.dropped(t + S, 40);
+    r.dropped(t + S + 100 * MS, 40);
+    check(r.paceMs == 46, "a slow tab has a pace");
+    check(r.acked(t + 100 * S, t + 5 * S, -1) == 0 && r.paceMs == 0 && !r.eased && r.easeWaitNanos == Pacer.EASE_WAIT_NANOS,
+        "an ack 95 s after its frame was sent clears the pace (ask 0) and the backoff");
+    check(Math.abs(r.busyMs() - 40) < 0.5, "and the gap is no busy time (" + r.busyMs() + ")");
+    r.acked(t + 100 * S + MS, t + 5 * S + MS, -1);
+    r.acked(t + 100 * S + 2 * MS, t + 5 * S + 2 * MS, -1);
+    check(Math.abs(r.busyMs() - 40) < 0.5, "nor are the held acks that come with it (" + r.busyMs() + ")");
+    check(r.acked(t + 100 * S + 40 * MS, t + 100 * S, -1) == -1, "a prompt ack after it asks for nothing");
+    // A tab acking steadily, each frame 3 s after it was sent (a very slow path), is not stalled: its pace stays.
+    Pacer w = new Pacer();
+    for (int i = 1; i <= 10; i++) w.acked(t + i * 40 * MS, t, -1);
+    w.dropped(t + S, 40);
+    w.dropped(t + S + 100 * MS, 40);
+    check(w.acked(t + 2 * S, t - S, -1) == -1 && w.acked(t + 3 * S, t - 100 * MS, -1) == -1 && w.paceMs == 46,
+        "late acks that keep coming do not clear the pace");
+    Pacer u = new Pacer();
+    for (int i = 1; i <= 10; i++) u.acked(t + i * 40 * MS, t, -1);
+    u.dropped(t + S, 40);
+    u.dropped(t + S + 100 * MS, 40);
+    check(u.acked(t + 60 * S + 40 * MS, t + 60 * S, -1) == -1 && u.paceMs == 46, "a still spell then a prompt ack keeps the pace");
   }
 
   private static void ackGapIgnoresTheLink() {

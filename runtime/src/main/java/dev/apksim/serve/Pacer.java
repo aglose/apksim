@@ -21,6 +21,8 @@ final class Pacer {
   private static final long REPEAT_NANOS = 2_000_000_000L;
   private static final long SETTLE_NANOS = 1_000_000_000L;
   static final int MAX_PACE_MS = 250;
+  /** No ack for this long: the tab is stalled (held acks, a hung decoder), not slow (issue 401). */
+  static final long STALL_NANOS = 2_000_000_000L;
 
   /** Drops to a keyframe so far. */
   int keyDrops;
@@ -52,7 +54,32 @@ final class Pacer {
    * the pace to send the instance, or -1 for no change.
    */
   int dropped(long now, double tabFrameMs) {
+    return dropped(now, tabFrameMs, UNKNOWN);
+  }
+
+  /** Not told when the oldest unacked frame was sent: only the last ack counts. */
+  static final long UNKNOWN = Long.MIN_VALUE;
+  /** No frame is in flight. */
+  static final long NONE = -1;
+
+  /**
+   * As above, with oldestSentNanos, when the oldest unacked frame was sent ({@link #NONE}: none in flight). The tab is
+   * stalled when it has acked nothing for {@link #STALL_NANOS} while a frame has been owed that long: a still screen's
+   * old last ack is not a stall (issue 401).
+   */
+  int dropped(long now, double tabFrameMs, long oldestSentNanos) {
     keyDrops++;
+    long since = oldestSentNanos == UNKNOWN ? lastAckNanos : oldestSentNanos == NONE ? now : Math.max(lastAckNanos, oldestSentNanos);
+    if (lastAckNanos != 0 && now - since > STALL_NANOS) {
+      // A tab that acks nothing says nothing about how fast it decodes: its drops must not slow the pace (issue 401).
+      if (eased) {
+        eased = false;
+        paceMs = goodPaceMs;
+        lastPaceNanos = now;
+        return paceMs;
+      }
+      return -1;
+    }
     boolean repeated = paceMs > 0 || eased || (lastDropNanos != 0 && now - lastDropNanos < REPEAT_NANOS);
     lastDropNanos = now;
     if (eased) {
@@ -95,12 +122,36 @@ final class Pacer {
   private final double[] busy = new double[SAMPLES];
   private int busyCount;
   private long lastAckNanos;
+  /** When acks came back after a stall: frames sent before it are not sampled. */
+  private long resumedNanos;
 
-  /** An ack arrived at now for a frame sent at sentNanos, on a link whose round trip is linkMs (-1: not known yet). */
-  void acked(long now, long sentNanos, double linkMs) {
+  /**
+   * An ack arrived at now for a frame sent at sentNanos, on a link whose round trip is linkMs (-1: not known yet).
+   * The first ack after a stall (nothing acked for {@link #STALL_NANOS}, and this frame owed that long: a still screen
+   * sends nothing) starts the tab again from no pace, trial or backoff; neither that gap nor the acks of the other
+   * frames sent before it (they come in a burst) are busy time. Returns the pace to send the instance (0), or -1 for
+   * no change.
+   */
+  int acked(long now, long sentNanos, double linkMs) {
+    if (sentNanos < resumedNanos) {
+      lastAckNanos = now;
+      return -1;
+    }
+    if (lastAckNanos != 0 && now - lastAckNanos > STALL_NANOS && now - sentNanos > STALL_NANOS) {
+      int ask = paceMs > 0 || eased ? 0 : -1;
+      paceMs = 0;
+      eased = false;
+      goodPaceMs = 0;
+      easeWaitNanos = EASE_WAIT_NANOS;
+      lastDropNanos = 0;
+      lastPaceNanos = 0;
+      lastAckNanos = resumedNanos = now;
+      return ask;
+    }
     long arrived = sentNanos + (linkMs > 0 ? (long) (linkMs * 1e6) : 0);
     busy[busyCount++ % SAMPLES] = Math.max(0, now - Math.max(lastAckNanos, arrived)) / 1e6;
     lastAckNanos = now;
+    return -1;
   }
 
   /** The mean of the recent busy times in ms, or -1 before there are 4. */
