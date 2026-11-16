@@ -458,7 +458,7 @@ redirection, and only these:
 | Command | What it takes |
 |---|---|
 | `am start` (`start-activity`) | `-W`, `-a ACTION`, `-d URI`, `-t TYPE`, `-c CATEGORY`, `-n PKG/CLASS`, `-p PKG`, `-f FLAGS` and the extras below; a component or package must be the app's own |
-| `am broadcast` | the same but `-W`; sent to the app's own package (`-p` is added when the line names neither it nor a component), ordered, and the answer has the result code (`Broadcast completed: result=N`) |
+| `am broadcast` | the same but `-W`; sent to the app's own package (`-p` is added when the line names neither it nor a component), ordered, and the answer has the result code (`Broadcast completed: result=N`); lines sent at once run one after another, as two in flight to one receiver ended the app (issue 412) |
 | `settings get\|put global\|secure\|system KEY [VALUE]` | as `adb shell settings`; `animator_duration_scale`, `font_scale` and `bluetooth_on` are the device controls they are over adb |
 | `cat PATH` | one file inside the app's `getFilesDir()`, `getCacheDir()`, `getExternalFilesDir(null)` or `getExternalCacheDir()` (as `/data/data/PKG/files/NAME`, `/sdcard/Android/data/PKG/files/NAME`), after `..` and symlinks; read only, at most 256 KB; a path outside them, a missing file or a directory is status 126; binary files come back as text, and a file over the cap is cut without a marker |
 
