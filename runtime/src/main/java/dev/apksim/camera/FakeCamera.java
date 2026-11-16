@@ -658,6 +658,7 @@ public final class FakeCamera {
     Source s = source;
     return "source " + (s.kind().equals("image") ? "image " + s.path() : s.kind()) + ", " + FPS + " fps"
         + " | devices " + open + " streaming " + streaming + " | frames " + frames.get() + " images " + images.get()
-        + " dropped " + dropped.get() + " previews " + previews.get() + " | outputs " + new ArrayList<>(outputs.values());
+        + " dropped " + dropped.get() + " previews " + previews.get() + " | outputs " + new ArrayList<>(outputs.values())
+        + " | " + ShadowSimCameraManager.report();
   }
 }

@@ -31,6 +31,32 @@ public class ShadowSimCameraManager extends ShadowCameraManager {
   /** Camera ids a client has open. */
   private static final java.util.Set<String> OPEN = new java.util.LinkedHashSet<>();
 
+  /** What the app asked of CameraManager, shown by the `camera` command and logged on stderr (issue 402). */
+  private static final java.util.concurrent.atomic.AtomicInteger ID_LISTS = new java.util.concurrent.atomic.AtomicInteger();
+  private static final java.util.concurrent.atomic.AtomicInteger REGISTERED = new java.util.concurrent.atomic.AtomicInteger();
+  private static final java.util.concurrent.atomic.AtomicInteger TOLD = new java.util.concurrent.atomic.AtomicInteger();
+  private static final java.util.concurrent.atomic.AtomicInteger OPENS = new java.util.concurrent.atomic.AtomicInteger();
+
+  private static void log(String line) {
+    if (System.getProperty("apksim.instrument") == null) System.err.println("[apksim] camera: " + line);
+  }
+
+  /** One line for the `camera` command: calls made, callbacks held and how many announcements were delivered. */
+  public static String report() {
+    synchronized (CALLBACKS) {
+      return "manager: idLists " + ID_LISTS.get() + " availabilityCallbacks " + CALLBACKS.size() + " (registered "
+          + REGISTERED.get() + ") announced " + TOLD.get() + " opens " + OPENS.get() + " open " + OPEN;
+    }
+  }
+
+  @Implementation
+  @Override
+  protected String[] getCameraIdList() throws android.hardware.camera2.CameraAccessException {
+    String[] ids = super.getCameraIdList();
+    if (ID_LISTS.incrementAndGet() <= 3) log("getCameraIdList -> " + java.util.Arrays.toString(ids));
+    return ids;
+  }
+
   /** Robolectric resets between tests; so do we. */
   @org.robolectric.annotation.Resetter
   public static void reset() {
@@ -38,6 +64,10 @@ public class ShadowSimCameraManager extends ShadowCameraManager {
     synchronized (CALLBACKS) {
       CALLBACKS.clear();
       OPEN.clear();
+      ID_LISTS.set(0);
+      REGISTERED.set(0);
+      TOLD.set(0);
+      OPENS.set(0);
     }
   }
 
@@ -71,7 +101,11 @@ public class ShadowSimCameraManager extends ShadowCameraManager {
     List<String> ids = new ArrayList<>();
     List<Boolean> open = new ArrayList<>();
     synchronized (CALLBACKS) {
-      if (CALLBACKS.containsKey(callback)) return;
+      REGISTERED.incrementAndGet();
+      if (CALLBACKS.containsKey(callback)) {
+        log("registerAvailabilityCallback: " + callback.getClass().getName() + " already registered");
+        return;
+      }
       CALLBACKS.put(callback, executor);
       try {
         for (String id : getCameraIdList()) {
@@ -82,10 +116,13 @@ public class ShadowSimCameraManager extends ShadowCameraManager {
         // no cameras listed
       }
     }
+    log("registerAvailabilityCallback: " + callback.getClass().getName() + ", telling it about " + ids
+        + (ids.isEmpty() ? " (no cameras listed: nothing will be announced)" : ""));
     for (int i = 0; i < ids.size(); i++) {
       String id = ids.get(i);
       boolean isOpen = open.get(i);
       executor.execute(() -> {
+        TOLD.incrementAndGet();
         if (isOpen) callback.onCameraUnavailable(id);
         else callback.onCameraAvailable(id);
       });
@@ -101,6 +138,7 @@ public class ShadowSimCameraManager extends ShadowCameraManager {
     for (Map.Entry<CameraManager.AvailabilityCallback, Executor> e : to) {
       CameraManager.AvailabilityCallback cb = e.getKey();
       e.getValue().execute(() -> {
+        TOLD.incrementAndGet();
         if (available) cb.onCameraAvailable(id);
         else cb.onCameraUnavailable(id);
       });
@@ -122,6 +160,8 @@ public class ShadowSimCameraManager extends ShadowCameraManager {
       throw new SecurityException("validateClientPermissionsLocked: Permission Denial: can't use the camera pid="
           + Process.myPid() + ", uid=" + Process.myUid());
     }
+    OPENS.incrementAndGet();
+    log("openCamera " + cameraId);
     CameraDevice device = super.openCameraDeviceUserAsync(cameraId, callback, executor, uid, oomScoreOffset);
     announce(cameraId, false);
     return device;
