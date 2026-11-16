@@ -23,7 +23,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * apksim://camera: the front camera through CameraX, a Preview in a PreviewView and an ImageAnalysis counting frames
- * ("camera: 42 frames, 1280x720 YUV, rotation 270"). Asks for the CAMERA permission first. `?mode=compatible` makes the
+ * ("camera: 42 frames, 640x480 YUV, rotation 270"). Asks for the CAMERA permission first. `?mode=compatible` makes the
  * PreviewView use a TextureView (PERFORMANCE, the default, a SurfaceView). `?size=1440x1080` binds the Preview alone, to
  * exactly that size (a 4:3 aspect ratio strategy and `ResolutionStrategy(size, FALLBACK_RULE_NONE)`, so a camera that
  * does not list it fails the bind: "No available output size is found"): "camera: preview 1440x1080".

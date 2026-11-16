@@ -85,7 +85,8 @@ public final class FakeCamera {
           String[] wh = part.trim().toLowerCase(java.util.Locale.ROOT).split("x");
           int w = Integer.parseInt(wh[0]), h = Integer.parseInt(wh[1]);
           if (wh.length != 2 || w < 16 || h < 16 || w > 8192 || h > 8192) throw new NumberFormatException(part);
-          seen.add((long) w << 32 | h);
+          // As the sensor lists them, wider than tall: a size named the other way round is the same stream.
+          seen.add((long) Math.max(w, h) << 32 | Math.min(w, h));
         }
         parsed = new int[seen.size()][];
         int i = 0;

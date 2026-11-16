@@ -102,13 +102,16 @@ class CameraTest {
     thread.quitSafely()
     // CameraX's provider is a process-wide singleton and each test here gets a new CameraManager: a provider left
     // from one CameraX test would hand the next one cameras that no longer exist.
-    if (usedCameraX) {
-      val provider = androidx.camera.lifecycle.ProcessCameraProvider.getInstance(context)
-      waitFor("the camera provider") { provider.isDone }
-      val shutdown = provider.get().shutdownAsync()
-      waitFor("the camera provider's shutdown") { shutdown.isDone }
+    try {
+      if (usedCameraX) {
+        val provider = androidx.camera.lifecycle.ProcessCameraProvider.getInstance(context)
+        waitFor("the camera provider") { provider.isDone }
+        val shutdown = provider.get().shutdownAsync()
+        waitFor("the camera provider's shutdown") { shutdown.isDone }
+      }
+    } finally {
+      if (mode == "fake") shell("pm revoke ${context.packageName} ${Manifest.permission.CAMERA}")
     }
-    if (mode == "fake") shell("pm revoke ${context.packageName} ${Manifest.permission.CAMERA}")
   }
 
   private fun shell(command: String): String {
