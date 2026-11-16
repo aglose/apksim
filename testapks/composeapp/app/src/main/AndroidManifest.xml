@@ -70,6 +70,33 @@
                 <data android:scheme="apksim" android:host="network" />
             </intent-filter>
         </activity>
+        <!-- apksim://grpc?tls=HOST:PORT&plain=HOST:PORT&cert=B64: gRPC calls against the fixture server (scripts/media-protocols-check.py). -->
+        <activity android:name=".GrpcActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="grpc" />
+            </intent-filter>
+        </activity>
+        <!-- apksim://websocket?url=wss://HOST:PORT/ws&plain=ws://HOST:PORT/ws&cert=B64: WebSocket messages against the fixture server. -->
+        <activity android:name=".WebSocketActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="websocket" />
+            </intent-filter>
+        </activity>
+        <!-- apksim://media: every sample in assets/media decoded and checked frame by frame (scripts/media-protocols-check.py). -->
+        <activity android:name=".MediaActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="media" />
+            </intent-filter>
+        </activity>
         <!-- apksim://bitmaps: framework View drawing of scaled bitmaps (GpuBitmaps). -->
         <activity android:name=".ViewBitmapsActivity" android:exported="true">
             <intent-filter>

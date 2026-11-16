@@ -98,6 +98,12 @@ dependencies {
   implementation(libs.androidx.health.connect.client)
   // Network: NetworkActivity fetches over HTTPS (apksim --network record/replay and conditions, docs/network.md)
   implementation(libs.okhttp)
+  // apksim://grpc (GrpcActivity): gRPC over OkHttp's HTTP/2 against the fixture server (fixture/, scripts/media-protocols-check.py)
+  implementation(libs.grpc.okhttp)
+  implementation(libs.grpc.stub)
+  // apksim://media?hls=URL: an HLS stream from the fixture server through Media3
+  implementation(libs.androidx.media3.exoplayer.hls)
+  implementation(libs.androidx.media3.datasource.okhttp)
   // Time zones: Joda-Time up to 2.10 reads user.timezone before the JDK's default (apksim://timezone, WallClockTest;
   // issue 91). 2.12 reads a property of its own instead, so this stays on 2.10.
   implementation(libs.joda.time)
