@@ -1397,7 +1397,9 @@ by the viewer that got the most. Measured on one Mac, viewers included: 300 at 1
 a `Viewers` whether or not the server shares): on, each running tab hears `d {"share": KEY}`; off, viewers are dropped
 ("sharing was turned off"), tabs hear `d {"share": ""}` and each session takes a new key, so old links stay dead
 (share-check.py turns it both ways; `--no-switch` leaves a server others watch alone). Not done: revoking
-one link, handing control over, a JPEG side stream, viewers on other machines.
+one link, handing control over, a JPEG side stream, viewers through an HTTPS proxy. On two cloud sandboxes (server in
+the Linux image, viewers on the other, ~1 Gbit/s): 1,500 viewers passed at the image's 9 fps (510 Mbit/s); 2,000 filled
+the link.
 Kept sessions (issue 221, docs/serve.md "Kept sessions"): with `--keep-max N` (0 by default, off) and `--keep-days N`
 (14), `/ws?keep=KEY` runs the app in a seed slot (`ks<hex>-0`, which beam's sweep never takes) of the server's naming and, when the session ends, packs
 it with SlotPack into `STATE/serve/kept/<HMAC of KEY under the token>/<package>/` (`KeptStore`); the next session with

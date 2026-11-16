@@ -51,7 +51,7 @@ it, and [How it was built](#how-it-was-built) covers the order it came together 
 | **Fast launches** | Warm launches put the app's first frame on screen in ~0.2-0.5 s, and the window in ~10 ms. A stock emulator takes 8-18 s from a snapshot or boot. |
 | **Real Android** | The AOSP Android 16 (API 36) framework, Skia and HWUI rendering, SQLite, the app's own DEX code and its arm64 native libraries. |
 | **A simulator, not just a runner** | Device types and live window resizing, rotation, dark mode, locale, text size, location, biometrics, permissions, notifications, deep links, a shared clipboard, screenshots and screen recording. |
-| **In a browser tab** | `apksim serve` runs an APK per browser tab and streams it, so QA, design and product people can try a build without Android tools: first frame in ~0.3 s on a Mac, a tap shows in ~30 ms. Compare mode puts two builds side by side under the same input, with the pixels that differ marked, and a GitHub Action comments preview links on pull requests. A report button and a network inspector are there when the server allows them. |
+| **In a browser tab** | `apksim serve` runs an APK per browser tab and streams it, so QA, design and product people can try a build without Android tools: first frame in ~0.3 s on a Mac, a tap shows in ~30 ms. Compare mode puts two builds side by side under the same input, with the pixels that differ marked, and a GitHub Action comments preview links on pull requests. A report button and a network inspector are there when the server allows them. A running session can be shared as a view-only link (`--allow-share`): 1,500 viewers have watched one session from another machine. |
 | **Scriptable** | An MCP server for AI agents (`apksim mcp`), a line-based control channel, `ctl.py` for `simctl`-style control of running instances, and an adb device that standard tools (`adb`, the Android CLI) can drive. |
 | **Instrumented tests** | Compose UI tests, Espresso, ActivityScenario and UiAutomator suites run as `am instrument` would. JUnit XML output, one process per test if you want it, and a Linux image for CI. |
 | **CI triage and speed** | A failure bundle for every failing test (its screen, accessibility tree, log, threads and a script that reruns it), only the tests a change can reach, shards balanced by measured time, `--isolate` processes booted ahead of their tests (29-47% less wall time on the test app's suite at `-j 3`), code coverage without rebuilding the app, and a flake hunter that says whether a flaky test depends on order or timing. |
@@ -412,6 +412,13 @@ sessions (`--keep-max N`) and the session named a key (`keep=KEY`): then the nex
 signed in where the last one left off. See
 [docs/serve.md](docs/serve.md).
 
+Many people watching one session: with `--allow-share`, or after `POST /api/share?allow=on` on a running server, a
+session's tab has "Copy view-only link". Whoever opens it sees that screen live, without the server's token, and can
+press nothing; the link dies with the session or when sharing is turned off. The server sends the same encoded frames
+to every viewer, so it does not encode again per viewer: 1,000 viewers on the same Mac got 60-120 fps, and 1,500 on
+another machine got every frame of a 9 fps stream (the limit there was the server's 1 Gbit/s link). See
+[docs/serve.md](docs/serve.md) "Shared sessions".
+
 Two builds side by side: `/?compare=BASE_ID,NEW_ID` starts a session for each, sends every tap, drag, key and device
 control to both, and shows a third screen marking the pixels that differ. `scripts/pr-preview.py` and the
 `.github/actions/preview` Action put a pull request's build on a server and keep one comment on the pull request with
@@ -472,7 +479,7 @@ A GitHub Actions job using the released image:
 - name: Device tests on apksim
   run: |
     mkdir -p out && cp app/build/outputs/apk/debug/*.apk app/build/outputs/apk/androidTest/debug/*.apk out/
-    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.40.0 \
+    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.41.0 \
       app-debug.apk app-debug-androidTest.apk --xml junit.xml --bundles bundles
 - uses: actions/upload-artifact@v4
   if: always()
@@ -539,9 +546,9 @@ manifests, build files) runs the whole suite and says why. How it works, its lim
 ```bash
 # record goldens in the Linux image, where CI checks them (spec, APK and goldens in the mounted folder; --out keeps
 # the report there too, outside the goldens folder: without it, it stays in the container)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.40.0 spec.json --update --out snapshots/record
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.41.0 spec.json --update --out snapshots/record
 # compare every screen in every combination; exit 1 on any difference (in CI: the same image, without --update)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.40.0 spec.json --out snapshots/check
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.41.0 spec.json --out snapshots/check
 # a quick local check on a Mac before pushing, against the image's goldens with a one-level tolerance in the spec
 scripts/snapshot.py spec.json -j 4
 ```
