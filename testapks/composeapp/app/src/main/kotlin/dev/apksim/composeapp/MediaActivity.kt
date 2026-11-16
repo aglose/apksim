@@ -149,9 +149,11 @@ class MediaActivity : androidx.activity.ComponentActivity() {
       summary = summarize("media", results, false)
     }
     for (v in PLAY_VIDEO) check("play", v) { playVideo(Uri.parse("asset:///media/$v"), null) }
-    for (a in PLAY_AUDIO) check("play", a) { playAudio(Uri.parse("asset:///media/$a"), if (a.startsWith("opus")) 48_000 else 44_100) }
+    for (a in PLAY_AUDIO) check("play", a) { playAudio(Uri.parse("asset:///media/$a"), if (a.startsWith("opus")) 48_000 else if (a.contains("22k")) 22_050 else 44_100) }
     for ((file, mime) in CODEC_VIDEO) check("codec", file) { codecVideo(file, mime) }
-    check("codec", "aac-lc.adts") { codecAdts("aac-lc.adts") }
+    // ADTS through MediaCodec alone (synchronous mode): the HE-AAC ones say only their 22.05 kHz core in the header,
+    // and the decoder must find SBR (and PS) in the frames and announce 44.1 kHz stereo as a new output format.
+    for (a in listOf("aac-lc.adts", "aac-he.adts", "aac-he-v2.adts", "aac-he-24k.adts")) check("codec", a) { codecAdts(a, 44_100) }
     for (mime in ENCODE_VIDEO) check("encode", mime) { encodeVideo(mime) }
     check("encode", MediaFormat.MIMETYPE_AUDIO_AAC) { encodeAac() }
     val hls = data?.getQueryParameter("hls")
@@ -378,13 +380,18 @@ class MediaActivity : androidx.activity.ComponentActivity() {
     return frameVerdict(seen, minimum = 30, exact = true, extra = ", $name" + (from?.let { ", from $it" } ?: ""))
   }
 
-  /** ADTS AAC decoded by MediaCodec into byte buffers, its PCM counted and its pitch measured. */
-  private suspend fun codecAdts(file: String): CheckResult {
+  /**
+   * ADTS AAC decoded by MediaCodec into byte buffers, its PCM counted and its pitch measured; the format has the header's
+   * rate and channels, as a player gives them, and the PCM must come out at `rate` (the stream's, SBR included).
+   */
+  private suspend fun codecAdts(file: String, rate: Int): CheckResult {
     val bytes = assets.open("media/$file").use { it.readBytes() }
     val units = mutableListOf<AccessUnit>()
     var at = 0
     var n = 0
     var config: ByteArray? = null
+    var headerRate = 0
+    var headerChannels = 0
     while (at + 7 <= bytes.size && (bytes[at].toInt() and 0xff) == 0xff && (bytes[at + 1].toInt() and 0xf0) == 0xf0) {
       val len = (bytes[at + 3].toInt() and 3 shl 11) or ((bytes[at + 4].toInt() and 0xff) shl 3) or ((bytes[at + 5].toInt() and 0xff) shr 5)
       if (len < 7 || at + len > bytes.size) break
@@ -395,14 +402,17 @@ class MediaActivity : androidx.activity.ComponentActivity() {
         val rateIndex = bytes[at + 2].toInt() shr 2 and 0xf
         val channels = (bytes[at + 2].toInt() and 1 shl 2) or (bytes[at + 3].toInt() and 0xff shr 6)
         config = byteArrayOf((objectType shl 3 or (rateIndex shr 1)).toByte(), (rateIndex and 1 shl 7 or (channels shl 3)).toByte())
+        headerRate = intArrayOf(96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350).getOrElse(rateIndex) { 0 }
+        headerChannels = channels
       }
       // Raw frames and the config in csd-0, as a player hands them over: not every decoder takes ADTS.
-      units += AccessUnit(bytes.copyOfRange(at + header, at + len), n++ * 1024L * 1_000_000 / 44_100)
+      units += AccessUnit(bytes.copyOfRange(at + header, at + len), n++ * 1024L * 1_000_000 / headerRate)
       at += len
     }
     if (config == null) return CheckResult.fail("", "the sample has no ADTS frame")
-    val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, 44_100, 2).apply { setByteBuffer("csd-0", ByteBuffer.wrap(config)) }
-    return decodeAudio(format, units, null, 44_100)
+    if (headerRate == 0) return CheckResult.fail("", "the sample's ADTS header has no known sampling rate")
+    val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, headerRate, headerChannels).apply { setByteBuffer("csd-0", ByteBuffer.wrap(config)) }
+    return decodeAudio(format, units, null, rate)
   }
 
   private suspend fun decodeAudio(format: MediaFormat, units: List<AccessUnit>, from: String?, rate: Int): CheckResult {
@@ -610,7 +620,7 @@ class MediaActivity : androidx.activity.ComponentActivity() {
     const val H = 40
 
     val PLAY_VIDEO = listOf("h264-baseline.mp4", "h264-high-bframes.mp4", "hevc-main.mp4", "hevc-main10.mp4", "vp8.webm", "vp9.webm", "av1.mp4")
-    val PLAY_AUDIO = listOf("aac-lc.m4a", "aac-he.m4a", "mp3.mp3", "opus.ogg", "flac.flac")
+    val PLAY_AUDIO = listOf("aac-lc.m4a", "aac-he.m4a", "aac-he-v2.m4a", "aac-he.adts", "aac-he-v2.adts", "aac-he-24k.adts", "aac-lc-22k.adts", "mp3.mp3", "opus.ogg", "flac.flac")
     val CODEC_VIDEO = listOf(
       "h264-high-bframes.h264" to MediaFormat.MIMETYPE_VIDEO_AVC, "hevc-main.h265" to MediaFormat.MIMETYPE_VIDEO_HEVC,
       "vp8.ivf" to MediaFormat.MIMETYPE_VIDEO_VP8, "vp9.ivf" to MediaFormat.MIMETYPE_VIDEO_VP9, "av1.ivf" to MediaFormat.MIMETYPE_VIDEO_AV1,

@@ -59,6 +59,14 @@ public final class SimAudio {
   /** Decodes one access unit; returns the PCM bytes written to out, or -1. Both buffers are direct. */
   static native int nativeDecode(long decoder, ByteBuffer in, int offset, int length, ByteBuffer out, int capacity);
 
+  /** The sample rate and channel count of the PCM a decoder gives (an HE-AAC stream's config sets them, not the format). */
+  static native int nativeDecoderRate(long decoder);
+
+  static native int nativeDecoderChannels(long decoder);
+
+  /** Whether an AAC frame of an AAC-LC config carries SBR (1) and parametric stereo too (2), or neither (0): implicit HE-AAC. */
+  static native int nativeSniffSbr(byte[] config, ByteBuffer frame, int offset, int length);
+
   static native void nativeDecoderReset(long decoder);
 
   static native void nativeDecoderRelease(long decoder);
