@@ -487,9 +487,9 @@ public final class TestActivities {
 
     /**
      * recreate() as a device has it: calls while one is pending for this activity are one relaunch, and a relaunch never
-     * runs inside another. Robolectric posts ActivityController.recreate() per call, and its visible() idles the main
-     * looper, so a second queued recreate ran inside the first, on a controller whose activity had been swapped out
-     * (NPE in windowFocusChanged: an in-app theme switch that recreates twice killed the app, issue 410). Running
+     * runs inside another. The relaunch is a configuration change of this activity (Host.recreate), as the `recreate`
+     * command: Robolectric's ActivityController.recreate() left the new window detached and threw an NPE in
+     * windowFocusChanged waiting for its focus, which ended the app (issue 410: an in-app theme switch). Running
      * instances only; test runs keep Robolectric's.
      */
     private volatile boolean recreatePending;
@@ -545,7 +545,7 @@ public final class TestActivities {
     try {
       done.run();  // a recreate() during this relaunch (the old activity's teardown) is a new request
       // One finished and destroyed since it asked has nothing to relaunch (Robolectric's recreate throws there).
-      if (!c.get().isDestroyed()) c.recreate();
+      if (!c.get().isDestroyed() && !Host.recreate(c)) c.recreate();
     } finally {
       recreating = false;
       // In the finally: with -Dapksim.crashes=log the app runs on after a recreate that threw, and what waited

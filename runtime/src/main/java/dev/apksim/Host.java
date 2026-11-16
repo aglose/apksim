@@ -106,6 +106,16 @@ public class Host {
   /** The running Host, for UiAutomation's synchronous injection (see {@link #inputQueued}). */
   private static volatile Host current;
 
+  /**
+   * Activity.recreate() of one activity in a running instance (TestActivities.runRecreate): as the `recreate`
+   * command, through a configuration change, since Robolectric's own recreate leaves the new window detached and then
+   * waits for its focus. False when no Host runs or the controller is not in its stack (the caller falls back).
+   */
+  static boolean recreate(org.robolectric.android.controller.ActivityController<?> c) {
+    Host h = current;
+    return h != null && h.controls != null && h.controls.recreate(c);
+  }
+
   /** Whether scripted input is still waiting to be dispatched. Main thread only. */
   static boolean inputQueued() {
     Host h = current;

@@ -152,14 +152,16 @@ Read README.md for results and limits; this file covers how to work on the code.
     device's published sizes; `Skinning.part` picks the cover frame, corners and camera cutout while the device is
     closed, so the skin stays on through a fold. Not done: the posture in flight-recorder checkpoints (a replayed
     shape has one frame), a fold while rotated, an R8 app checked.
-  - `TestActivities.ShadowSimActivity.recreate` (running instances only; test runs keep Robolectric's): repeated
-    `Activity.recreate()` calls while one is pending for that activity are one relaunch, and relaunches run one at a
-    time (`runRecreate`: one asked for while another runs waits in a queue and is posted once that one is done; an
-    activity destroyed since it asked is skipped). Robolectric posts `ActivityController.recreate()` per call, and its
-    `visible()` idles the main looper, so a second queued recreate ran inside the first and `windowFocusChanged`
-    threw a NullPointerException (issue 410: an in-app theme switch that recreates twice ended the app, exit 10).
-    Not done: a test-app screen that checks it, and the same guard around the configuration changes of the
-    `recreate`, `appearance`, `locale` and `rotate` commands (`DeviceControls.changeConfiguration`).
+  - `TestActivities.ShadowSimActivity.recreate` (running instances only; test runs keep Robolectric's):
+    `Activity.recreate()` relaunches the activity as the `recreate` command does, through a configuration change on
+    that one activity (`Host.recreate`, `DeviceControls.recreate`), then `Host.arrange`. Robolectric's own
+    `ActivityController.recreate()` leaves the new window detached and then waits for its focus, so even one call
+    threw a NullPointerException in `windowFocusChanged` and ended the app (issue 410: an in-app theme switch).
+    Calls while one is pending for that activity are one relaunch, as on a device, and relaunches run one at a time
+    (`runRecreate`: one asked for while another runs, the new activity's own from onCreate included, waits in a queue
+    and is posted once that one is done; an activity destroyed since it asked is skipped). The test app's
+    `apksim://recreate` (`RecreateActivity`: "Recreate twice", "Recreate from onCreate", "recreate: instances N, live
+    1") is checked in `ci-smoke.sh`.
   - `TimeTick`: ACTION_TIME_TICK (registered receivers only) from Host's loop at each minute of `SimClock`'s clock; not under `--snapshot` (issue 109).
   - `Crashes`: uncaught exceptions in running instances, as RuntimeInit's KillApplicationHandler (issue 104). The JVM
     had no default handler, so ThreadGroup printed "Exception in thread" and the app ran on: kotlinx.coroutines hands a

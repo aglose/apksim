@@ -97,6 +97,20 @@ signin="$(drive nodes | grep -oE 'text="signin: [^"]*"')"
 echo "Sign-in: $signin"
 [[ "$signin" == 'text="signin: code=smoke42 (instances 1, new intents 1)"' ]] \
   || { echo "a sign-in's redirect did not reach the waiting activity" >&2; exit 1; }
+# Activity.recreate() relaunches the activity (issue 410: Robolectric's ActivityController.recreate threw in
+# windowFocusChanged, exit 10); twice in a row is one relaunch, and one from the new activity's onCreate runs after.
+recreated() { drive nodes | grep -oE 'text="recreate: [^"]*"'; }
+drive 'open apksim://recreate' 'wait 1500' >/dev/null
+r0="$(recreated)"
+drive 'tap-text Recreate twice' 'wait 1500' >/dev/null
+r1="$(recreated)"
+drive 'tap-text Recreate from onCreate' 'wait 2000' >/dev/null
+r2="$(recreated)"
+echo "Recreate: $r0 -> $r1 -> $r2"
+[[ "$r0" == 'text="recreate: instances 1, live 1"' && "$r1" == 'text="recreate: instances 2, live 1"' \
+   && "$r2" == 'text="recreate: instances 4, live 1"' ]] \
+  || { echo "repeated recreate() calls were not one relaunch at a time" >&2; exit 1; }
+drive back 'wait 800' >/dev/null
 drive back 'wait 800' >/dev/null
 [[ "$shown" == 'text="trace: begun twice 2 times" text="tooltip: shown" text="taps: 0" text="outside: 0" ' \
    && "$tapped" == 'text="trace: begun twice 2 times" text="tooltip: hidden" text="taps: 1" text="outside: 1" ' ]] \
