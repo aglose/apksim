@@ -52,7 +52,7 @@ final class Viewers {
   private volatile Boolean h264;
   /** The last JPEG frame, for a viewer that joins a still screen. */
   private volatile byte[] last;
-  /** What the session told its tab that a viewer needs too (the device and skin), sent to each as it joins. */
+  /** What the session told its tab that a viewer needs too (the app's name and device), sent to each as it joins. */
   private volatile String info;
   private boolean ended;  // guarded by this
   private long lastKeyAsk;  // guarded by this
@@ -117,7 +117,7 @@ final class Viewers {
     static final int MAX_QUEUE = 64;
     final CopyOnWriteArrayList<Viewer> members = new CopyOnWriteArrayList<>();
     private final ArrayDeque<byte[]> queue = new ArrayDeque<>();  // guarded by this
-    private boolean overflowed, running;  // guarded by this
+    private boolean overflowed, running, stopped;  // guarded by this
     private Thread thread;  // guarded by this
 
     synchronized void put(byte[] f) {
@@ -132,13 +132,14 @@ final class Viewers {
 
     synchronized void add(Viewer v) {
       members.add(v);
-      if (!running) {
+      if (!running && !stopped) {  // a viewer that joins as the session ends starts no thread: nothing would stop it
         running = true;
         thread = Thread.ofVirtual().name("serve-viewer-shard-" + sessionId).start(this);
       }
     }
 
     synchronized void stop() {
+      stopped = true;
       running = false;
       queue.clear();
       if (thread != null) thread.interrupt();
@@ -182,8 +183,7 @@ final class Viewers {
     long now = System.currentTimeMillis();
     for (Viewer v : list) {
       if (v.stalledSince(now) > STALL_MS) {
-        stalled.incrementAndGet();
-        v.bye("this viewer stopped receiving the screen: reload to watch again");
+        if (v.bye("this viewer stopped receiving the screen: reload to watch again")) stalled.incrementAndGet();
         continue;
       }
       if (now - v.lastPing >= PING_MS && v.pinging.compareAndSet(false, true)) {
@@ -247,7 +247,7 @@ final class Viewers {
     if (codec != null) {
       // The screen as it is: a still one sends nothing by itself. H.264 starts at a keyframe, asked for below.
       byte[] f = last;
-      if (!codec && f != null) v.offer(f, false, true, System.currentTimeMillis());
+      if (!codec && f != null) v.offerFirst(f);
       if (codec) requestKey();
     } else {
       v.text("p waiting for the app to start");
@@ -302,7 +302,11 @@ final class Viewers {
     if (text.equals("ack")) {
       v.acked();
     } else if (text.equals("key")) {
-      // Its decoder lost its place: nothing more until a keyframe.
+      // Its decoder lost its place: nothing more until a keyframe. One a second from a viewer: each ask is a keyframe
+      // for everyone, the tab included.
+      long now = System.currentTimeMillis();
+      if (now - v.lastKeyMessage < KEY_INTERVAL_MS) return;
+      v.lastKeyMessage = now;
       v.wantKey();
       requestKey();
     } else if (text.startsWith("t ") && text.length() < 40) {
@@ -359,7 +363,7 @@ final class Viewers {
     private int inFlight;
     private long inFlightBytes;
     private final ArrayDeque<Integer> flying = new ArrayDeque<>();
-    private boolean needKey = true;
+    private boolean needKey = true, offered;
     /** A viewer that keeps falling behind asks for its keyframe later: at once, then after 1 s, then every 2 s. */
     private long keyBackoffMs, keyNotBefore;
     private int sinceDrop;
@@ -368,6 +372,7 @@ final class Viewers {
     volatile long lastPing = System.currentTimeMillis();
     final AtomicBoolean pinging = new AtomicBoolean(), leaving = new AtomicBoolean();
     int refusals;  // its reader thread only
+    long lastKeyMessage;  // its reader thread only
 
     Viewer(WebSocket ws) {
       this.ws = ws;
@@ -379,6 +384,7 @@ final class Viewers {
       if (!video) {
         frames.clear();
         frames.add(f);
+        offered = true;
       } else if (isKey) {
         frames.clear();
         frames.add(f);
@@ -400,6 +406,14 @@ final class Viewers {
       }
       notifyAll();
       return false;
+    }
+
+    /** The screen as it was when a JPEG viewer joined, unless its shard has given it a newer picture meanwhile. */
+    synchronized void offerFirst(byte[] f) {
+      if (gone || offered) return;
+      frames.add(f);
+      offered = true;
+      notifyAll();
     }
 
     synchronized void wantKey() {
@@ -468,9 +482,12 @@ final class Viewers {
       }
     }
 
-    /** Tells the viewer why and closes its connection; dropped after two seconds if it does not take the message. */
-    void bye(String why) {
-      if (!leaving.compareAndSet(false, true)) return;
+    /**
+     * Tells the viewer why and closes its connection; dropped after two seconds if it does not take the message. False
+     * when it was already told.
+     */
+    boolean bye(String why) {
+      if (!leaving.compareAndSet(false, true)) return false;
       gone = true;
       Thread.ofVirtual().name("serve-viewer-bye").start(() -> {
         Thread notice = Thread.ofVirtual().start(() -> {
@@ -483,6 +500,7 @@ final class Viewers {
           ws.abort();
         }
       });
+      return true;
     }
   }
 }

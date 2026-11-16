@@ -61,6 +61,10 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   Off by default: kept data outlives the session it came from. One server per state folder keeps sessions (a lock on
   `serve/kept/.lock`, taken once its port is bound); another started on the same folder keeps none and deletes none
   (its tabs are told `off`), and a server with `--keep-max 0` never touches what was kept.
+- `--allow-share` and `--max-viewers N` (default 100, at most 10000): view-only links to a running session ("Shared
+  sessions", below). Off by default. Each viewer holds a socket (a file descriptor) for as long as it watches, outside
+  the 128-connection limit, so a large `--max-viewers` times `--max` sessions needs the process's descriptor limit
+  (`ulimit -n`) to allow it.
 - `--quality Q` (default 80): the JPEG quality of the stream.
 - `--bitrate KBPS` (default 4000): the H.264 stream's average bit rate (see "Stream").
 - `--in-flight N` (default 8, 1-32): the most frames in flight to a tab (below); 2 is the old fixed window.

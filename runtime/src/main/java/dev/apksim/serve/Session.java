@@ -506,6 +506,9 @@ final class Session {
     if ("landscape".equals(orientation) || "portrait".equals(orientation)) first.add(Map.entry("rotate " + orientation, r -> {}));
     synchronized (replies) {
       controlOut = new PrintWriter(new java.io.OutputStreamWriter(control.getOutputStream(), StandardCharsets.UTF_8), true);
+      // A hidden tab's one frame a second, asked for before the app was up: not while anyone watches (viewersChanged
+      // sends it when the last viewer leaves).
+      if (viewers != null && viewers.count() > 0) early.removeIf(e -> e.getKey().startsWith("maxfps ") && lowFps(e.getKey()));
       first.addAll(early);
       early.clear();
       for (Map.Entry<String, Consumer<String>> e : first) {
@@ -1450,6 +1453,7 @@ final class Session {
     String wire = cmd;
     if (cmd.startsWith("device ")) {
       device = cmd.substring(7);
+      if (viewers != null) viewers.info("\"app\":" + Http.q(app.name()) + ",\"device\":" + Http.q(device));  // for viewers who join later
       launchKind = null;  // the instance's device command gives the new device its own kind
       wire = "device " + deviceSpec(device);
     }
