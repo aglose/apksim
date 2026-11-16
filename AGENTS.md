@@ -1089,7 +1089,10 @@ config at up to 24 kHz): the first frame goes, behind an ADTS header, to AudioTo
 (`SimAudio.nativeSniffSbr`), which finds SBR and parametric stereo in it; found, the decoder is made again from the
 explicit config that stands for (`explicitHe`) and the app gets a new output format before any PCM
 (`outputFormatChanged`: the next dequeue's INFO_OUTPUT_FORMAT_CHANGED, or the callback Robolectric posts in async mode),
-as a device's decoder does once it sees SBR. A genuine 22.05 kHz AAC-LC stream stays at its rate. Robolectric allocates a codec's 10 input buffers,
+as a device's decoder does once it sees SBR. Up to 8 frames are tried (a low-bitrate stream's first frame can be too
+short to show it: `aac-he-24k.adts`). A genuine 22.05 kHz AAC-LC stream stays at its rate. Limits: the parser lists a PS
+layer for every mono core with SBR, so mono HE-AAC v1 is taken as v2 (stereo out); and in synchronous mode a thread
+already blocked in dequeueOutputBuffer gets the first PCM before the format change. Robolectric allocates a codec's 10 input buffers,
 zero-filled, when it is created, so they start small and `sizeInputs` sizes them at configure from max-input-size
 (else 8 MB: a bound from the picture size can be too small for I_PCM frames): a fixed 8 MB held 80 MB per video codec
 (playing the test clip, whose player sets max-input-size: +100 → +16-33 MB).

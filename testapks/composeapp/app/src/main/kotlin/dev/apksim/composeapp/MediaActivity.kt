@@ -153,7 +153,7 @@ class MediaActivity : androidx.activity.ComponentActivity() {
     for ((file, mime) in CODEC_VIDEO) check("codec", file) { codecVideo(file, mime) }
     // ADTS through MediaCodec alone (synchronous mode): the HE-AAC ones say only their 22.05 kHz core in the header,
     // and the decoder must find SBR (and PS) in the frames and announce 44.1 kHz stereo as a new output format.
-    for (a in listOf("aac-lc.adts", "aac-he.adts", "aac-he-v2.adts")) check("codec", a) { codecAdts(a, 44_100) }
+    for (a in listOf("aac-lc.adts", "aac-he.adts", "aac-he-v2.adts", "aac-he-24k.adts")) check("codec", a) { codecAdts(a, 44_100) }
     for (mime in ENCODE_VIDEO) check("encode", mime) { encodeVideo(mime) }
     check("encode", MediaFormat.MIMETYPE_AUDIO_AAC) { encodeAac() }
     val hls = data?.getQueryParameter("hls")
@@ -620,7 +620,7 @@ class MediaActivity : androidx.activity.ComponentActivity() {
     const val H = 40
 
     val PLAY_VIDEO = listOf("h264-baseline.mp4", "h264-high-bframes.mp4", "hevc-main.mp4", "hevc-main10.mp4", "vp8.webm", "vp9.webm", "av1.mp4")
-    val PLAY_AUDIO = listOf("aac-lc.m4a", "aac-he.m4a", "aac-he-v2.m4a", "aac-he.adts", "aac-he-v2.adts", "aac-lc-22k.adts", "mp3.mp3", "opus.ogg", "flac.flac")
+    val PLAY_AUDIO = listOf("aac-lc.m4a", "aac-he.m4a", "aac-he-v2.m4a", "aac-he.adts", "aac-he-v2.adts", "aac-he-24k.adts", "aac-lc-22k.adts", "mp3.mp3", "opus.ogg", "flac.flac")
     val CODEC_VIDEO = listOf(
       "h264-high-bframes.h264" to MediaFormat.MIMETYPE_VIDEO_AVC, "hevc-main.h265" to MediaFormat.MIMETYPE_VIDEO_HEVC,
       "vp8.ivf" to MediaFormat.MIMETYPE_VIDEO_VP8, "vp9.ivf" to MediaFormat.MIMETYPE_VIDEO_VP9, "av1.ivf" to MediaFormat.MIMETYPE_VIDEO_AV1,

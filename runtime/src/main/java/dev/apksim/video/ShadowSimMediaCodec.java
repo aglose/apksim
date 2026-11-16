@@ -207,10 +207,22 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
    * macroblocks is bigger than its YUV samples). A fixed 8 MB made every video codec hold 80 MB of zero-filled native
    * memory, freed only when a GC happened to run.
    */
+  private void sizeInputs(MediaFormat format) {
+    int size = 8 << 20;
+    if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE) && format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE) > 0) {
+      size = format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE);
+    }
+    ByteBuffer[] inputs = ReflectionHelpers.getField(this, "inputBuffers");
+    for (int i = 0; i < inputs.length; i++) {
+      if (inputs[i].capacity() != size) inputs[i] = ByteBuffer.allocateDirect(size);
+    }
+  }
   /**
    * A new output format from an audio decoder that has started (HE-AAC found in the stream): what the app's next
    * dequeueOutputBuffer returns as INFO_OUTPUT_FORMAT_CHANGED in synchronous mode, or the onOutputFormatChanged callback
-   * Robolectric sends in asynchronous mode, posted before the output this input becomes.
+   * Robolectric sends in asynchronous mode, posted before the output this input becomes. In synchronous mode with a
+   * thread already blocked in dequeueOutputBuffer (Robolectric looks at the pending format before it waits), that thread
+   * gets this input's PCM first and the format change at its next call; a feed-then-drain loop gets them in order.
    */
   void outputFormatChanged(int rate, int channels) {
     MediaFormat current = ReflectionHelpers.getField(this, "outputFormat");
@@ -234,16 +246,6 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
         ReflectionHelpers.ClassParameter.from(int.class, 0), ReflectionHelpers.ClassParameter.from(Object.class, map));
   }
 
-  private void sizeInputs(MediaFormat format) {
-    int size = 8 << 20;
-    if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE) && format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE) > 0) {
-      size = format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE);
-    }
-    ByteBuffer[] inputs = ReflectionHelpers.getField(this, "inputBuffers");
-    for (int i = 0; i < inputs.length; i++) {
-      if (inputs[i].capacity() != size) inputs[i] = ByteBuffer.allocateDirect(size);
-    }
-  }
 
   @Implementation
   protected void native_setSurface(Surface surface) {
@@ -725,10 +727,12 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
     private long handle;
     private ByteBuffer input;
     private final ByteBuffer pcm = ByteBuffer.allocateDirect(1 << 16);
-    /** The configured AudioSpecificConfig, rate and channels, and whether the first frame was looked into for SBR yet. */
+    /** The configured AudioSpecificConfig, rate and channels, and how many more frames to look into for SBR (0: none). */
     private byte[] config;
     private int rate, channels;
-    private boolean sniffed;
+    private int sniffLeft;
+    /** Frames looked into for SBR at most: one may say nothing (a low-rate stream's first frame can be too short). */
+    private static final int SNIFF_FRAMES = 8;
 
     AudioDecoder(boolean mp3, ShadowSimMediaCodec codec) {
       this.mp3 = mp3;
@@ -742,7 +746,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
       ByteBuffer csd = format.getByteBuffer("csd-0");
       config = null;
-      sniffed = false;
+      sniffLeft = 0;
       if (csd != null) {
         config = new byte[csd.remaining()];
         csd.duplicate().get(config);
@@ -755,20 +759,26 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
           : outRate != rate || outChannels != channels ? "; the stream gives " + outRate + " Hz, " + outChannels + " ch (HE-AAC: SBR"
               + (outChannels != channels ? ", parametric stereo" : "") + ")" : ""));
       if (outRate != rate || outChannels != channels) outputFormat(format, outRate, outChannels);
-      // A plain AAC-LC config at up to 24 kHz may be HE-AAC signalled in the stream alone (ADTS, MPEG-TS): its first frame says.
-      sniffed = mp3 || handle == 0 || config == null || config.length != 2 || outRate != rate || rate > 24_000 || (config[0] >> 3 & 0x1f) != 2;
+      // A plain AAC-LC config at up to 24 kHz (its own rate, whatever the app's format says) may be HE-AAC signalled in
+      // the stream alone (ADTS, MPEG-TS): its first frames say.
+      boolean candidate = !mp3 && handle != 0 && config != null && config.length == 2 && outRate == rate
+          && (config[0] >> 3 & 0x1f) == 2 && explicitHe(config, false) != null;
+      sniffLeft = candidate ? SNIFF_FRAMES : 0;
     }
 
     /**
-     * The first frame of an AAC-LC stream at up to 24 kHz, looked into for SBR (implicit signalling: ADTS and MPEG-TS
-     * streams can say HE-AAC no other way). Found, the decoder is made again from the explicit config it stands for,
-     * and the app is told the new output format before any PCM, as a device's decoder tells it once it has seen SBR.
+     * A frame of an AAC-LC stream at up to 24 kHz, looked into for SBR (implicit signalling: ADTS and MPEG-TS streams can
+     * say HE-AAC no other way), the first {@link #SNIFF_FRAMES} until one shows it. Found, the decoder is made again
+     * from the explicit config it stands for, and the app is told the new output format before that frame's PCM, as a
+     * device's decoder tells it once it has seen SBR (usually at the first frame: then before any PCM at all).
      */
     private void sniff(ByteBuffer frame, int n) {
-      sniffed = true;
+      sniffLeft--;
       int k = SimAudio.nativeSniffSbr(config, frame, 0, n);
       if (k == 0) return;
+      sniffLeft = 0;
       byte[] explicit = explicitHe(config, k == 2);
+      if (explicit == null) return;
       long h = SimAudio.nativeDecoderCreate(SimAudio.AAC, rate, channels, explicit);
       if (h == 0) return;
       int outRate = SimAudio.nativeDecoderRate(h);
@@ -786,10 +796,12 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
 
     /**
      * The explicit config (ISO 14496-3 1.6.5, backward-compatible: the AAC-LC config, then the 0x2b7 sync extension with
-     * SBR at twice the rate, and 0x548 with parametric stereo) for an AAC-LC config whose stream carries SBR.
+     * SBR at twice the rate, and 0x548 with parametric stereo) for an AAC-LC config whose stream carries SBR; null when
+     * its rate is not one SBR doubles to a listed one (24 kHz down to 8 kHz: rate indices 6 to 11, doubled 3 to 8).
      */
     static byte[] explicitHe(byte[] lc, boolean ps) {
       int rateIndex = (lc[0] & 7) << 1 | (lc[1] & 0xff) >> 7;
+      if (rateIndex < 6 || rateIndex > 11) return null;
       long bits = 0;
       int n = 0;
       bits = bits << 16 | ((lc[0] & 0xff) << 8 | (lc[1] & 0xff));  // object type, rate, channels, GASpecificConfig
@@ -797,7 +809,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       bits = bits << 11 | 0x2b7;
       bits = bits << 5 | 5;  // SBR
       bits = bits << 1 | 1;
-      bits = bits << 4 | Math.max(0, rateIndex - 3);  // twice the rate
+      bits = bits << 4 | (rateIndex - 3);  // twice the rate
       n += 21;
       if (ps) {
         bits = bits << 11 | 0x548;
@@ -839,7 +851,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       if (input == null || input.capacity() < n) input = ByteBuffer.allocateDirect(Math.max(n, 1 << 14));
       input.clear();
       input.put(in).flip();
-      if (!sniffed) sniff(input, n);
+      if (sniffLeft > 0) sniff(input, n);
       int bytes = SimAudio.nativeDecode(handle, input, 0, n, pcm, Math.min(pcm.capacity(), out.capacity()));
       if (bytes < 0) {
         STATS.incrementAndGet(7);

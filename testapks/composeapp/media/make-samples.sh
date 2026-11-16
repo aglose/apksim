@@ -55,6 +55,8 @@ A=(-f lavfi -i sine=frequency=1000:sample_rate=44100:duration=1 -ac 2)
 # the frames, as with HLS and MPEG-TS radio), and a genuine 22.05 kHz AAC-LC stream, which must stay at 22050 Hz.
 "${F[@]}" "${A[@]}" -c:a aac_at -profile:a 4 -b:a 48k -f adts "$OUT/aac-he.adts"
 "${F[@]}" "${A[@]}" -c:a aac_at -profile:a 28 -b:a 32k -f adts "$OUT/aac-he-v2.adts"
+# At 24 kbps the first frame is too short to show its SBR: the decoder must look further into the stream.
+"${F[@]}" "${A[@]}" -c:a aac_at -profile:a 4 -b:a 24k -f adts "$OUT/aac-he-24k.adts"
 "${F[@]}" -f lavfi -i sine=frequency=1000:sample_rate=22050:duration=1 -ac 2 -c:a aac -b:a 48k -f adts "$OUT/aac-lc-22k.adts"
 "${F[@]}" "${A[@]}" -c:a libmp3lame -b:a 96k "$OUT/mp3.mp3"
 "${F[@]}" -f lavfi -i sine=frequency=1000:sample_rate=48000:duration=1 -ac 2 -c:a libopus -b:a 64k "$OUT/opus.ogg"

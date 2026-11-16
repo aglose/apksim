@@ -17,9 +17,8 @@ enum { CODEC_AAC = 0, CODEC_MP3 = 1 };
 
 typedef struct {
   AudioConverterRef converter;
-  int channels;    // of the PCM it gives
-  int inChannels;  // of the coded stream (HE-AAC v2: one, made two by parametric stereo)
-  int rate;        // of the PCM it gives (HE-AAC: twice its core's, the SBR layer's)
+  int channels;  // of the PCM it gives (HE-AAC v2: two, from parametric stereo on a mono core)
+  int rate;      // of the PCM it gives (HE-AAC: twice its core's, the SBR layer's)
   const uint8_t *packet;  // the access unit being decoded, fed to the converter once
   UInt32 packetBytes;
   int fed;
@@ -36,7 +35,7 @@ static OSStatus feed(AudioConverterRef c, UInt32 *packets, AudioBufferList *data
   data->mNumberBuffers = 1;
   data->mBuffers[0].mData = (void *)d->packet;
   data->mBuffers[0].mDataByteSize = d->packetBytes;
-  data->mBuffers[0].mNumberChannels = (UInt32)d->inChannels;
+  data->mBuffers[0].mNumberChannels = (UInt32)d->channels;
   if (descriptions) {
     d->description = (AudioStreamPacketDescription){0, 0, d->packetBytes};
     *descriptions = &d->description;
@@ -94,9 +93,10 @@ JNIEXPORT jlong JNICALL Java_dev_apksim_video_SimAudio_nativeDecoderCreate(JNIEn
     if (AudioFormatGetPropertyInfo(kAudioFormatProperty_FormatList, sizeof(info), &info, &size) == noErr && size >= sizeof(AudioFormatListItem)) {
       AudioFormatListItem *items = malloc(size);
       UInt32 index = 0, indexSize = sizeof(index);
-      if (AudioFormatGetProperty(kAudioFormatProperty_FormatList, sizeof(info), &info, &size, items) == noErr
+      // An item without a rate or channels (a config with a program config element) keeps the app's format.
+      if (items && AudioFormatGetProperty(kAudioFormatProperty_FormatList, sizeof(info), &info, &size, items) == noErr
           && AudioFormatGetProperty(kAudioFormatProperty_FirstPlayableFormatFromList, size, items, &indexSize, &index) == noErr
-          && index < size / sizeof(AudioFormatListItem)) {
+          && index < size / sizeof(AudioFormatListItem) && items[index].mASBD.mSampleRate > 0 && items[index].mASBD.mChannelsPerFrame > 0) {
         in = items[index].mASBD;
       }
       free(items);
@@ -111,7 +111,6 @@ JNIEXPORT jlong JNICALL Java_dev_apksim_video_SimAudio_nativeDecoderCreate(JNIEn
   AudioDecoder *d = calloc(1, sizeof(AudioDecoder));
   d->converter = converter;
   d->channels = (int)out.mChannelsPerFrame;
-  d->inChannels = (int)in.mChannelsPerFrame;
   d->rate = (int)out.mSampleRate;
   return (jlong)(intptr_t)d;
 }
@@ -123,7 +122,9 @@ static void sniffPackets(void *ref, UInt32 bytes, UInt32 packets, const void *da
 // Whether the AAC frame (raw, an AudioSpecificConfig of AAC-LC describing it) carries SBR in it, and parametric stereo:
 // implicit signalling, as every ADTS and MPEG-TS stream signals HE-AAC (their headers hold only the core). AudioToolbox's
 // own ADTS parser (the one afinfo uses) looks into the frame, given behind an ADTS header the config stands for, and
-// lists the layers it finds. 0: AAC-LC alone, 1: SBR, 2: SBR and parametric stereo.
+// lists the layers it finds. 0: AAC-LC alone (or a frame it could not read), 1: SBR, 2: SBR and parametric stereo. Some
+// frames say nothing (the first of a low-rate stream can be too short): the caller tries several. A mono core with SBR is
+// always listed with a PS layer too, so mono HE-AAC v1 cannot be told from v2 here and is taken as v2 (stereo out).
 JNIEXPORT jint JNICALL Java_dev_apksim_video_SimAudio_nativeSniffSbr(JNIEnv *env, jclass c, jbyteArray config, jobject frame, jint offset,
                                                                      jint length) {
   if ((*env)->GetArrayLength(env, config) < 2 || length <= 0 || length > 8184) return 0;
@@ -137,11 +138,12 @@ JNIEXPORT jint JNICALL Java_dev_apksim_video_SimAudio_nativeSniffSbr(JNIEnv *env
   // The frame twice behind its header: the parser wants a second sync word to trust the first.
   int frameLength = 7 + length;
   uint8_t *adts = malloc((size_t)frameLength * 2);
+  if (!adts) return 0;
   for (int k = 0; k < 2; k++) {
     uint8_t *h = adts + k * frameLength;
     h[0] = 0xff;
     h[1] = 0xf1;  // MPEG-4, layer 0, no CRC
-    h[2] = (uint8_t)(((objectType - 1) << 6) | (rateIndex << 2) | (channels >> 2));
+    h[2] = (uint8_t)(((objectType - 1) << 6) | (rateIndex << 2) | ((channels >> 2) & 1));
     h[3] = (uint8_t)(((channels & 3) << 6) | ((frameLength >> 11) & 3));
     h[4] = (uint8_t)((frameLength >> 3) & 0xff);
     h[5] = (uint8_t)(((frameLength & 7) << 5) | 0x1f);
@@ -156,7 +158,7 @@ JNIEXPORT jint JNICALL Java_dev_apksim_video_SimAudio_nativeSniffSbr(JNIEnv *env
     if (AudioFileStreamParseBytes(stream, (UInt32)frameLength * 2, adts, 0) == noErr
         && AudioFileStreamGetPropertyInfo(stream, kAudioFileStreamProperty_FormatList, &size, &writable) == noErr && size > 0) {
       AudioFormatListItem *items = malloc(size);
-      if (AudioFileStreamGetProperty(stream, kAudioFileStreamProperty_FormatList, &size, items) == noErr) {
+      if (items && AudioFileStreamGetProperty(stream, kAudioFileStreamProperty_FormatList, &size, items) == noErr) {
         for (UInt32 i = 0; i < size / sizeof(AudioFormatListItem); i++) {
           if (items[i].mASBD.mFormatID == kAudioFormatMPEG4AAC_HE_V2) found = 2;
           else if (items[i].mASBD.mFormatID == kAudioFormatMPEG4AAC_HE && found < 1) found = 1;

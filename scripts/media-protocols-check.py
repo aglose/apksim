@@ -53,7 +53,7 @@ SAME = {
     "play aac-lc.m4a": "ok", "play mp3.mp3": "ok", "play aac-he.m4a": "ok", "play aac-he-v2.m4a": "ok",
     "play aac-he.adts": "ok", "play aac-he-v2.adts": "ok", "play aac-lc-22k.adts": "ok",
     "codec h264-high-bframes.h264": "ok", "codec hevc-main.h265": "ok", "codec vp9.ivf": "ok", "codec aac-lc.adts": "ok",
-    "codec aac-he.adts": "ok", "codec aac-he-v2.adts": "ok",
+    "codec aac-he.adts": "ok", "codec aac-he-v2.adts": "ok", "codec aac-he-24k.adts": "ok", "play aac-he-24k.adts": "ok",
 }
 EXPECTED = {
     # apksim on a Mac (VideoToolbox and AudioToolbox): measured 2026-11-15.
