@@ -69,6 +69,13 @@ r = shell("settings put global 'apksim tab' \"two words\"")
 sc.check(r.get("status") == 126, f"a key with a space is refused: {r}")
 r = shell("am broadcast -a dev.apksim.testapp.SET_FLAG --es name tab --ez value true --ei n 3")
 sc.check(r.get("status") == 0 and "result=7" in r.get("out", "") and "pkg=" + a.package in r.get("out", ""), f"am broadcast reaches the app's receiver, package set: {r}")
+# Several at once to one receiver (issue 412): each is delivered and answered, and the session stays up.
+for i in range(3):
+    s.ws.send(f"shell cc{i} am broadcast -a dev.apksim.testapp.SET_FLAG --es name tab --ez value true --ei n 3")
+many = lambda: [json.loads(t[2:]) for t in s.texts if t.startswith("a ") and json.loads(t[2:]).get("id", "").startswith("cc")]
+s.pump(30, until=lambda: len(many()) >= 3)
+sc.check(len(many()) == 3 and all(m.get("status") == 0 and "result=7" in m.get("out", "") for m in many()), f"three broadcasts at once are all answered: {many()}")
+sc.check(not any(t.startswith("x ") for t in s.texts), "the session is still up after them")
 r = shell("am broadcast -a dev.apksim.testapp.NOBODY")
 sc.check(r.get("status") == 0 and "result=0" in r.get("out", ""), f"a broadcast nobody receives completes with result 0: {r}")
 # An extra whose key or value looks like -p or -n pins nothing: the broadcast still goes to the app's package alone.
