@@ -1231,18 +1231,25 @@ final class Session {
     }
   }
 
-  private synchronized void acked() {
+  private void acked() {
+    int paceAsk = ackedLocked();
+    if (paceAsk >= 0) sendStream("pace " + paceAsk + "\n");
+  }
+
+  private synchronized int ackedLocked() {
+    int paceAsk = -1;
     long[] f = flying.poll();
     if (f != null) {
       inFlight--;
       inFlightBytes -= f[1];
       long t = System.nanoTime();
       if (h264) {
-        pacer.acked(t, f[0], pingRttMs());
+        paceAsk = pacer.acked(t, f[0], pingRttMs());
       }
       ackRtts[ackCount++ % ackRtts.length] = (System.nanoTime() - f[0]) / 1e6;
     }
     notifyAll();
+    return paceAsk;
   }
 
   private synchronized int pacerKeyDrops() {
