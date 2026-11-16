@@ -16,7 +16,7 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
              [--max-upload MB] [--max-push MB] [--allow-rec] [--no-shell] [--issue-url TEMPLATE] [--inspect-network [optional]] [--inspect-max-rules N] [--inspect-forward-allow URL_PREFIX]... [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--in-flight N] [--no-network]
              [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--trust-proxy]
              [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]... [--skins DIR]...
-             [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N]
+             [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N] [--allow-share] [--max-viewers N]
 ```
 
 - `--port` (default 8080) and `--bind` (default `127.0.0.1`). Binding anywhere but loopback needs `--token`, or
@@ -61,6 +61,10 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   Off by default: kept data outlives the session it came from. One server per state folder keeps sessions (a lock on
   `serve/kept/.lock`, taken once its port is bound); another started on the same folder keeps none and deletes none
   (its tabs are told `off`), and a server with `--keep-max 0` never touches what was kept.
+- `--allow-share` and `--max-viewers N` (default 100, at most 10000): view-only links to a running session ("Shared
+  sessions", below). Off by default. Each viewer holds a socket (a file descriptor) for as long as it watches, outside
+  the 128-connection limit, so a large `--max-viewers` times `--max` sessions needs the process's descriptor limit
+  (`ulimit -n`) to allow it.
 - `--quality Q` (default 80): the JPEG quality of the stream.
 - `--bitrate KBPS` (default 4000): the H.264 stream's average bit rate (see "Stream").
 - `--in-flight N` (default 8, 1-32): the most frames in flight to a tab (below); 2 is the old fixed window.
@@ -137,6 +141,76 @@ session. It is as `apksim beam`'s saved sessions (docs/beam.md), on the server.
   the slot until it has packed and erased it; a server's sweep of leftover `ks` slots (hourly, on every server sharing the
   folder) deletes one only with that lock, unlocked by any instance and an hour untouched, and only that slot is packed, whatever
   the instance prints.
+
+### Shared sessions (`--allow-share`): view-only joiners
+
+With `--allow-share` (off by default) a session's own tab gets a link, **Copy view-only link** in the Device card, with
+which other people watch that session: `/?join=SESSION&key=KEY`. A viewer sees the screen as the tab does and can do
+nothing to it. `--max-viewers N` (default 100) is the most at once per session; viewers do not count against `--max`.
+
+- **The switch.** Sharing can be turned on and off while the server runs, with the server's token:
+  `curl -X POST -H "Authorization: Bearer $(cat TOKEN_FILE)" 'http://127.0.0.1:8080/api/share?allow=on'` (`allow=off`;
+  `GET /api/share` answers `{"allow", "maxViewers", "sessions", "viewers"}`, and `/api/status` has `share`). Turned
+  on, every running session's tab is told its key (`d {"share": KEY, "maxViewers": N}`) and shows the button; a session
+  need not restart. Turned off, every viewer is told "sharing was turned off" and dropped, each tab is told it has no
+  link (`d {"share": ""}`), and every session takes a new key, so a link given out before stays dead when sharing comes
+  back: off and on again is how to revoke every link at once. `--max-viewers` is fixed at the server's start. Whoever has
+  the token can turn the switch (the token already starts and drives every session), so `--allow-share` left out is a
+  default, not a lock.
+- **What the link is.** `KEY` is 128 random bits made for that session and told only to its own tab (the `i` message's
+  `share`). The link opens two things without the server's token: the page, and that session's viewer socket
+  (`/ws?join=SESSION&key=KEY`). Nothing else: every `/api` route still needs the token, and the Origin rules for
+  WebSockets hold for a join too. It works until the session ends or sharing is turned off (the switch, below); there is no
+  way yet to revoke one session's link alone or to make a second link. Anyone who has the link sees everything on that screen, typed text included: give it out as you would
+  share your screen.
+- **What a viewer may send**: `ack` (it acknowledges frames as a tab does), `key` (its decoder lost its place) and `t`
+  (clock). Everything else is answered `r refused: this link only watches the session` (the first eight times): no
+  touch, key or device command, no `shell`, `rec`, `inspect`, file push or `handoff`. The viewer page sends none.
+- **What it gets**: `i {"id", "viewer": true, "app", "device"}`, `c h264|jpeg`, the frames, `d {"viewers": N}` whenever
+  the number watching changes (the session's tab hears the same; the page shows "N watching"), and `x REASON` when the
+  session ends, it is dropped, or every place is taken. A viewer joining a still screen gets it at once: the last JPEG,
+  or a keyframe asked of the instance.
+- **One stream for all.** The frames are the ones the instance encodes for the session's tab, handed to every viewer:
+  no second encode, and the instance does not know viewers exist. So the codec is the tab's (a viewer whose browser
+  cannot decode H.264 is told so and sees nothing: start the session with `?codec=jpeg`, or serve with `--codec jpeg`,
+  for such viewers), and the frame rate is the tab's: a tab too slow for the app paces the stream for everyone
+  (issue 232). The one exception is a hidden tab's `maxfps 1`, which is held back while anyone watches, so a presenter
+  switching tabs does not freeze the picture, and applied when the last viewer leaves.
+- **A viewer never slows the tab or another viewer.** Each has its own queue, its own window of four frames in flight
+  and its own sender thread. JPEG: the newest frame replaces one still waiting. H.264: a viewer more than eight frames
+  behind drops them and takes up again at the next keyframe, asked of the instance at most once a second for all
+  viewers together; one that keeps falling behind asks only every two seconds, so a viewer that cannot keep up with the
+  stream sees a picture every second or two rather than a smooth one (a keyframe costs every watcher its size). One
+  that acknowledges nothing for 30 s is dropped (`x this viewer stopped receiving the screen`). Frames are handed out
+  by a few threads apart from the one that serves the tab (`Viewers`: offering a frame wakes a viewer's sender, ~7 us,
+  and a thousand viewers at 120 frames a second took the tab's thread whole).
+- **Idle and the end.** Watching is not input: a session nobody drives still stops after `--idle`. When it ends, for
+  any reason, every viewer is told and its link stops working (403).
+- `/api/status` gives each session `viewers`: `count`, `max`, `joined`, `framesSent`, `mbSent`, `keyDrops`,
+  `keysAsked`, `stalled`, and `fanoutMs` (time spent handing frames out).
+- Not on `apksim beam` (a session on a visitor's own Mac has no server to join it at).
+
+Measured 2026-11-15 on a 12-core Mac with the viewers on the same machine (`scripts/share-check.py`, the test app's
+Shader tab at 120 fps, H.264 at 4000 kbps, `scripts/share-swarm.java` reading and acknowledging without decoding; the
+machine was under memory pressure, so take these as floors):
+
+| viewers | frames a second each | sent in all | serve's CPU | first frame (median / worst) |
+|---|---|---|---|---|
+| 100 | 120 | 0.35 Gbit/s | 0.6 cores | 0.9 s / 1.0 s |
+| 300 | 120 | 1.1 Gbit/s | 1.7 cores | 0.6 s / 1.0 s |
+| 600 | 95 | 2.3 Gbit/s | 2.5 cores | 0.6 s / 1.0 s |
+| 1000 | 113 (60 in another run) | 4.0 Gbit/s | 3.9 cores | 0.6 s / 1.0 s |
+
+The serve process stayed under 200 MB (its heap is 256 MB: frames are shared, not copied per viewer). The instance's
+own cost did not change with viewers (0.5-0.8 cores). Where the rate fell below 120 it was the check's own tab, a
+Python loop on the saturated machine, falling behind and pacing the stream: viewers and server were not the limit, and
+the numbers past 300 need the viewers on other machines to mean more. A first frame takes up to a second when many
+join together, since they share one keyframe a second; a single joiner gets it in ~10 ms. With many joining within
+milliseconds serve's limit of 128 connections not yet upgraded refuses some (the swarm joins two milliseconds apart).
+
+Not done: a link that expires or can be revoked alone (turning sharing off revokes all), a second role (handing control to a viewer), viewers' cursors, the
+skin's frame in the viewer page, a JPEG stream beside an H.264 one for browsers that need it, a rate of their own for
+slow viewers (it would take a second encode), and a check with viewers on other machines or a real network.
 
 ### When a session ends badly
 
@@ -510,7 +584,11 @@ that no deep link names, data entered).
   A tab's `shell` message ("Shell commands" above) is not that device: four allowlisted commands for the session's own
   app, checked in the instance, off with `--no-shell`.
   In a container, only serve's port is published.
-- At most 128 connections at once (open sessions' included), taken before anything is allocated for one; a request's
+- With `--allow-share`, a session's link (`/?join=ID&key=KEY`, 128 random bits, told to that session's tab alone) lets
+  its holder load the page and watch that one session without the token, until the session ends; it opens no `/api`
+  route and a viewer's socket takes no input ("Shared sessions" above). Whoever has it sees that screen.
+- At most 128 connections at once (open sessions' included; not viewers' sockets once joined, which `--max-viewers`
+  bounds per session), taken before anything is allocated for one; a request's
   head must arrive within 10 s in all, so idle or trickling connections cannot use up memory or descriptors. (They
   can still keep others out while they last: put a server open to the internet behind a proxy that limits per client.)
 - The page cannot be framed by another site (`frame-ancestors 'none'`, `X-Frame-Options: DENY`): no clickjacking of
@@ -608,6 +686,15 @@ a drag gives delta frames only, a `key` request on a still screen brings a keyfr
 gets at most two frames, and once it acknowledges again the stream resumes at a keyframe. It prints the numbers
 below.
 `scripts/ci-smoke.sh` runs it against the Linux image with a token on a non-loopback bind, as CI does.
+`scripts/share-check.py URL [--token FILE] [--viewers 200] [--server-max N] [--stall]` checks shared sessions against a
+server started with `--allow-share`: the link's rules (a wrong key, another session's key, another Origin, an ended
+session; no token needed, nothing else opened), one viewer (the still screen at once, the tab's frames byte for byte,
+every input and command refused, the count told, a hidden tab not freezing it), then `--viewers` at once, a few of them
+slow: each must get a first frame, a keyframe first, a chain with a keyframe after anything it missed, and the stream's
+frame rate, while the tab keeps its own. The viewers are `scripts/share-swarm.java` (a thread each, on the build's JDK:
+a thousand) or, with `--swarm python`, the script's own processes (CI: 40 against the Linux image). `--server-max N`
+checks the place past `--max-viewers`, `--stall` that a viewer acknowledging nothing is dropped after 30 s,
+`--server-pid PID` reports serve's CPU, `--off` that a server without the option shares nothing.
 `scripts/kept-check.py URL --state DIR [--token FILE]` checks kept sessions against a server started with
 `--keep-max N --max 2` or more (DIR is its state folder, where it looks at the running app's data slot): a key's
 pushed files and /sdcard are there for the next session on that key and not for another key, a key in use gives `busy`

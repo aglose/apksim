@@ -501,7 +501,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   Chrome), `beam-move-check.py` (a running session moved between the server and this Mac with no blank frame, and
   with its data, in Chrome), `beam-launchd-check.py` (the launchd agent's jobs and its socket-activated start and idle exit, with a
   stand-in for launchd; `--real` installs a test LaunchAgent),
-  `skin-check.py` (`apksim skin` against a frame drawn with a known hole), `rec-check.py` (the flight recorder against the test app and the network fixture: every channel, a checkpoint read
+  `skin-check.py` (`apksim skin` against a frame drawn with a known hole), `share-check.py` and `share-swarm.java` (a
+  shared serve session's view-only link and many viewers at once, see "apksim serve"), `rec-check.py` (the flight recorder against the test app and the network fixture: every channel, a checkpoint read
   back, the saved bundle, a crash bundle), `replay-adb.py` (a flight recording replayed on a device over adb, shipped in
   releases; `replay-adb-check.py` checks its plan on a synthetic bundle, no device), `beam-device-check.py` (`apksim beam
   to-device` against a stand-in `adb` and a temporary state folder), `tabfiles-check.py` (a tab's file pushes and their
@@ -1318,7 +1319,7 @@ Not supported: other apps beside the running one, split APKs (`install-multiple`
 `logcat -B`. Bound to loopback, or to the `--control-bind` address (containers). The adb server only discovers emulator ports at its own start, so use `adb connect`, not port 5555.
 
 ## apksim serve (APKs in a browser tab)
-`./apksim serve [--port 8080] [--bind ADDR] [--token FILE] [--max 4] [--idle 600] [--apps DIR|FILE]... [--max-upload MB]`:
+`./apksim serve [--port 8080] [--bind ADDR] [--token FILE] [--max 4] [--idle 600] [--apps DIR|FILE]... [--max-upload MB] [--allow-share]`:
 an HTTP server whose page (one self-contained file) runs a listed or uploaded APK per tab and streams it; docs/serve.md
 is the spec, the security model and the measurements. Each tab is an ordinary launch (`--headless --fresh --control
 auto`, warm on the Mac when the standby is ready, cold on Linux), read from its stderr (`[apksim] control port N`;
@@ -1378,6 +1379,25 @@ with a kept session) whose port the tab hears as `d {"adb": PORT}`. The page has
 `scripts/shell-page-check.py URL` (the card, in Chrome), `scripts/beam-check.py APK --only adb` (the beam side, with the
 `adb` client when there is one). AdbServer now closes a connection whose packet header is not adb's (the command's
 complement in its last word), so a browser's request to the port is never read as a command.
+Shared sessions (docs/serve.md "Shared sessions"): with `--allow-share` (off by default) a session's tab is told a key
+(`i`'s `share`) and its link `/?join=ID&key=KEY` lets others watch, view only, without the server's token (the page and
+`/ws?join=` only; `Serve.joinTarget`, `joinSocket`); `--max-viewers N` (100) a session. `serve/Viewers`: every frame
+`Session.readFrames` reads is handed to the viewers too (the same bytes: no second encode or instance stream), by a
+few shard threads, never the tab's reader thread (waking a viewer's sender is ~7 us: a thousand viewers at 120 fps took
+that thread and the tab's frame rate); each viewer has its own queue, window of 4 frames in flight and sender thread,
+drops to the next keyframe when 8 behind (asked of the instance at most once a second for all), and is dropped after
+30 s without an ack. A viewer may send only `ack`, `key` and `t`. The tab's `maxfps` under 30 (a hidden tab's 1) is
+held back while anyone watches. Viewers' sockets give their place among the 128 connections back once joined.
+`scripts/share-check.py URL [--token FILE] [--viewers N] [--server-max N] [--stall] [--off]` checks the rules, one
+viewer and N at once (`scripts/share-swarm.java`, a thread each, or `--swarm python`; CI: 40 in `ci-smoke.sh`); a frame's
+time is not its order (a picture sent again on request carries the time it was sent), so the chain check orders frames
+by the viewer that got the most. Measured on one Mac, viewers included: 300 at 120 fps with serve at 1.7 cores, 1,000 at
+60-113 fps and 4 Gbit/s with serve at 3.9 cores, the check's own Python tab being what fell behind. The switch: `POST /api/share?allow=on|off`
+(token; `GET` for the state) turns sharing on or off while the server runs (`Serve.setShare`; every non-beam session has
+a `Viewers` whether or not the server shares): on, each running tab hears `d {"share": KEY}`; off, viewers are dropped
+("sharing was turned off"), tabs hear `d {"share": ""}` and each session takes a new key, so old links stay dead
+(share-check.py turns it both ways; `--no-switch` leaves a server others watch alone). Not done: revoking
+one link, handing control over, a JPEG side stream, viewers on other machines.
 Kept sessions (issue 221, docs/serve.md "Kept sessions"): with `--keep-max N` (0 by default, off) and `--keep-days N`
 (14), `/ws?keep=KEY` runs the app in a seed slot (`ks<hex>-0`, which beam's sweep never takes) of the server's naming and, when the session ends, packs
 it with SlotPack into `STATE/serve/kept/<HMAC of KEY under the token>/<package>/` (`KeptStore`); the next session with

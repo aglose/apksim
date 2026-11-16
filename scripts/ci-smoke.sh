@@ -560,7 +560,7 @@ python3 "$ROOT/scripts/serve-check.py" "http://127.0.0.1:$SERVE2_PORT" --token "
 # Kept sessions (issue 221): a third serve that keeps them; the check reads the running app's slot inside the container.
 SERVE3_NAME=apksim-serve-kept-$$ SERVE3_PORT=7404
 docker run -d --name "$SERVE3_NAME" --platform "$PLATFORM" -p "127.0.0.1:$SERVE3_PORT:8080" -v "$OUT:/work" "$IMAGE" \
-  serve --bind 0.0.0.0 --token /work/serve.token --apps /work/app.apk --max 3 --keep-max 10 >/dev/null
+  serve --bind 0.0.0.0 --token /work/serve.token --apps /work/app.apk --max 3 --keep-max 10 --allow-share --max-viewers 44 >/dev/null
 trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/dev/null 2>&1 || true
   docker logs "$SERVE_NAME" > "$OUT/serve.log" 2>&1 || true
   docker cp "$SERVE_NAME:/opt/apksim/work/serve/logs" "$OUT/serve-sessions" >/dev/null 2>&1 || true
@@ -572,6 +572,10 @@ trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/
 for _ in $(seq 1 60); do curl -sf -H "Authorization: Bearer $(cat "$OUT/serve.token")" "http://127.0.0.1:$SERVE3_PORT/api/health" >/dev/null && break; sleep 1; done
 python3 "$ROOT/scripts/kept-check.py" "http://127.0.0.1:$SERVE3_PORT" --token "$OUT/serve.token" --state /opt/apksim/work \
   --exec "docker exec $SERVE3_NAME" | tee "$OUT/kept-check.log"
+# Shared sessions: a session's view-only link, its rules, and 40 viewers at once (the limit is 44: one more is refused).
+python3 "$ROOT/scripts/share-check.py" "http://127.0.0.1:$SERVE3_PORT" --token "$OUT/serve.token" --swarm python \
+  --viewers 40 --seconds 6 --server-max 44 | tee "$OUT/share-check.log"
+python3 "$ROOT/scripts/share-check.py" "http://127.0.0.1:$SERVE_PORT" --token "$OUT/serve.token" --off | tee -a "$OUT/share-check.log"
 python3 "$ROOT/scripts/trace-viewer-check.py" --csp-only
 fi  # serve
 echo "smoke test passed (parts: ${SMOKE_PARTS:-all})"
