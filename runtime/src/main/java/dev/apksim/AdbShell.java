@@ -837,7 +837,8 @@ final class AdbShell {
         // (the Android CLI asks its instrumentation server for its version and socket this way).
         // One at a time from the threads' side (issue 412): two ordered broadcasts in flight to one registered receiver
         // share its object, and Robolectric keeps the PendingResult on it, so the second finish() found "Broadcast
-        // already finished" and the uncaught exception ended the app. Not taken on the main thread, which waits by
+        // already finished" and the uncaught exception ended the app. ShadowSimBroadcastReceiver now keeps a result per
+        // delivery (issue 452); the lock stays, as sends from several threads can still pair them wrongly. Not taken on the main thread, which waits by
         // running the queue a holder on another thread needs, so a main-thread broadcast overlapping a thread's is not
         // serialized; and a broadcast whose 10 s wait times out lets the next one go while it may still be in flight.
         if (!main) BROADCASTS.lock();

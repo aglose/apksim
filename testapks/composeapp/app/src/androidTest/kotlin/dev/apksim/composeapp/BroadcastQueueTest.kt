@@ -22,12 +22,14 @@ class BroadcastQueueTest {
   private val instrumentation = InstrumentationRegistry.getInstrumentation()
   private val context: Context = instrumentation.targetContext
 
-  private fun twice(action: String, send: (Context, Intent) -> Unit) {
+  private fun twice(action: String, sticky: Boolean = false, send: (Context, Intent) -> Unit) {
     val got = ArrayList<String>()
     val receiver = object : BroadcastReceiver() {
-      override fun onReceive(c: Context, i: Intent) { got += i.getStringExtra("n") ?: "?" }
+      override fun onReceive(c: Context, i: Intent) { if (i.action == action) got += i.getStringExtra("n") ?: "?" }
     }
-    context.registerReceiver(receiver, IntentFilter(action), null, Handler(Looper.getMainLooper()), Context.RECEIVER_EXPORTED)
+    val filter = IntentFilter(action)
+    if (sticky) filter.addAction(Intent.ACTION_BATTERY_CHANGED)
+    context.registerReceiver(receiver, filter, null, Handler(Looper.getMainLooper()), Context.RECEIVER_EXPORTED)
     try {
       instrumentation.runOnMainSync {
         send(context, Intent(action).setPackage(context.packageName).putExtra("n", "1"))
@@ -47,4 +49,31 @@ class BroadcastQueueTest {
   @Test fun twoPlainBroadcastsAreBothDelivered() = twice("dev.apksim.testapp.QUEUE_PLAIN") { c, i -> c.sendBroadcast(i) }
 
   @Test fun twoOrderedBroadcastsAreBothDelivered() = twice("dev.apksim.testapp.QUEUE_ORDERED") { c, i -> c.sendOrderedBroadcast(i, null) }
+
+  private fun withResultReceiver(action: String, sticky: Boolean, plainFirst: Boolean) {
+    val finals = ArrayList<String>()
+    val last = object : BroadcastReceiver() {
+      override fun onReceive(c: Context, i: Intent) { finals += i.getStringExtra("n") ?: "?" }
+    }
+    var sent = 0
+    twice(action, sticky) { c, i ->
+      if (plainFirst && sent++ == 0) c.sendBroadcast(i)
+      else c.sendOrderedBroadcast(i, null, last, Handler(Looper.getMainLooper()), 0, null, null)
+    }
+    val want = if (plainFirst) listOf("2") else listOf("1", "2")
+    val deadline = System.currentTimeMillis() + 10_000
+    while (finals.size < want.size && System.currentTimeMillis() < deadline) {
+      instrumentation.waitForIdleSync()
+      Thread.sleep(20)
+    }
+    assertEquals(want, finals.toList())
+  }
+
+  /** A sticky broadcast handed over at registration must not shift the results of later deliveries. */
+  @Test fun orderedBroadcastsAfterAStickyOneReachTheirResultReceivers() =
+    withResultReceiver("dev.apksim.testapp.QUEUE_STICKY", sticky = true, plainFirst = false)
+
+  /** A plain broadcast queued ahead of an ordered one must not take the ordered one's result. */
+  @Test fun aPlainBroadcastAheadOfAnOrderedOneLeavesItsResultAlone() =
+    withResultReceiver("dev.apksim.testapp.QUEUE_MIXED", sticky = false, plainFirst = true)
 }
