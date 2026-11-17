@@ -17,14 +17,23 @@ import org.robolectric.util.ReflectionHelpers.ClassParameter;
  * "always assign focus" compatibility flag following the app rather than the process's first window ({@link #start}).
  *
  * <p>The mode is the display's: the window session's answer for windows added later (ADD_FLAG_IN_TOUCH_MODE), and
- * every window already up is told, as the window manager's touchModeChanged tells them. A device without a
- * touchscreen (TV) starts out of touch mode. {@code -Dapksim.touchMode=false} leaves Robolectric's state alone.
+ * every window already up is told at once (a device tells the focused window, and the others as they gain focus:
+ * Host gives running instances' windows no focus to hang that on). A device without a touchscreen (TV) starts out of
+ * touch mode, at launch and when the `device` command switches to one. {@code -Dapksim.touchMode=false} leaves Robolectric's state alone.
  */
 final class TouchMode {
   private TouchMode() {}
 
+  /** Set once a private ViewRootImpl member this needs is missing (another framework level): off from then on. */
+  private static volatile boolean broken;
+
   static boolean on() {
-    return !"false".equals(System.getProperty("apksim.touchMode"));
+    return !broken && !"false".equals(System.getProperty("apksim.touchMode"));
+  }
+
+  private static void gaveUp(Throwable t) {
+    broken = true;
+    System.err.println("[apksim] touch mode no longer followed: " + t);
   }
 
   /** Before any window exists (each launch, each test's setup, once the Application is up): the device's starting mode. */
@@ -44,6 +53,16 @@ final class TouchMode {
 
   static boolean get() {
     return ShadowWindowManagerGlobal.getInTouchMode();
+  }
+
+  /** The `device` command switched kinds: a TV is out of touch mode until touched, any other device in it. */
+  static void deviceChanged(Device now) {
+    if (!on()) return;
+    try {
+      force(!now.tv());
+    } catch (RuntimeException e) {
+      gaveUp(e);
+    }
   }
 
   /**
@@ -72,7 +91,12 @@ final class TouchMode {
     boolean same = get() == inTouch;
     // A window may have switched by itself (View.requestFocusFromTouch): the framework's own switch is local here.
     for (View r : Host.rootViews()) same &= r.getViewRootImpl() == null || r.isInTouchMode() == inTouch;
-    if (!same) force(inTouch);
+    if (same) return;
+    try {
+      force(inTouch);
+    } catch (RuntimeException e) {
+      gaveUp(e);
+    }
   }
 
   /** As {@link #set}, whatever the switch and the current mode say (the `touchmode` command). */
@@ -95,10 +119,15 @@ final class TouchMode {
   static boolean key(View root, KeyEvent event) {
     ViewRootImpl vri = root.getViewRootImpl();
     if (!on() || vri == null || !root.isInTouchMode()) return false;
-    boolean consumed = ReflectionHelpers.callInstanceMethod(vri, "checkForLeavingTouchModeAndConsume",
-        ClassParameter.from(KeyEvent.class, event));
-    if (!root.isInTouchMode()) force(false);  // the display's mode: the other windows, and those added from now on
-    return consumed;
+    try {
+      boolean consumed = ReflectionHelpers.callInstanceMethod(vri, "checkForLeavingTouchModeAndConsume",
+          ClassParameter.from(KeyEvent.class, event));
+      if (!root.isInTouchMode()) force(false);  // the display's mode: the other windows, and those added from now on
+      return consumed;
+    } catch (RuntimeException e) {
+      gaveUp(e);
+      return false;
+    }
   }
 
   /**

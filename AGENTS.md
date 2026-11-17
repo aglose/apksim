@@ -687,7 +687,8 @@ window's clicks) enters it, and a navigation key (Tab, D-pad) or a typing key (`
 keyboard's keys, as `adb shell input text`) leaves it, through ViewRootImpl's own `checkForLeavingTouchModeAndConsume`,
 which Host's direct dispatch to the views bypassed; every window is told (`ensureTouchModeLocally`), and the window
 session's answer for later windows set (not through IWindowManager.setInTouchMode, which Robolectric's stand-in drops). A
-TV starts out of touch mode. `TouchMode.start` (each launch and test setup, once the Application is up) also clears
+TV starts out of touch mode (`--device tv`, and a `device` switch to or from one); pasted text (`paste`, Cmd+V) keeps
+touch mode, as text an IME commits does (FLAG_KEEP_TOUCH_MODE). `TouchMode.start` (each launch and test setup, once the Application is up) also clears
 ViewRootImpl's `sCompatibilityDone`: the framework decides once per process, from its first window's app, whether focus is
 always assigned (`sAlwaysAssignFocus`, targetSdk below 28), and in a warm launch that window was the standby's warm-up's,
 so every warm launch gave the first text field focus at launch and whenever a window gained focus with none (a resume,
