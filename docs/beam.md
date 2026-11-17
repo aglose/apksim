@@ -1021,7 +1021,7 @@ Mac reaches them directly and anonymously (CI artifacts), and the page knows tha
 - **Network hosts (issue 429).** A start's `options` may carry `--network-host HOST=ADDR[:PORT]` (an app's host sent to
   another server) only to an address the Mac's owner listed: `apksim beam config allow-host ADDR[:PORT]` (and
   `disallow-host`), kept in `STATE/beam/hosts.json` and read at every start, none by default. `--network-trust
-  inline:BASE64` carries the server's certificate itself, never a file of the Mac. `GET /beam/hello`'s `options` lists both.
+  inline:BASE64` carries the server's certificate itself, never a file of the Mac. `GET /beam/hello`'s `options` lists both. `/beam/hello` also says `"hosts": [TARGETS]` to a trusted site (`[]` to any other, as `loopback`), so a page can tell before a start whether a `--network-host` target is accepted, and `"maxBroadcasts"`, the most `--broadcast` options a start may carry (issue 441).
 
 - **The owner allows it**: `apksim beam config allow-download https://artifacts.example.com/builds/` (and
   `disallow-download`), kept in `STATE/beam/downloads.json` and read at every start, so it takes effect without a

@@ -622,6 +622,8 @@ def loopback_checks(apksim, apk):
         check(h.get("loopback") == [], f"loopback: hello tells a site that is not trusted nothing ({h.get('loopback')})")
         h = json.loads(req(gp, "GET", "/beam/hello", origin)[2])
         check(h.get("loopback") == sorted({p1, p2}), f"loopback: hello reports the ports to a trusted site ({h.get('loopback')})")
+        check(h.get("hosts") == [] and isinstance(h.get("maxBroadcasts"), int) and h["maxBroadcasts"] > 0,
+              f"hello: hosts (none allowed) and maxBroadcasts ({h.get('hosts')}, {h.get('maxBroadcasts')})")
         # The agent's standby carries the ports (its name and its profile), so launches with them are warm.
         deadline, found = time.time() + 30, False
         while time.time() < deadline and not found:
