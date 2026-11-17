@@ -1069,6 +1069,7 @@ final class NetEngine {
           if (over[0]) throw new IOException("a request body over " + Inspector.FORWARD_BODY_MAX + " bytes is not forwarded");
           // A name that did not resolve, or that stands for a recorded or mapped host, has a placeholder address here
           // (NetResolver): no server is there, and the client would wait out its connect timeout.
+          // (Not when the agent sends it, issue 426: it resolves on the Mac, which this process's resolver says nothing of.)
           String dest = rule.forward;
           if (rule.rebase) {
             dest = Inspector.rebaseUrl(rule.forward, req.url);
@@ -1077,65 +1078,36 @@ final class NetEngine {
           String fh = java.net.URI.create(dest).getHost();
           if (fh.startsWith("[") && fh.endsWith("]")) fh = fh.substring(1, fh.length() - 1);
           try {
-            if (NetResolver.hostFor(java.net.InetAddress.getByName(fh).getHostAddress()) != null) throw new java.net.UnknownHostException(fh);
+            if (!ForwardLink.on && NetResolver.hostFor(java.net.InetAddress.getByName(fh).getHostAddress()) != null) throw new java.net.UnknownHostException(fh);
           } catch (java.net.UnknownHostException e) {
             throw new IOException("unable to resolve host " + fh + " (replaying or with --network-host, name the upstream by address)");
           }
-          java.net.http.HttpRequest.Builder b = java.net.http.HttpRequest.newBuilder(java.net.URI.create(dest))
-              .version(java.net.http.HttpClient.Version.HTTP_1_1).timeout(java.time.Duration.ofSeconds(30))
-              .method(req.method, req.hasBody ? java.net.http.HttpRequest.BodyPublishers.ofByteArray(whole.toByteArray())
-                  : java.net.http.HttpRequest.BodyPublishers.noBody());
+          List<String[]> sent = new ArrayList<>();
           for (String[] h : req.headers) {
             String n = h[0].toLowerCase(Locale.ROOT);
             if (HOP_HEADERS.contains(n) || n.startsWith("proxy-") || n.startsWith("x-apksim-") || Net.redact.contains(n)) continue;
-            try {
-              b.header(h[0], h[1]);
-            } catch (IllegalArgumentException e) {
-              // a name or value the client will not send: left out
-            }
+            sent.add(h);
           }
-          b.header("X-Apksim-Original-Url", req.url);
-          java.net.http.HttpResponse<InputStream> r = forwardClient().send(b.build(), java.net.http.HttpResponse.BodyHandlers.ofInputStream());
-          status = r.statusCode();
-          // The answer is held in memory: at most FORWARD_BODY_MAX of it, read within 60 s in all, else a 502.
-          ByteArrayOutputStream got = new ByteArrayOutputStream();
-          long deadline = System.nanoTime() + 60_000_000_000L;
-          // The client's own timeout ends with the headers: a body that stalls would block the read below for good, so a
-          // watchdog closes it at the deadline (the read then throws, and the answer is a 502).
-          InputStream rbody = r.body();
-          java.util.Timer watchdog = new java.util.Timer("apksim-net-forward-watchdog", true);
-          watchdog.schedule(new java.util.TimerTask() {
-            @Override
-            public void run() {
-              try {
-                rbody.close();
-              } catch (IOException ignored) {
-                // closing is the point
-              }
-            }
-          }, 60_000L);
-          try (InputStream in = rbody) {
-            byte[] buf = new byte[64 * 1024];
-            for (int n; (n = in.read(buf)) > 0; ) {
-              if (got.size() + n > Inspector.FORWARD_BODY_MAX) throw new IOException("the upstream's answer is over " + Inspector.FORWARD_BODY_MAX + " bytes");
-              if (System.nanoTime() > deadline) throw new IOException("the upstream's answer took over 60 s");
-              got.write(buf, 0, n);
-            }
-          } finally {
-            watchdog.cancel();
-          }
-          body = got.toByteArray();
+          sent.add(new String[] {"X-Apksim-Original-Url", req.url});
+          byte[] sentBody = req.hasBody ? whole.toByteArray() : null;
+          // In a beam session (issue 426) the agent sends it: the app's sandbox cannot reach the Mac's loopback.
+          ForwardSend.Result r = ForwardLink.on ? ForwardLink.fetch(req.method, dest, sent, sentBody)
+              : ForwardSend.send(req.method, dest, sent, sentBody, Inspector.FORWARD_BODY_MAX);
+          status = r.status();
+          body = r.body();
           boolean head = req.method.equals("HEAD");
-          r.headers().map().forEach((name, values) -> {
-            String n = name.toLowerCase(Locale.ROOT);
+          boolean lengthSent = false;
+          for (String[] h : r.headers()) {
+            String n = h[0].toLowerCase(Locale.ROOT);
             // A HEAD's Content-Length is the size a GET would have: passed on (no body follows either way).
-            if (head && n.equals("content-length") && values.size() == 1 && values.get(0).matches("[0-9]{1,18}")) {
-              headers.add(new String[] {"Content-Length", values.get(0)});
-              return;
+            if (head && n.equals("content-length") && !lengthSent && h[1].matches("[0-9]{1,18}")) {
+              lengthSent = true;
+              headers.add(new String[] {"Content-Length", h[1]});
+              continue;
             }
-            if (HOP_HEADERS.contains(n) || n.startsWith(":") || n.startsWith("proxy-") || n.equals("x-apksim-rule")) return;
-            for (String v : values) headers.add(new String[] {name, v});
-          });
+            if (HOP_HEADERS.contains(n) || n.startsWith(":") || n.startsWith("proxy-") || n.equals("x-apksim-rule")) continue;
+            headers.add(new String[] {h[0], h[1]});
+          }
         } catch (InterruptedException e) {
           Thread.currentThread().interrupt();
           throw new IOException("interrupted while forwarding");
@@ -1392,23 +1364,6 @@ final class NetEngine {
   /** Headers that belong to one connection, not to the request or answer a forward rule passes on. */
   private static final java.util.Set<String> HOP_HEADERS = java.util.Set.of("host", "content-length", "connection", "keep-alive",
       "transfer-encoding", "te", "trailer", "upgrade", "expect", "http2-settings");
-  private static java.net.http.HttpClient forwardClient;
-
-  /** The client forward rules send with: no redirects followed, its threads apksim's (daemons, named so). */
-  private static synchronized java.net.http.HttpClient forwardClient() {
-    if (forwardClient == null) {
-      java.util.concurrent.atomic.AtomicInteger n = new java.util.concurrent.atomic.AtomicInteger();
-      forwardClient = java.net.http.HttpClient.newBuilder().followRedirects(java.net.http.HttpClient.Redirect.NEVER)
-          .connectTimeout(java.time.Duration.ofSeconds(10))
-          .executor(java.util.concurrent.Executors.newCachedThreadPool(r -> {
-            Thread t = new Thread(r, "apksim-net-forward-" + n.incrementAndGet());
-            t.setDaemon(true);
-            return t;
-          })).build();
-    }
-    return forwardClient;
-  }
-
   static final class Request {
     String method, target, version, url;
     final List<String[]> headers = new ArrayList<>();

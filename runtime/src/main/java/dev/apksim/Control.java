@@ -76,6 +76,11 @@ final class Control {
           dev.apksim.net.TabRelay.serve(in, out);
           return;
         }
+        if (args[0].equals("fwdwatch")) {
+          // fwdwatch: this connection is the link by which the beam agent sends forward rules' requests (dev.apksim.net.ForwardLink).
+          dev.apksim.net.ForwardLink.serve(in, out);
+          return;
+        }
         if (args[0].equals("hostwatch")) {
           // hostwatch: this connection hears of the web links the app opens outside itself, `o URL [REDIRECT]` (HostLinks).
           HostLinks.serve(in, out);

@@ -52,33 +52,38 @@ final class BeamStore {
    * (`off` by default): the network inspector shows the page that started a session the app's traffic. `on`: every session
    * runs it; `optional` (issue 371): a start that asks (`/beam/start`'s `"inspect": true`) gets it, the others do not.
    */
-  record Config(double keepDays, boolean saveSessions, double keepSavedDays, String rec, String inspectNetwork, boolean allowAdb, String allowLoopback) {
-    static final Config DEFAULT = new Config(2, false, DEFAULT_KEEP_SAVED_DAYS, "input", "off", false, "");
+  record Config(double keepDays, boolean saveSessions, double keepSavedDays, String rec, String inspectNetwork, boolean allowAdb, List<String> forwardAllow, String allowLoopback) {
+    static final Config DEFAULT = new Config(2, false, DEFAULT_KEEP_SAVED_DAYS, "input", "off", false, List.of(), "");
 
     Config(double keepDays, boolean saveSessions, double keepSavedDays) {
-      this(keepDays, saveSessions, keepSavedDays, DEFAULT_REC, "off", false, "");
+      this(keepDays, saveSessions, keepSavedDays, DEFAULT_REC, "off", false, List.of(), "");
     }
 
     Config withRec(String r) {
-      return new Config(keepDays, saveSessions, keepSavedDays, r, inspectNetwork, allowAdb, allowLoopback);
+      return new Config(keepDays, saveSessions, keepSavedDays, r, inspectNetwork, allowAdb, forwardAllow, allowLoopback);
     }
 
     Config withInspect(String mode) {
-      return new Config(keepDays, saveSessions, keepSavedDays, rec, mode, allowAdb, allowLoopback);
+      return new Config(keepDays, saveSessions, keepSavedDays, rec, mode, allowAdb, forwardAllow, allowLoopback);
     }
 
     Config withAdb(boolean on) {
-      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, on, allowLoopback);
+      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, on, forwardAllow, allowLoopback);
     }
 
     Config withLoopback(String ports) {
-      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, allowAdb, ports);
+      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, allowAdb, forwardAllow, ports);
+    }
+
+    Config withForwardAllow(List<String> prefixes) {
+      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, allowAdb, List.copyOf(prefixes), allowLoopback);
     }
 
     String describe() {
       return "keep-days " + num(keepDays) + ", save-sessions " + (saveSessions ? "on" : "off") + ", keep-saved-days "
           + (keepSavedDays < 0 ? "never" : num(keepSavedDays)) + ", rec " + rec
           + ", inspect-network " + inspectNetwork + ", allow-adb " + (allowAdb ? "on" : "off")
+          + ", forward-allow " + (forwardAllow.isEmpty() ? "none" : String.join(" ", forwardAllow))
           + ", allow-loopback " + (allowLoopback.isEmpty() ? "off" : allowLoopback);
     }
   }
@@ -174,7 +179,7 @@ final class BeamStore {
         double saved = !m.containsKey("keep-saved-days") ? c.keepSavedDays()
             : m.get("keep-saved-days") instanceof Number n && n.doubleValue() >= 0 ? n.doubleValue() : -1;
         String rec = m.get("rec") instanceof String r && recSetting(r) != null ? recSetting(r) : c.rec();
-        c = new Config(keep, save, saved, rec, inspectMode(m.get("inspect-network"), c.inspectNetwork()), Boolean.TRUE.equals(m.get("allow-adb")),
+        c = new Config(keep, save, saved, rec, inspectMode(m.get("inspect-network"), c.inspectNetwork()), Boolean.TRUE.equals(m.get("allow-adb")), forwardList(m.get("forward-allow")),
             m.get("allow-loopback") instanceof String l && ports(l) != null ? ports(l) : "");
       }
     } catch (IOException | RuntimeException e) {
@@ -185,7 +190,9 @@ final class BeamStore {
 
   void writeConfig(Config c) throws IOException {
     String json = "{\n  \"keep-days\": " + num(c.keepDays()) + ",\n  \"save-sessions\": " + c.saveSessions()
-        + ",\n  \"keep-saved-days\": " + (c.keepSavedDays() < 0 ? "\"never\"" : num(c.keepSavedDays())) + ",\n  \"rec\": \"" + c.rec() + "\",\n  \"inspect-network\": \"" + c.inspectNetwork() + "\",\n  \"allow-adb\": " + c.allowAdb() + ",\n  \"allow-loopback\": \"" + c.allowLoopback() + "\"\n}\n";
+        + ",\n  \"keep-saved-days\": " + (c.keepSavedDays() < 0 ? "\"never\"" : num(c.keepSavedDays())) + ",\n  \"rec\": \"" + c.rec() + "\",\n  \"inspect-network\": \"" + c.inspectNetwork() + "\",\n  \"allow-adb\": " + c.allowAdb()
+        + ",\n  \"forward-allow\": [" + c.forwardAllow().stream().map(Http::q).collect(java.util.stream.Collectors.joining(", ")) + "]"
+        + ",\n  \"allow-loopback\": \"" + c.allowLoopback() + "\"\n}\n";
     writeAtomically(configFile, json);
     config = c;
   }
@@ -200,6 +207,31 @@ final class BeamStore {
     } catch (NumberFormatException e) {
       return null;
     }
+  }
+
+  private static final Set<String> FORWARD_WARNED = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+  static List<String> forwardList(Object v) {
+    List<String> out = new ArrayList<>();
+    if (v instanceof List<?> l) {
+      for (Object o : l) {
+        if (!(o instanceof String p) || out.contains(p)) continue;
+        try {
+          new ForwardAllow().add(p);
+          out.add(p);
+        } catch (IllegalArgumentException e) {
+          if (FORWARD_WARNED.add(p)) System.err.println("[beam] config forward-allow: ignoring " + e.getMessage());
+        }
+      }
+    }
+    return out;
+  }
+
+  /** The prefixes a beam session's forward rules may name, read from the config file at each use (`apksim beam config forward-allow`). */
+  ForwardAllow forwardAllowNow() {
+    ForwardAllow a = new ForwardAllow();
+    for (String p : readConfig().forwardAllow()) a.add(p);
+    return a;
   }
 
   /** A config file's `inspect-network`: a mode, or an older file's true/false. */
@@ -1013,19 +1045,19 @@ final class BeamStore {
             case "keep-days" -> {
               Double d = days(v, false);
               if (d == null) return usage();
-              c = new Config(d, c.saveSessions(), c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.allowLoopback());
+              c = new Config(d, c.saveSessions(), c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback());
               changed = true;
             }
             case "save-sessions" -> {
               Boolean b = onOff(v);
               if (b == null) return usage();
-              c = new Config(c.keepDays(), b, c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.allowLoopback());
+              c = new Config(c.keepDays(), b, c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback());
               changed = true;
             }
             case "keep-saved-days" -> {
               Double d = days(v, true);
               if (d == null) return usage();
-              c = new Config(c.keepDays(), c.saveSessions(), d, c.rec(), c.inspectNetwork(), c.allowAdb(), c.allowLoopback());
+              c = new Config(c.keepDays(), c.saveSessions(), d, c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback());
               changed = true;
             }
             case "inspect-network" -> {
@@ -1045,6 +1077,30 @@ final class BeamStore {
               Boolean b = onOff(v);
               if (b == null) return usage();
               c = c.withAdb(b);
+              changed = true;
+            }
+            // Issue 426: where a session's forward rules (a page's `inspect rule add ... forward`) may send the app's requests.
+            // This agent sends them, so a loopback target (a backend on this Mac) works without opening the app's sandbox.
+            case "forward-allow", "forward-disallow" -> {
+              if (v == null) return usage();
+              List<String> now = new ArrayList<>(c.forwardAllow());
+              if (k.equals("forward-allow") && v.equals("none")) {
+                now.clear();
+              } else {
+                try {
+                  new ForwardAllow().add(v);
+                } catch (IllegalArgumentException e) {
+                  System.err.println("apksim beam config " + k + ": " + e.getMessage());
+                  return 2;
+                }
+                if (k.equals("forward-allow")) {
+                  if (!now.contains(v)) now.add(v);
+                } else if (!now.remove(v)) {
+                  System.err.println("apksim beam config forward-disallow: " + v + " is not in the list (as written: " + (now.isEmpty() ? "none" : String.join(" ", now)) + ")");
+                  return 2;
+                }
+              }
+              c = c.withForwardAllow(now);
               changed = true;
             }
             // Issue 428: named loopback ports a beamed app may connect to (a backend run on this Mac), `off` for none.
@@ -1231,6 +1287,7 @@ final class BeamStore {
              apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS]
                                 [inspect-network on|optional|off]   (a trusted page sees the app's HTTP(S) traffic: of every session, or only of a start that asks)
                                 [allow-adb on|off]   (every trusted site's page may ask for an adb device on this Mac's loopback and run any adb shell command in its session)
+                                [forward-allow URL_PREFIX|none] [forward-disallow URL_PREFIX]   (where a page's forward rules may send the app's requests: http://127.0.0.1:PORT/api for a backend on this Mac)
                                 [allow-loopback PORT[,PORT...]|off]   (every trusted site's app may connect to these ports on this Mac's loopback, e.g. a backend run here; never the agent's or an instance's own)
                                 [allow-download URL] [disallow-download URL]   (where it may fetch a build a page names)
                                 [allow-host ADDR[:PORT]] [disallow-host ADDR[:PORT]]   (where a start's --network-host may point a host)

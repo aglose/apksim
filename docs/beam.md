@@ -201,7 +201,7 @@ keeping a session to use later is the visitor's choice.
     no; a site set to never is 403). The builds get the `keep-days` hold.
   - From the tab, by the site it came from: reopening it, or starting a newer build of the same app on a copy of its
     data (issue 181: "Saved data from the tab").
-- **Settings**: `apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS] [inspect-network on|optional|off] [allow-adb on|off] [allow-loopback PORTS|off]`, kept in
+- **Settings**: `apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS] [inspect-network on|optional|off] [allow-adb on|off] [forward-allow URL_PREFIX|none] [forward-disallow URL_PREFIX] [allow-loopback PORTS|off]`, kept in
   `STATE/beam/config.json` and read at the agent's start (launchd starts it with no options, so command-line flags
   are not the place; `rec` is the flight recorder channels a session starts with, `input` by default, so a bug can be saved with `rec save` and replayed (docs/flight-recorder.md); a session's `i` message tells the page `"rec": true` and `"recChannels"` (what the instance records, the owner's choice or the app's own `--rec`), `"rec": false` when it records nothing. `inspect-network` is off by default: with `on` every session runs the network inspector unless its start declines it (`"inspect": false`, issue 389: no network engine then, for an app the inspector gets in the way of; `/beam/hello` says `"inspectOptOut": true` on an agent that honours it, and `i` says what the session got), with `optional` only a start that asks (`/beam/start`'s `"inspect": true`, issue 371; 409 when the setting is `off`, 400 when not a boolean; `/beam/hello` says `"inspect": "off|optional|on"`) and `i` says `"inspect": true`, so the page shows the app's HTTP(S) traffic as it does on a serve with `--inspect-network` (`n` messages, `inspect` commands). Only a site the owner trusted can start a session, so only it can read either. `allow-loopback PORTS|off` (issue 428, "The beam sandbox": named loopback ports the app may reach); `allow-adb on` (off by default, issue 397; a CLI setting only, not a flag of `apksim beam`) lets every trusted site's start ask for an adb device on loopback with the whole adb shell in its session: "adb commands in a session" below); the same as flags on `apksim beam` for a run in the foreground.
 - **When it is swept**: at the agent's start, hourly while it runs, and as each session ends (so `keep-days 0`
@@ -1270,6 +1270,50 @@ receiver means nobody was listening.
 shell and its refusals in the beam sandbox, `config allow-adb on`, the full shell, the port told to the page, adb's
 CNXN and a shell service over that port, an HTTP request closed, the `adb` client itself when one is on PATH, and
 `allow-adb off` while the agent runs.
+
+## Forward rules (2026-11-16, issue 426)
+
+A developer who beams an app onto their own Mac often runs the backend it talks to on that Mac too. A forward rule
+(`inspect rule add METHOD PATTERN forward LATENCY_MS - URL64`, docs/pr-preview.md) sends the app's matching requests
+to another server and leaves the rest alone, and on a shared `serve` it cannot reach a laptop. In a beam session it
+can, once the Mac's owner says where:
+
+    apksim beam config forward-allow http://127.0.0.1:8080/api     # repeatable; none by default
+    apksim beam config forward-disallow http://127.0.0.1:8080/api  # takes one away, as written
+    apksim beam config forward-allow none                          # clears the list
+
+A prefix follows `serve --inspect-forward-allow`'s rules (the same code, `ForwardAllow`): an http(s) URL without user
+info, query or fragment; a target needs its scheme, host and port exactly and its path or one below it. The list is in
+`config.json` (`"forward-allow": [...]`; an entry that is not a valid prefix is dropped with a line in the agent's
+log) and `apksim beam config` prints it. `GET /beam/hello` says `"forward": [PREFIX...]` to a site the owner trusted, `[]` when the owner
+allows none (and to any other site), so a page can tell before it offers the rule. The session must run the network inspector (`inspect-network
+on|optional`), as for any rule.
+
+- **Who sends it.** The app runs in the beam sandbox, which denies loopback, and that does not change. The agent adds
+  `--forward-link` to a session that runs the inspector; the instance's network engine then hands each forward to the
+  agent over a control connection of its own (`fwdwatch`, `net/ForwardLink`: one line `q ID {json}` with the method,
+  URL, headers and body in base64) and the agent sends it (`net/ForwardSend`, the code a serve instance sends with: HTTP/1.1,
+  no redirects followed, 10 s to connect, 30 s for the headers, 60 s for the body) and answers `q ID {json}` with the
+  status, headers and body, or an `error` the app gets as the rule's 502.
+- **Checked twice.** The page's `inspect rule add` and `inspect rule set` are refused for a target outside the list
+  (`n r rule error: forward target not allowed (...)`), and the agent checks every request's target again as it sends
+  it, against the config file as it is then: `forward-disallow` stops a rule already set (502, nothing sent) without a
+  restart, and nothing the instance says can make the agent send elsewhere. The owner's list is the only gate there: the
+  agent does not ask which rules the page set, so what is listed is what the app (not only the page's rule) can reach
+  through it.
+- **Limits.** Bodies up to 4 MB each way (16 MB on a serve), 8 forwards in flight per session (more are refused: a
+  502), a request line over the limit ends the link, a name resolved on the Mac (the instance's resolver is
+  not asked). The headers recordings redact (`Authorization`, `Cookie`...) are not sent on, as on a serve.
+- **What the owner allows.** Every trusted site's page may then make the agent send the app's requests, with the
+  app's headers and body, to anything under a listed prefix and read the answer in the inspector: list only servers
+  that are meant to be reached that way. Loopback prefixes with a port and a path are the intended use.
+
+`scripts/beam-check.py APK --only forward` checks it in a state folder of its own with a backend on loopback: `hello`'s
+list, the refusals (none allowed, outside the prefix, `/apix`, bad prefixes in `config`), a rule accepted, the test
+app's request to a host that does not exist answered by the backend with `X-Apksim-Original-Url`, and `forward-disallow`
+while the session runs. `scripts/check-forward-link.sh` (CI) checks the instance's side of the link against a stand-in
+agent; the agent's side (the per-request check, its limits) runs only in the Mac check. Not done: the page has no notice of the list changing while a session runs (it reads `hello` again), and
+`serve.html`'s rule form does not show the allowed prefixes.
 
 ## Moving a session to a device (2026-11-09, issue 191)
 

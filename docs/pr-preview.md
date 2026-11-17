@@ -154,10 +154,12 @@ or removing a rule closes the connections it concerns, so the app reconnects the
   (repeatable; none by default, so a tab cannot use the server as a proxy into its network). A prefix is an http(s) URL; a target
   needs its scheme, host and port exactly and its path or one below it (`https://mocks.internal/api` allows `/api/answer?x=1`, not
   `/apix`); targets with user info, a fragment, `..`, `//`, `;` or an encoded dot or slash in the path are refused. Not allowed: `n r
-  rule error: forward target not allowed (...)`. Not done: the opt-in to send redacted headers on, forward rules for `apksim
-  beam` sessions (always refused there), and upstreams by name while replaying or for a host `--network-host` maps: such a name resolves to a placeholder here, so the
+  rule error: forward target not allowed (...)`. Not done: the opt-in to send redacted headers on, and upstreams by name while replaying or for a host `--network-host` maps: such a name resolves to a placeholder here, so the
   rule answers 502 at once (as for a name that does not resolve); an IP address or localhost target works. CI does not run the
   forward round trip (its image check runs a server without the inspector): `inspector-check.py --forward-port` is run by hand.
+  In an `apksim beam` session (issue 426, docs/beam.md "Forward rules") the list is the Mac's owner's, `apksim beam config
+  forward-allow URL_PREFIX`, and the agent sends the request, not the sandboxed instance, so a backend on that Mac's
+  loopback can be the target; bodies are limited to 4 MB each way there.
 
 Wire: the instance gets `netwatch` on a control connection of its own (`dev.apksim.net.Inspector`: the last 300 exchanges, then
 each as one JSON line); the server relays them to the tab as `n e {json}`. The tab's commands are `inspect rule add METHOD PATTERN
