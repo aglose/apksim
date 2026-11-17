@@ -651,7 +651,10 @@ service below) stay Robolectric's. A bind no installed service resolves (another
 services) returns false and never calls back, and unbinding that connection calls nothing either, as on a device;
 Robolectric returned true and called onServiceConnected(null, null), then onServiceDisconnected(null) on unbind, which
 a Kotlin connection's non-null parameters threw on (a running instance died on its first idle; `apksim://install`,
-`BindServiceTest`). A bound service is not the
+`BindServiceTest`). Broadcasts (`ShadowSimBroadcastReceiver`, issue 452): each ordered delivery to a registered receiver has its own
+PendingResult. Robolectric sets it on the receiver object when the delivery is queued, so two ordered broadcasts
+(`sendOrderedBroadcast`, `am broadcast`) queued to one receiver before either ran both finished the second's and the
+second `finish()` threw "Broadcast already finished", ending the app (`BroadcastQueueTest`). A bound service is not the
 instance startService runs, and an `android:process` service gets its local binder, not a proxy.
 `push key=value...` or `push {"data":{..},"notification":{..}}` delivers an FCM message as Play Services would: the
 c2dm RECEIVE broadcast to the app's FCM receiver, with the messaging service pre-bound (Robolectric connects a binding
