@@ -91,7 +91,7 @@ checkpoints are not taken on every input:
   delivered (logged as `before input`): the state a replay starts from is the one the input met;
 - and on `rec checkpoint now`.
 
-**At rest** means: no finger down, no input for 1.5 s, the screen still (fewer than 5 frames drawn in those 1.5 s,
+**At rest** means: no finger down, no input for 1.5 s, the screen still (fewer than 5 frames drawn in those 1.5 s (video, camera and WebRTC pictures published count too: a frame cap does not hide them),
 which a blinking caret stays under and a transition, a spinner or a video does not), and, when the `net` channel or the
 inspector reads the network, no request begun or ended in those 1.5 s and none under 10 s old still unanswered. A
 checkpoint that is due waits for that, however long: while a video plays, or on a screen that never stops moving, none

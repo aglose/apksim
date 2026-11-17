@@ -319,7 +319,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     clone of the data folder), and `rec save` to a `.apkrec` zip; a crash saves one by itself (`Crashes.terminate`).
     A checkpoint cycles the visible activities through onStop/onStart as a quick Home and back would: the one way
     recording shows in the app, so one nobody asked for by name is taken only with the app at rest
-    (`FlightRecorder.atRest`: no input for 1.5 s, fewer than 5 frames drawn in them, no request under way as far as
+    (`FlightRecorder.atRest`: no input for 1.5 s, fewer than 5 frames drawn, or video/camera/WebRTC pictures published, in them, no request under way as far as
     the tap knows: `Net.busy`), however long that takes (`rec` says what a due one waits for; only the first has a
     limit, 15 s, since without one nothing can be replayed), or just before the first input after the interval
     (`beforeInput`, from `FlightRecorder.input`); a second after an input, as before, it landed in the middle of
