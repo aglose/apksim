@@ -589,6 +589,9 @@ def loopback_checks(apksim, apk):
         l.bind(("127.0.0.1", 0))
         l.listen(8)
     p1, p2 = l1.getsockname()[1], l2.getsockname()[1]
+    l6 = socket.socket(socket.AF_INET6)  # the opened port on ::1 too: it must stay out of reach
+    l6.bind(("::1", p1))
+    l6.listen(8)
     # The profile: the opened port connects, another loopback port and the same port over IPv6 do not. A malformed
     # entry in the list is dropped, the valid ones stay.
     script = ("if nc -z -w 2 127.0.0.1 $1 >/dev/null 2>&1; then echo 'open allowed'; else echo 'open denied'; fi\n"
@@ -603,18 +606,31 @@ def loopback_checks(apksim, apk):
         check(got.get("other") == "denied", f"loopback: a port not opened stays denied ({got.get('other')})")
         check(got.get("v6") == "denied", f"loopback: IPv6 stays denied ({got.get('v6')})")
     gp, origin = free_port(), "http://lb.beam-check.test"
+    standbys = []
     for bad in ("0", "65536", "abc", "80,", "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17"):
         r = subprocess.run([apksim, "beam", "config", "allow-loopback", bad], capture_output=True, text=True, env=env, timeout=60)
         check(r.returncode == 2, f"loopback: config allow-loopback {bad!r} is refused ({r.returncode})")
     r = subprocess.run([apksim, "beam", "config", "allow-loopback", f"{p2},{p1},{p2}"], capture_output=True, text=True, env=env, timeout=60)
     want = ",".join(str(x) for x in sorted({p1, p2}))
     check(r.returncode == 0 and f"allow-loopback {want}" in r.stdout, f"loopback: config sorts and dedupes ({r.stdout.strip()[:140]})")
+    subprocess.run([apksim, "beam", "trust", "allow", origin], capture_output=True, text=True, env=env, timeout=60)
     log = open(os.path.join(state, "agent.log"), "w")
     g = subprocess.Popen([apksim, "beam", "--port", str(gp)], stdout=subprocess.DEVNULL, stderr=log, env=env)
     try:
         check(wait_up(gp, "/beam/hello"), "loopback: an agent")
+        h = json.loads(req(gp, "GET", "/beam/hello", "http://other.beam-check.test")[2])
+        check(h.get("loopback") == [], f"loopback: hello tells a site that is not trusted nothing ({h.get('loopback')})")
         h = json.loads(req(gp, "GET", "/beam/hello", origin)[2])
-        check(h.get("loopback") == sorted({p1, p2}), f"loopback: hello reports the ports ({h.get('loopback')})")
+        check(h.get("loopback") == sorted({p1, p2}), f"loopback: hello reports the ports to a trusted site ({h.get('loopback')})")
+        # The agent's standby carries the ports (its name and its profile), so launches with them are warm.
+        deadline, found = time.time() + 30, False
+        while time.time() < deadline and not found:
+            ps = subprocess.run(["ps", "eww", "-ax", "-o", "pid,command"], capture_output=True, text=True).stdout
+            standbys = [int(l.split()[0]) for l in ps.split("\n")
+                        if f"APKSIM_BEAM_LOOPBACK={want}" in l and f"APKSIM_HOME={state}" in l and "dev.apksim.Main" in l]
+            found = bool(standbys)
+            time.sleep(0.5)
+        check(found, "loopback: the agent's standby is started with the opened ports")
         r = subprocess.run([apksim, "beam", "config", "allow-loopback", str(gp)], capture_output=True, text=True, env=env, timeout=60)
         check(r.returncode == 2 and "agent's own port" in r.stderr, f"loopback: the running agent's own port is refused ({r.returncode})")
         r = subprocess.run([apksim, "beam", "config", "allow-loopback", "off"], capture_output=True, text=True, env=env, timeout=60)
@@ -625,6 +641,12 @@ def loopback_checks(apksim, apk):
         stop(g)
         l1.close()
         l2.close()
+        l6.close()
+        for pid in standbys:  # this check's own standby (its state folder goes below)
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
         shutil.rmtree(state, ignore_errors=True)
 
 

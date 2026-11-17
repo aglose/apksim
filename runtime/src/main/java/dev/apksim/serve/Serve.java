@@ -681,13 +681,24 @@ public final class Serve {
       // The standby is the JVM sessions' instances become: it gets the no-core policy too (APKSIM_NO_CORE reaches its flags).
       // The agent's instances run in the beam sandbox (b, the launcher's APKSIM_BEAM_SANDBOX), so their standbys too.
       ProcessBuilder pb = new ProcessBuilder(launcher.toString(), "--spawn-standby",
-          (noNetwork ? "n" : "") + (coreDumps ? "" : "k") + (beam ? "b" : ""))
+          (noNetwork ? "n" : "") + (coreDumps ? "" : "k") + (beam ? "b" : "") + loopbackFlags())
           .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD);
       instanceEnvironment(pb);
       pb.start().waitFor(10, TimeUnit.SECONDS);
     } catch (IOException | InterruptedException e) {
       System.err.println("[serve] no standby: " + e);
     }
+  }
+
+  /**
+   * Issue 428: the opened loopback ports as a beam standby's name carries them (`+3000+8080`, as the launcher names a
+   * launch with them), so the standby the agent boots is the one its next launch asks for.
+   */
+  String loopbackFlags() {
+    if (!beam || store == null) return "";
+    StringBuilder sb = new StringBuilder();
+    for (int p : store.loopbackNow(port)) sb.append('+').append(p);
+    return sb.toString();
   }
 
   /** What every instance serve starts (a session's, a cache warm-up's) runs with: no core dumps unless `--core-dumps`. */
@@ -2230,7 +2241,7 @@ public final class Serve {
     if (r.method().equals("GET") && r.path().equals("/beam/hello")) {
       int[] pr = Beam.protocols();
       Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + ",\"trusted\":"
-          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"adb\":" + store.allowAdbNow() + ",\"loopback\":" + store.loopbackNow(port) + ",\"options\":" + Catalog.optionsJson() + "}");
+          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"adb\":" + store.allowAdbNow() + ",\"loopback\":" + (o != null && agent.trusted(o) ? store.loopbackNow(port) : List.of()) + ",\"options\":" + Catalog.optionsJson() + "}");
       return;
     }
     // `apksim beam status` (docs/beam.md, phase 6): to a local tool only, never a page (a browser always sends Origin).

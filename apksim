@@ -375,14 +375,17 @@ if [[ -n "${APKSIM_BEAM_SANDBOX:-}" ]]; then
   # each must be a plain port; they go into the sandbox profile and, as the profile is fixed when a standby boots, into
   # the standby's name. Anything else is dropped (nothing a page can send reaches this).
   if [[ -n "${APKSIM_BEAM_LOOPBACK:-}" ]]; then
-    LBP=""
-    for P in $(printf '%s\n' "${APKSIM_BEAM_LOOPBACK//,/ }" | tr ' ' '\n' | grep -E '^[0-9]{1,5}$' | sort -nu | head -16); do
-      P=$((10#$P)); [[ $P -ge 1 && $P -le 65535 ]] && LBP="$LBP $P"
+    # Builtins only (this runs before the warm hand-off): the agent sends them sorted, so the name is stable.
+    LBP="" LBN=0
+    for P in ${APKSIM_BEAM_LOOPBACK//,/ }; do
+      [[ "$P" =~ ^[0-9]{1,5}$ ]] || continue
+      P=$((10#$P))
+      [[ $P -ge 1 && $P -le 65535 && $LBN -lt 16 && " $LBP " != *" $P "* ]] || continue
+      LBP="${LBP:+$LBP }$P"; LBN=$((LBN + 1))
     done
-    LBP="$(printf '%s\n' $LBP | sort -nu | tr '\n' ' ')"
-    if [[ -n "${LBP// /}" ]]; then
-      for P in $LBP; do FLAGS="$FLAGS+$P"; done
-      export APKSIM_BEAM_LOOPBACK="$(printf '%s' "${LBP% }" | tr ' ' ',')"
+    if [[ -n "$LBP" ]]; then
+      FLAGS="$FLAGS+${LBP// /+}"
+      export APKSIM_BEAM_LOOPBACK="${LBP// /,}"
     else
       unset APKSIM_BEAM_LOOPBACK
     fi
@@ -584,9 +587,9 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && ( -n "${APKSIM_BEAM_SANDBOX:-}"
     SLOTS="^$QS/cache/data/[^/]+/(beam|bm$H12)-[0-9]+(\\.device)?(/|\$)"
     UCACHE="$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null || true)"; UCACHE="${UCACHE:+$(cd "$UCACHE" && pwd -P)}"
     # The loopback ports its owner opened to the app (`apksim beam config allow-loopback`, validated above), each after
-    # the rules that deny loopback and IPv6 (the later rule wins; before the IPv6 deny it does not hold): TCP to that port over IPv4 only (IPv6 stays denied below), nothing else on it.
+    # the rules that deny loopback and IPv6 (the later rule wins; before the IPv6 deny it does not hold): tcp4, so not ::1 on that port either (plain tcp opens both).
     BEAM_LB_RULES=""
-    for P in ${APKSIM_BEAM_LOOPBACK//,/ }; do BEAM_LB_RULES="$BEAM_LB_RULES(allow network-outbound (remote tcp \"localhost:$P\"))
+    for P in ${APKSIM_BEAM_LOOPBACK//,/ }; do BEAM_LB_RULES="$BEAM_LB_RULES(allow network-outbound (remote tcp4 \"localhost:$P\"))
 "; done
     mkdir -p "$STATE/beam/out" "$STATE/cache/data"  # made here: the instance may make only what is inside them
     PROFILE="$PROFILE
