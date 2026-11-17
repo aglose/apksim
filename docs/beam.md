@@ -1300,7 +1300,7 @@ on|optional`), as for any rule.
   (`127.0.0.1` or `localhost` with a port, never the agent's own; 400 otherwise, before any dialog; 403 for a site that is not trusted).
   The Mac shows a dialog naming the site and the exact target (Don't Allow / Allow, the start dialog's 2-minute wait, one prompt at a time,
   `/beam/hello`'s `asking` meanwhile); Allow writes what the CLI would and answers `{"allowed": true, "already": false}`, a target already
-  allowed answers `"already": true` with no dialog, no or no answer is a 403 (a refused target is not asked again for 10 minutes). A host
+  allowed answers `"already": true` with no dialog, a refusal or no answer is a 403 (a refusal blocks that site's asks for 10 minutes). A host
   target still needs its port in `allow-loopback`. `/beam/hello` says `"allowRequest": ["forward", "loopback", "host"]` where the route
   exists. Removing a target stays with `forward-disallow`, `allow-loopback` and `disallow-host` in a terminal.
   `scripts/beam-check.py x --only allow` checks it (no APK).

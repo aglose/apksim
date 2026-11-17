@@ -189,12 +189,17 @@ final class BeamStore {
   }
 
   void writeConfig(Config c) throws IOException {
+    writeConfigFile(c);
+    config = c;
+  }
+
+  /** Writes the file only, leaving the agent's in-memory settings (its startup flags) as they are. */
+  void writeConfigFile(Config c) throws IOException {
     String json = "{\n  \"keep-days\": " + num(c.keepDays()) + ",\n  \"save-sessions\": " + c.saveSessions()
         + ",\n  \"keep-saved-days\": " + (c.keepSavedDays() < 0 ? "\"never\"" : num(c.keepSavedDays())) + ",\n  \"rec\": \"" + c.rec() + "\",\n  \"inspect-network\": \"" + c.inspectNetwork() + "\",\n  \"allow-adb\": " + c.allowAdb()
         + ",\n  \"forward-allow\": [" + c.forwardAllow().stream().map(Http::q).collect(java.util.stream.Collectors.joining(", ")) + "]"
         + ",\n  \"allow-loopback\": \"" + c.allowLoopback() + "\"\n}\n";
     writeAtomically(configFile, json);
-    config = c;
   }
 
   /** A `keep-days` or `keep-saved-days` value (`never` only where allowed: -1), or null. */

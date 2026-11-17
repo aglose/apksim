@@ -342,20 +342,21 @@ final class Beam {
     }
   }
 
-  /** origin + kind + target -> when a refused target may be asked again (issue 472). */
+  /** origin -> when it may ask again after a refusal (issue 472). */
   private final java.util.Map<String, Long> deniedAllowUntil = new java.util.concurrent.ConcurrentHashMap<>();
 
   /**
    * Whether the Mac's owner lets this origin add a loopback target to its allow-lists now (issue 472: `forward`, `loopback`
    * or `host`; the caller has checked the target and that the site is trusted): asked on the Mac, each time, with the
    * site and the exact target in the dialog. One prompt at a time, shared with starts' and deletions', with `asking`
-   * reported meanwhile. No answer, or a refusal, is no; a refusal is not asked again for 10 minutes.
+   * reported meanwhile. No answer, or a refusal, is no; a refusal blocks every further ask from that origin for 10 minutes.
    */
-  boolean allowedToAllow(String origin, String kind, String target) {
-    String key = origin + "\n" + kind + "\n" + target;
+  boolean allowedToAllow(String origin, String kind, String target, java.util.function.BooleanSupplier alreadyAllowed) {
+    String key = origin;
     synchronized (prompting) {
       Long until = deniedAllowUntil.get(key);
       if (until != null && until > System.currentTimeMillis()) return false;
+      if (alreadyAllowed.getAsBoolean()) return true;  // allowed while this request waited for another prompt
       boolean ok;
       askingFor = origin;
       try {

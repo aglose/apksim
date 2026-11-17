@@ -2736,7 +2736,6 @@ public final class Serve {
     String kind = String.valueOf(body.keySet().iterator().next());
     Object v = body.get(kind);
     String target;
-    boolean already;
     switch (kind) {
       case "forward" -> {
         target = v instanceof String str ? str : null;
@@ -2748,7 +2747,7 @@ public final class Serve {
         }
         String host = u == null || u.getHost() == null ? "" : u.getHost().toLowerCase(java.util.Locale.ROOT);
         if (u == null || !"http".equalsIgnoreCase(u.getScheme()) || !(host.equals("127.0.0.1") || host.equals("localhost"))
-            || u.getPort() < 1 || u.getPort() == port) {
+            || u.getPort() < 1 || u.getPort() > 65535 || u.getPort() == port) {
           Http.text(out, 400, "\"forward\" takes an http URL prefix on 127.0.0.1 or localhost with a port (not the agent's own), such as http://127.0.0.1:8001/api");
           return;
         }
@@ -2758,8 +2757,7 @@ public final class Serve {
           Http.text(out, 400, e.getMessage());
           return;
         }
-        already = store.readConfig().forwardAllow().contains(target);
-      }
+              }
       case "loopback" -> {
         int n = v instanceof Number num && num.doubleValue() == Math.rint(num.doubleValue()) ? num.intValue()
             : v instanceof String str && str.matches("[0-9]{1,5}") ? Integer.parseInt(str) : 0;
@@ -2769,8 +2767,7 @@ public final class Serve {
         }
         target = String.valueOf(n);
         List<String> have = new java.util.ArrayList<>(java.util.Arrays.asList(store.readConfig().allowLoopback().split(",")));
-        already = have.contains(target);
-        if (!already && have.stream().filter(x -> !x.isEmpty()).count() >= BeamStore.LOOPBACK_MAX) {
+        if (!have.contains(target) && have.stream().filter(x -> !x.isEmpty()).count() >= BeamStore.LOOPBACK_MAX) {
           Http.text(out, 409, "this Mac already allows " + BeamStore.LOOPBACK_MAX + " loopback ports (apksim beam config allow-loopback)");
           return;
         }
@@ -2782,18 +2779,23 @@ public final class Serve {
           return;
         }
         target = t.toString();
-        already = new HostAllow(agent.hosts()).allows(target);
       }
       default -> {
         Http.text(out, 400, "name exactly one of \"forward\", \"loopback\" or \"host\"");
         return;
       }
     }
-    if (already) {
+    final String tg = target;
+    java.util.function.BooleanSupplier already = () -> switch (kind) {
+      case "forward" -> store.forwardAllowNow().allows(tg);
+      case "loopback" -> java.util.Arrays.asList(store.readConfig().allowLoopback().split(",")).contains(tg);
+      default -> new HostAllow(agent.hosts()).allows(tg);
+    };
+    if (already.getAsBoolean()) {
       Http.json(out, 200, "{\"allowed\":true,\"already\":true}");
       return;
     }
-    if (!agent.allowedToAllow(o, kind, target)) {
+    if (!agent.allowedToAllow(o, kind, target, already)) {
       Http.text(out, 403, "this Mac's owner did not allow it");
       return;
     }
@@ -2803,11 +2805,16 @@ public final class Serve {
         case "forward" -> {
           List<String> now = new java.util.ArrayList<>(c.forwardAllow());
           if (!now.contains(target)) now.add(target);
-          store.writeConfig(c.withForwardAllow(now));
+          store.writeConfigFile(c.withForwardAllow(now));
         }
         case "loopback" -> {
           String have = c.allowLoopback();
-          store.writeConfig(c.withLoopback(BeamStore.ports(have.isEmpty() ? target : have + "," + target)));
+          String ps = BeamStore.ports(have.isEmpty() ? target : have + "," + target);
+          if (ps == null) {
+            Http.text(out, 409, "this Mac now allows the most loopback ports (apksim beam config allow-loopback)");
+            return;
+          }
+          store.writeConfigFile(c.withLoopback(ps));
         }
         default -> agent.setHost(target, true);
       }
