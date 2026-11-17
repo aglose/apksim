@@ -176,7 +176,7 @@ keeping a session to use later is the visitor's choice.
     viewer attached only hides it) and the session ends as an ordinary local launch does, when the app exits, saved
     as kept. `GET /beam/status` shows `"detached":true`. It counts against `--max` like any session; the agent's idle
     limit does not apply to it (window input never reaches the agent, so it would end a session in use). `apksim beam stop --force`
-    ends it too, with the agent. Not done:
+    ends it too, with the agent; the agent's side (the per-request check, its limits) runs only in the Mac check. Not done:
     reattaching a later tab to a detached session (`/beam/start` with `attach`).
   A saved session's slot is renamed when its instance has exited, to `k<12 hex>-0` (and `.device`) beside it, a name
   no beam session takes, and recorded in `STATE/beam/saved/<id>.json`: app name, SHA-256, launch options, device,
@@ -1283,8 +1283,11 @@ on|optional`), as for any rule.
 - **Checked twice.** The page's `inspect rule add` and `inspect rule set` are refused for a target outside the list
   (`n r rule error: forward target not allowed (...)`), and the agent checks every request's target again as it sends
   it, against the config file as it is then: `forward-disallow` stops a rule already set (502, nothing sent) without a
-  restart, and nothing the instance says can make the agent send elsewhere.
-- **Limits.** Bodies up to 4 MB each way (16 MB on a serve), a name resolved on the Mac (the instance's resolver is
+  restart, and nothing the instance says can make the agent send elsewhere. The owner's list is the only gate there: the
+  agent does not ask which rules the page set, so what is listed is what the app (not only the page's rule) can reach
+  through it.
+- **Limits.** Bodies up to 4 MB each way (16 MB on a serve), 8 forwards in flight per session (more are refused: a
+  502), a request line over the limit ends the link, a name resolved on the Mac (the instance's resolver is
   not asked). The headers recordings redact (`Authorization`, `Cookie`...) are not sent on, as on a serve.
 - **What the owner allows.** Every trusted site's page may then make the agent send the app's requests, with the
   app's headers and body, to anything under a listed prefix and read the answer in the inspector: list only servers
@@ -1294,7 +1297,7 @@ on|optional`), as for any rule.
 list, the refusals (none allowed, outside the prefix, `/apix`, bad prefixes in `config`), a rule accepted, the test
 app's request to a host that does not exist answered by the backend with `X-Apksim-Original-Url`, and `forward-disallow`
 while the session runs. `scripts/check-forward-link.sh` (CI) checks the instance's side of the link against a stand-in
-agent. Not done: the page has no notice of the list changing while a session runs (it reads `hello` again), and
+agent; the agent's side (the per-request check, its limits) runs only in the Mac check. Not done: the page has no notice of the list changing while a session runs (it reads `hello` again), and
 `serve.html`'s rule form does not show the allowed prefixes.
 
 ## Moving a session to a device (2026-11-09, issue 191)

@@ -173,6 +173,8 @@ final class BeamStore {
   }
 
   /** A config file's `forward-allow`: the prefixes that are still valid ones (a hand-edited bad entry is dropped, not trusted). */
+  private static final Set<String> FORWARD_WARNED = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
   static List<String> forwardList(Object v) {
     List<String> out = new ArrayList<>();
     if (v instanceof List<?> l) {
@@ -182,7 +184,7 @@ final class BeamStore {
           new ForwardAllow().add(p);
           out.add(p);
         } catch (IllegalArgumentException e) {
-          System.err.println("[beam] config forward-allow: ignoring " + e.getMessage());
+          if (FORWARD_WARNED.add(p)) System.err.println("[beam] config forward-allow: ignoring " + e.getMessage());
         }
       }
     }

@@ -2666,12 +2666,12 @@ public final class Serve {
     return beamDownloadApk(origin, u, agent::downloadAllowed, true, sha, name, size, launch);
   }
 
-  /** The site of a page's `source`, for messages (never its path or query, which may carry a signature). */
   /** `/beam/hello`'s `forward` (issue 426): the target prefixes this Mac's owner allows for forward rules, `[]` for none (a forward rule is then refused), and for a site the owner has not trusted, which is told nothing of this Mac's servers. */
   private String forwardJson() {
     return store.readConfig().forwardAllow().stream().map(Http::q).collect(java.util.stream.Collectors.joining(",", "[", "]"));
   }
 
+  /** The site of a page's `source`, for messages (never its path or query, which may carry a signature). */
   private static String sourceSite(String source) {
     try {
       java.net.URI u = new java.net.URI(source);

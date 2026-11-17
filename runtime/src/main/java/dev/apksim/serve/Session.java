@@ -647,7 +647,7 @@ final class Session {
    * `fwdwatch` connection carries `q ID {json}` (method, url, headers, body in base64), and its answer goes back the same
    * way. Whatever rule the page set, the target is checked here against the owner's list (`apksim beam config
    * forward-allow`, read at each request), and redirects are not followed, so a target cannot lead the agent anywhere
-   * the owner did not name. The page's own tab never sees the request: it reads the exchange in the inspector as for any.
+   * the owner did not name. That list is the only gate: the agent does not ask which rules the page set. The page's own tab never sees the request: it reads the exchange in the inspector as for any.
    */
   private void watchForward(int port) throws IOException {
     Socket s = fwdwatch = connect(port);
@@ -660,18 +660,60 @@ final class Session {
           closeQuietly(s);
           return;
         }
-        for (String line; (line = r.readLine()) != null; ) {
+        // The instance is not trusted with this process's memory or threads: a line over the limit ends the link (its
+        // forwards then fail with a 502 each), and beyond FORWARDS_IN_FLIGHT at once a request is refused, not queued.
+        for (String line; (line = readCapped(r, FORWARD_LINE_MAX)) != null; ) {
           String l = line;
-          Thread.ofVirtual().name("serve-forward-req-" + id).start(() -> forwardRequest(s, l));
+          if (!forwardsInFlight.tryAcquire()) {
+            java.util.regex.Matcher m = FORWARD_LINE.matcher(l.length() > 64 ? l.substring(0, 64) + " " : l);
+            if (m.lookingAt()) forwardReply(s, "q " + m.group(1) + " {\"error\":\"too many forwards in flight (" + FORWARDS_IN_FLIGHT + ")\"}");
+            continue;
+          }
+          Thread.ofVirtual().name("serve-forward-req-" + id).start(() -> {
+            try {
+              forwardRequest(s, l);
+            } finally {
+              forwardsInFlight.release();
+            }
+          });
         }
+        closeQuietly(s);
       } catch (IOException e) {
         // the instance went away
       }
     });
   }
 
+  /** A request's body as base64 and its head at most: longer, the link is closed. */
+  private static final int FORWARD_LINE_MAX = (FORWARD_BODY_MAX / 3 + 1) * 4 + 256 * 1024;
+  /** Forwards one session's instance may have the agent sending at once (each holds its bodies in memory). */
+  private static final int FORWARDS_IN_FLIGHT = 8;
+  private final java.util.concurrent.Semaphore forwardsInFlight = new java.util.concurrent.Semaphore(FORWARDS_IN_FLIGHT);
+  private static final java.util.regex.Pattern FORWARD_LINE = java.util.regex.Pattern.compile("(?s)q ([0-9]{1,18}) (.*)");
+
+  /** A line of at most `max` characters (without its line break), null at the end of the stream or for a longer line. */
+  private static String readCapped(BufferedReader r, int max) throws IOException {
+    StringBuilder b = new StringBuilder();
+    for (int c; (c = r.read()) >= 0; ) {
+      if (c == '\n') return b.toString();
+      if (b.length() >= max) return null;
+      if (c != '\r') b.append((char) c);
+    }
+    return null;
+  }
+
+  private void forwardReply(Socket s, String reply) {
+    try {
+      synchronized (s) {
+        s.getOutputStream().write((reply.replace('\n', ' ').replace('\r', ' ') + "\n").getBytes(StandardCharsets.UTF_8));
+      }
+    } catch (IOException e) {
+      // the instance went away
+    }
+  }
+
   private void forwardRequest(Socket s, String line) {
-    java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?s)q ([0-9]{1,18}) (.*)").matcher(line);
+    java.util.regex.Matcher m = FORWARD_LINE.matcher(line);
     if (!m.matches()) return;
     String reply;
     try {
@@ -686,6 +728,7 @@ final class Session {
         for (Object o : hl) if (o instanceof List<?> p && p.size() == 2) headers.add(new String[] {String.valueOf(p.get(0)), String.valueOf(p.get(1))});
       }
       String b64 = q.get("body") instanceof String x ? x : "";
+      if (b64.length() > (FORWARD_BODY_MAX / 3 + 1) * 4) throw new IOException("a request body over " + FORWARD_BODY_MAX + " bytes");
       byte[] body = b64.isEmpty() ? null : java.util.Base64.getDecoder().decode(b64);
       if (body != null && body.length > FORWARD_BODY_MAX) throw new IOException("a request body over " + FORWARD_BODY_MAX + " bytes");
       dev.apksim.net.ForwardSend.Result res = dev.apksim.net.ForwardSend.send(method, url, headers, body, FORWARD_BODY_MAX);
@@ -704,13 +747,7 @@ final class Session {
       String why = (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()).replaceAll("[^\\x20-\\x7e]", " ");
       reply = "q " + m.group(1) + " {\"error\":" + Http.q(why) + "}";
     }
-    try {
-      synchronized (s) {
-        s.getOutputStream().write((reply.replace('\n', ' ').replace('\r', ' ') + "\n").getBytes(StandardCharsets.UTF_8));
-      }
-    } catch (IOException e) {
-      // the instance went away
-    }
+    forwardReply(s, reply);
   }
 
   // ---------------------------------------------------------------- the network inspector (docs/pr-preview.md)
@@ -837,7 +874,6 @@ final class Session {
     send(cmd, r -> ws.sendText("n r " + kind + " " + r));
   }
 
-  /** `inspect rule set JSON` as the instance's `network rule set COUNT ...`: every field checked as `add` checks it. */
   /** The targets a forward rule may name now: the server's list, or on the agent the owner's, read from the config at each use. */
   private ForwardAllow forwardAllow() {
     return serve.beam && serve.store != null ? serve.store.forwardAllowNow() : serve.inspectForwardAllow;
@@ -850,6 +886,7 @@ final class Session {
         : serve.inspectForwardAllow.isEmpty() ? "the server allows none: --inspect-forward-allow URL_PREFIX" : "not under one of the server's --inspect-forward-allow prefixes") + ")";
   }
 
+  /** `inspect rule set JSON` as the instance's `network rule set COUNT ...`: every field checked as `add` checks it. */
   private String ruleSet(String json) throws IOException {
     if (!(Json.parse(json) instanceof List<?> rules)) throw new IOException("rule set takes a JSON array of rules");
     if (rules.size() > serve.inspectMaxRules) throw new IOException("at most " + serve.inspectMaxRules + " rules");

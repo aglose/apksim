@@ -82,9 +82,4 @@ public final class ForwardSend {
     });
     return new Result(r.statusCode(), out, got.toByteArray());
   }
-
-  /** A failure's message as one line of printable ASCII, as the exchange's row and the 502 show it. */
-  static String reason(Exception e) {
-    return (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()).replaceAll("[^\\x20-\\x7e]", " ");
-  }
 }
