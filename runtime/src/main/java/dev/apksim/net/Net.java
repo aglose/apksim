@@ -153,7 +153,13 @@ public final class Net {
       else redact.add(r);
     }
     String t = System.getProperty("apksim.networkTrust");  // and trusts this certificate when it starts the engine
-    if (t != null && t.startsWith("inline:")) trustInline = java.util.Base64.getDecoder().decode(t.substring(7));
+    if (t != null && t.startsWith("inline:")) {
+      try {
+        trustInline = java.util.Base64.getDecoder().decode(t.substring(7));
+      } catch (IllegalArgumentException e) {
+        throw new IllegalArgumentException("--network-trust inline: takes the certificate (PEM or DER) as base64");
+      }
+    }
     else if (t != null) trust = Path.of(t);
     if (spec == null && profile == null && hosts == null) return;
     try {

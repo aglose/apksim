@@ -194,6 +194,7 @@ public final class Serve {
     if (args.length > 1 && args[0].equals("--beam") && List.of("saved", "run", "to-device", "forget", "config", "sweep", "status", "stop").contains(args[1])) {
       // The agent's own commands: its rules for saved options (a server skin's device, a skin it does not have).
       Catalog.agent = true;
+      Catalog.hostAllowance = () -> new HostAllow(new Beam(state).hosts());  // run and to-device check saved options again
       System.exit(BeamStore.command(root, state, s.launcher, args[1], List.of(args).subList(2, args.length)));
     }
     for (int i = 0; i < args.length; i++) {

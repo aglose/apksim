@@ -871,7 +871,6 @@ final class BeamStore {
             launch.remove(i);
           }
         }
-        Catalog.hostAllowance = () -> new HostAllow(new Beam(state).hosts());
         List<String> own = Catalog.launchOptions(launch);
         // `--skin NAME` given here without --device: the skin's device, as a launch takes it, not the recorded one.
         List<String> given = args.subList(1, args.size());
