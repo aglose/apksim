@@ -116,6 +116,13 @@ public final class PacerCheck {
     int b = -1;
     for (int i = 0; i < Pacer.FAST_ACKS; i++) b = e.acked(t + 22 * S + i * 33 * MS + 3 * MS, t + 22 * S + i * 33 * MS, -1);
     check(b == 0 && e.goodPaceMs == 92, "quick acks jump even during a slow trial, keeping its way back (" + b + ")");
+    // A failed jump doubles the wait before the next: quick acks 1.5 s after the drop ask for nothing, 2.5 s after do.
+    long d = t + 23 * S;
+    check(e.dropped(d, 40) == 92, "a drop in the jump's trial restores 92");
+    for (int i = 0; i < Pacer.FAST_ACKS; i++) b = e.acked(d + 1500 * MS + i * MS + 3 * MS, d + 1500 * MS + i * MS, -1);
+    check(b == -1 && e.paceMs == 92, "after a failed jump, quick acks within 2 s of the drop keep the pace");
+    b = e.acked(d + 2500 * MS + 3 * MS, d + 2500 * MS, -1);
+    check(b == 0 && e.paceMs == 0, "and jump again once 2 s have passed (" + b + ")");
     // Acks that are not all quick change nothing.
     Pacer r = new Pacer();
     for (int i = 1; i <= 10; i++) r.acked(t + i * 80 * MS, t + (i - 1) * 80 * MS + 40 * MS, -1);

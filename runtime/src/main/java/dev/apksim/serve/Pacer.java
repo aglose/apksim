@@ -176,14 +176,17 @@ final class Pacer {
     if (paceMs <= 0) return -1;
     ackLatency[fastAcks++ % FAST_ACKS] = latencyNanos;
     if (fastAcks >= 2 * FAST_ACKS) fastAcks = FAST_ACKS + fastAcks % FAST_ACKS;
-    if (fastAcks < FAST_ACKS || now - lastPaceNanos < FAST_EASE_NANOS || now - lastDropNanos < FAST_EASE_NANOS) return -1;
+    // Each failed trial doubles this wait with the slow easing's (1 s, 2 s, ... 16 s): a tab that is quick only while
+    // paced must not be sent back into drops every second.
+    long wait = FAST_EASE_NANOS * (easeWaitNanos / EASE_WAIT_NANOS);
+    if (fastAcks < FAST_ACKS || now - lastPaceNanos < wait || now - lastDropNanos < wait) return -1;
     long worst = 0;
     for (long l : ackLatency) worst = Math.max(worst, l);
     // Conservative: frames overlap in a window of two or more, so a frame per latency is slower than the tab can go.
     int want = (int) Math.ceil(worst / 1e6 * 1.15);
     if (want >= paceMs * 85 / 100) return -1;
-    // A trial already under way keeps the pace that held as its way back.
-    if (!eased) goodPaceMs = paceMs;
+    // A trial only just begun keeps the pace that held as its way back; one that has lasted is the pace that holds.
+    if (!eased || now - lastPaceNanos > easeWaitNanos) goodPaceMs = paceMs;
     eased = true;
     paceMs = want <= 8 ? 0 : want;
     lastPaceNanos = now;
