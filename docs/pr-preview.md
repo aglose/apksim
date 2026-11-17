@@ -142,7 +142,12 @@ or removing a rule closes the connections it concerns, so the app reconnects the
   sent to an upstream http(s) URL and that server's answer (status, headers, body) goes back to the app, so a page can run a
   stateful mock per request. The upstream gets the request at the rule's URL exactly, with the app's method, body (16 MB at most) and
   headers, less the ones recordings redact (`Authorization`, `Cookie`, ...) and the connection's own (`Host`, `Content-Length`, ...),
-  plus `X-Apksim-Original-Url` with the address the app asked for (path and query included). Redirects are not followed (the app gets
+  plus `X-Apksim-Original-Url` with the address the app asked for (path and query included). With `rebase` (issue 427; `inspect rule add METHOD PATTERN forward LATENCY_MS rebase URL64`, or `"rebase": true` beside `"forward"` in a set) the
+  target is a base instead: the request goes to its scheme, host, port and path followed by the app's own path and query, so
+  pattern `https://api.example.com/v1/items/*` with target `http://127.0.0.1:8001/mock` sends `/v1/items/42?x=1` to
+  `http://127.0.0.1:8001/mock/v1/items/42?x=1`, for an upstream that routes on the path. The allow-list judges the base, and an app path that
+  the list could not judge (dot segments, `//`, `;`, `\\`, an encoded `.`, `/` or `\\`) is a 502, so what is sent is always under an allowed prefix; a
+  rebase target has no query. `Host` is the target's in either mode (the client sets it), so a server that routes on it sees its own name. Redirects are not followed (the app gets
   the 3xx). An upstream that cannot be reached, does not answer within 30 s, or whose answer is over 16 MB or takes over 60 s to arrive, is a 502 to the app whose body and
   `X-Apksim-Error` header say why. The row has `"forwarded":true` beside `rule`. The instance sends the request itself, so the
   target must be reachable from where instances run, and the server must allow it: `serve --inspect-forward-allow URL_PREFIX`

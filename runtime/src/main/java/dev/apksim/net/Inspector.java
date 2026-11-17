@@ -93,6 +93,8 @@ public final class Inspector {
     final String method, pattern, type;
     /** Where a forward rule sends its requests, or null. */
     final String forward;
+    /** A forward rule that keeps the app's path and query (issue 427): `forward` is then a base the app's path is added to. */
+    final boolean rebase;
     /** A patch rule (issue 373): the real server's JSON answer is merged with this (RFC 7386, from `body`) on its way to the app. */
     final boolean patching;
     final Object patch;
@@ -118,6 +120,11 @@ public final class Inspector {
     }
 
     Rule(int id, String method, String pattern, int status, int latencyMs, String type, byte[] body, List<String[]> headers, String forward, boolean patching, Object patch) {
+      this(id, method, pattern, status, latencyMs, type, body, headers, forward, patching, patch, false);
+    }
+
+    Rule(int id, String method, String pattern, int status, int latencyMs, String type, byte[] body, List<String[]> headers, String forward, boolean patching, Object patch, boolean rebase) {
+      this.rebase = rebase;
       this.patching = patching;
       this.patch = patch;
       this.forward = forward;
@@ -181,7 +188,7 @@ public final class Inspector {
 
     String json() {
       return "{\"id\":" + id + ",\"method\":" + q(method) + ",\"pattern\":" + q(pattern) + ",\"status\":" + status + ",\"latencyMs\":" + latencyMs
-          + ",\"type\":" + q(type) + ",\"bytes\":" + body.length + (forward == null ? "" : ",\"forward\":" + q(forward)) + (patching ? ",\"patch\":true" : "") + (headers.isEmpty() ? "" : ",\"headers\":" + headers(headers)) + ",\"hits\":" + hits.get() + "}";
+          + ",\"type\":" + q(type) + ",\"bytes\":" + body.length + (forward == null ? "" : ",\"forward\":" + q(forward) + (rebase ? ",\"rebase\":true" : "")) + (patching ? ",\"patch\":true" : "") + (headers.isEmpty() ? "" : ",\"headers\":" + headers(headers)) + ",\"hits\":" + hits.get() + "}";
     }
   }
 
@@ -557,13 +564,16 @@ public final class Inspector {
     if (latency < 0 || latency > 60_000) throw new IllegalArgumentException("latency is 0-60000 ms");
     if (a[at + 1].length() > 300 || a[at + 1].isEmpty()) throw new IllegalArgumentException("the pattern is 1-300 characters");
     if (!(a[at].equals("*") || a[at].matches("[A-Za-z]{3,10}"))) throw new IllegalArgumentException("the method is * or a name such as GET");
-    if (!a[at + 4].equals("-") || headers && !a[at + 6].equals("-")) {
-      throw new IllegalArgumentException("a forward rule has no content type or headers (-): its target's answer has its own");
+    // TYPE is `-`, or `rebase` (issue 427): the target is a base, and the app's path and query go on after its path.
+    boolean rebase = a[at + 4].equals("rebase");
+    if (!(a[at + 4].equals("-") || rebase) || headers && !a[at + 6].equals("-")) {
+      throw new IllegalArgumentException("a forward rule has no content type or headers (- or rebase): its target's answer has its own");
     }
     String url = a[at + 5].equals("-") ? "" : new String(Base64.getDecoder().decode(a[at + 5]), StandardCharsets.UTF_8);
     String why = forwardProblem(url);
     if (why != null) throw new IllegalArgumentException(why);
-    return new Rule(ruleIds.incrementAndGet(), a[at].toUpperCase(Locale.ROOT), a[at + 1], 0, latency, "-", new byte[0], List.of(), url);
+    if (rebase && url.indexOf('?') >= 0) throw new IllegalArgumentException("a rebase target has no query: the app's query is the request's");
+    return new Rule(ruleIds.incrementAndGet(), a[at].toUpperCase(Locale.ROOT), a[at + 1], 0, latency, "-", new byte[0], List.of(), url, false, null, rebase);
   }
 
   /**
@@ -592,6 +602,32 @@ public final class Inspector {
       throw new IllegalArgumentException("the patch is " + e.getMessage());
     }
     return new Rule(ruleIds.incrementAndGet(), a[at].toUpperCase(Locale.ROOT), a[at + 1], 0, latency, "application/merge-patch+json", body, List.of(), null, true, doc);
+  }
+
+  /**
+   * Where a rebase rule (issue 427) sends a request: the target's scheme, host, port and path, then the app's path and query.
+   * Null when the app's path is one the server's allow-list could not have judged (dot segments, an empty segment, `;`, a
+   * backslash, an encoded `.`, `/` or `\\`: the checks ForwardAllow makes of a target), so a URL built from an allowed base
+   * is allowed too and nothing can climb out of it. The target's own path is the part the allow-list checked.
+   */
+  public static String rebaseUrl(String target, String appUrl) {
+    java.net.URI t, a;
+    try {
+      t = new java.net.URI(target);
+      a = new java.net.URI(appUrl);
+    } catch (java.net.URISyntaxException e) {
+      return null;
+    }
+    String path = a.getRawPath() == null || a.getRawPath().isEmpty() ? "/" : a.getRawPath();
+    String lower = path.toLowerCase(Locale.ROOT);
+    if (!path.startsWith("/") || path.contains("\\") || path.contains(";") || path.contains("//") || lower.contains("%2e") || lower.contains("%2f") || lower.contains("%5c")) return null;
+    for (String seg : path.split("/", -1)) if (seg.equals(".") || seg.equals("..")) return null;
+    String base = t.getRawPath() == null ? "" : t.getRawPath();
+    while (base.endsWith("/")) base = base.substring(0, base.length() - 1);
+    String q = a.getRawQuery();
+    if (q != null && !q.matches("[\\x21-\\x7e]*")) return null;
+    String head = target.substring(0, target.length() - (t.getRawPath() == null ? 0 : t.getRawPath().length()));
+    return head + base + path + (q == null ? "" : "?" + q);
   }
 
   /** Why a URL cannot be a forward rule's target, or null: an absolute http(s) URL with a host, no user info, no fragment. */
