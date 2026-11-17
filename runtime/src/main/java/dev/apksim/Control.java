@@ -91,6 +91,13 @@ final class Control {
           out.println(oneLine(TabShell.run(args)));
           continue;
         }
+        if (args.length > 1 && args[0].equals("network") && (args[1].equals("rule") || args[1].equals("detail")) && dev.apksim.net.Net.inspecting()) {
+          // The inspector's rules and details answer here, not through Host's loop (issue 445): the rules a page sends the
+          // moment its session opens are applied as they arrive, before the app's first activity starts and its first
+          // requests, in order, rather than a few ms apart once the loop is running. The inspector's state is thread-safe.
+          out.println(oneLine(dev.apksim.net.Net.command(args)));
+          continue;
+        }
         Pending p = new Pending(args);
         submit(p);
         out.println(oneLine(p.await()));
