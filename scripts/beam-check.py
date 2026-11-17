@@ -620,6 +620,7 @@ def loopback_checks(apksim, apk):
         check(wait_up(gp, "/beam/hello"), "loopback: an agent")
         h = json.loads(req(gp, "GET", "/beam/hello", "http://other.beam-check.test")[2])
         check(h.get("loopback") == [], f"loopback: hello tells a site that is not trusted nothing ({h.get('loopback')})")
+        check(h.get("hosts") == [], f"hello: an untrusted site gets no hosts ({h.get('hosts')})")
         h = json.loads(req(gp, "GET", "/beam/hello", origin)[2])
         check(h.get("loopback") == sorted({p1, p2}), f"loopback: hello reports the ports to a trusted site ({h.get('loopback')})")
         check(h.get("hosts") == [] and isinstance(h.get("maxBroadcasts"), int) and h["maxBroadcasts"] > 0,
