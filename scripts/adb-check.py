@@ -17,6 +17,7 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -53,6 +54,23 @@ def request(port, line):
                 lines.append(l.rstrip("\n"))
             return lines
         return f.readline().strip()
+
+
+def screenrecord(serial):
+    """`adb shell screenrecord --time-limit 2 /sdcard/F`: returns after the limit, the file pulls and is not empty."""
+    t = time.time()
+    out = adb(serial, "shell", "screenrecord", "--time-limit", "2", "--size", "640x360", "/sdcard/adb-check-rec.avi")
+    took = time.time() - t
+    if out.strip() or not 1.5 < took < 8:
+        fail(f"screenrecord printed {out!r} after {took:.1f} s")
+    with tempfile.TemporaryDirectory() as d:
+        dest = os.path.join(d, "r.avi")
+        adb(serial, "pull", "/sdcard/adb-check-rec.avi", dest)
+        if os.path.getsize(dest) < 1000:
+            fail("screenrecord's file is empty")
+    adb(serial, "shell", "rm", "/sdcard/adb-check-rec.avi")
+    if "Usage" not in adb(serial, "shell", "screenrecord", check=False):
+        fail("screenrecord without a file did not print its usage")
 
 
 def uiautomator_dump(serial):
@@ -255,6 +273,7 @@ def main():
     subprocess.run([ADB, "connect", serial], capture_output=True, timeout=30)
     adb(serial, "wait-for-device")
     uiautomator_dump(serial)
+    screenrecord(serial)
 
     out = adb(serial, "install", "-t", "-g", apk)
     if "Success" not in out:

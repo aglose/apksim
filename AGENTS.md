@@ -1305,7 +1305,7 @@ until the framework is ready (`AdbServer.frameworkReady`, from `Host.run`, or `S
 the sandbox and the app died with exit 10 (issue 189). Checked with adb 36 against the test app:
 `adb shell input tap 733 1533` (FAB count goes up), `input swipe|text|keyevent` (BACK/HOME/POWER/MENU map to
 back/home/lock/unlock; key codes by number too), `input tap|swipe` return once the Host has dispatched them, a swipe
-after its duration, as on a device (they returned at once, and a 1.5 s hold lifted seconds later on a slow screen), `adb exec-out screencap -p > shot.png` (the display: `shot --display`, the app's pixels with the drawn soft keyboard, bars and banner over them when there is a window; headless it is the app's pixels, as `shot`; without `-p` raw RGBA),
+after its duration, as on a device (they returned at once, and a 1.5 s hold lifted seconds later on a slow screen), `adb shell screenrecord [--time-limit N] FILE` (the control channel's `record`, run until the limit (180 s default and cap) or until the client goes; FILE is a device path such as /sdcard/x.mp4 for `adb pull`; the movie is the recorder's own format, AVI headless and QuickTime in a window, whatever the name says, at the display's size: `--size` and `--bit-rate` are accepted and not applied; checked by `adb-check.py`), `adb exec-out screencap -p > shot.png` (the display: `shot --display`, the app's pixels with the drawn soft keyboard, bars and banner over them when there is a window; headless it is the app's pixels, as `shot`; without `-p` raw RGBA),
 `adb shell uiautomator dump [--compressed] [--windows] [FILE]` (`UiDump`: the stock tool's XML and its "UI hierchary
 dumped to: FILE" line, AOSP's AccessibilityNodeInfoDumper attribute for attribute, NAF included, from the active
 window's tree as UiAutomation reads it here (`--windows`: every window it reports, so none a dialog covers), so
@@ -1584,7 +1584,7 @@ runs and put together at the end, so a dead process leaves no .mp4. A frame the 
 duration (stts has runs). With no encoder (Linux without libopenh264) apksim says so once on stderr and writes the AVI;
 `instrument.py` links whichever exists. Each kept movie has a sidecar `<method>-<hash>.json` (`start_epoch_ms` of its first
 frame, `duration_ms`, `fps`, `width`, `height`, `format`), and the JUnit XML a property `apksim.recording.startEpochMs`
-(`scripts/record-check.py` checks both formats). Not done: `adb shell screenrecord`; a process that dies mid-test leaves an
+(`scripts/record-check.py` checks both formats). Not done: `adb shell screenrecord` in test runs; a process that dies mid-test leaves an
 unfinished (index-less) AVI.
 `instrument.py` removes an earlier run's bundles from DIR first, adds `process.txt` for a test whose process died, links bundles from the XML (a property, and
 `[[ATTACHMENT|...]]` in `system-out`) and writes `DIR/index.html`; with `--apksim` it reads them from

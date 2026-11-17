@@ -56,6 +56,8 @@ final class AdbShell {
   private long tabDeadline;
   /** The command's standard input (the adb stream's), for `pm install-write ... -`; empty when there is none. */
   private final InputStream in;
+  /** An interactive shell's keys, where a command that waits (`screenrecord`) looks for Ctrl-C; null otherwise. */
+  private InputStream keys;
   /** Whether the client closed the stream, for commands that wait (`am instrument -w`). */
   private final java.util.function.BooleanSupplier gone;
 
@@ -217,6 +219,7 @@ final class AdbShell {
   /** `adb shell` with no command: a prompt that echoes, as a terminal would, since the client sends raw keys. */
   void interactive(InputStream in) throws Exception {
     interactive = true;
+    keys = in;
     OutputStream terminal = out;
     out = new FilterOutputStream(terminal) {
       @Override
@@ -442,6 +445,9 @@ final class AdbShell {
       }
       case "screencap" -> {
         return screencap(args);
+      }
+      case "screenrecord" -> {
+        return screenrecord(args);
       }
       case "uiautomator" -> {
         return uiautomator(args);
@@ -1581,6 +1587,88 @@ final class AdbShell {
     } finally {
       Files.deleteIfExists(shot);
     }
+  }
+
+  /**
+   * screenrecord [--time-limit N] [--size WxH] [--bit-rate BPS] [--verbose] FILE: the control channel's recorder
+   * (`record start|stop`), run until the time limit (180 s, the tool's own cap, by default), until the client closes
+   * the stream (Ctrl-C on `adb shell screenrecord ...`) or until Ctrl-C is typed in an interactive shell, then
+   * stopped. FILE is a device path, so /sdcard works for `adb pull`. The format is the recorder's (Motion-JPEG AVI
+   * without a Mac window, QuickTime H.264 with one), whatever FILE's name says; --size and --bit-rate are accepted
+   * and not applied (the movie is the display's size). The file is at FILE once it returns. Not from the main thread
+   * (the app's own executeShellCommand): the wait would stop the app it records.
+   */
+  private int screenrecord(List<String> opts) throws Exception {
+    List<String> a = new ArrayList<>(opts);
+    long limit = 180;
+    String file = null;
+    for (int i = 0; i < a.size(); i++) {
+      String o = a.get(i);
+      if (o.startsWith("--") && o.indexOf('=') > 0) {  // getopt_long's --opt=value
+        a.set(i, o.substring(0, o.indexOf('=')));
+        a.add(i + 1, o.substring(o.indexOf('=') + 1));
+        o = a.get(i);
+      }
+      switch (o) {
+        case "--time-limit" -> {
+          try {
+            limit = Long.parseLong(i + 1 < a.size() ? a.get(++i) : "");
+          } catch (NumberFormatException e) {
+            print("Error: --time-limit needs a whole number of seconds\n");
+            return 2;
+          }
+        }
+        case "--size", "--bit-rate", "--display-id", "--output-format" -> i++;
+        case "--verbose", "--bugreport", "--show-frame-time", "--rotate", "--help" -> {
+        }
+        default -> {
+          if (o.startsWith("-")) {
+            print("Unknown option " + o + "\n");
+            return 2;
+          }
+          file = o;
+        }
+      }
+    }
+    if (file == null) {
+      print("Usage: screenrecord [--time-limit N] [--size WxH] [--bit-rate BPS] FILE\n");
+      return 2;
+    }
+    if (limit < 1 || limit > 180) {
+      print("Time limit must be 1 to 180 seconds\n");
+      return 2;
+    }
+    if (Looper.getMainLooper().isCurrentThread()) {
+      print("screenrecord: cannot run on the app's main thread\n");
+      return 1;
+    }
+    Path p = Paths.host(file, cwd);
+    if (p == null) {
+      print("Unable to open '" + file + "': Read-only file system\n");
+      return 1;
+    }
+    Files.createDirectories(p.getParent());
+    String r = control("record", "start", p.toString());
+    if (!r.startsWith("recording to ")) {
+      print("screenrecord: " + r + "\n");
+      return 1;
+    }
+    long end = System.nanoTime() + limit * 1_000_000_000L;
+    try {
+      boolean interrupted = false;
+      while (!interrupted && System.nanoTime() < end && !gone.getAsBoolean()) {
+        Thread.sleep(50);
+        while (keys != null && !interrupted && keys.available() > 0) interrupted = keys.read() == 0x03;
+      }
+      if (interrupted) print("^C\n");
+    } catch (InterruptedException e) {
+      // the client left: stop and keep what was recorded
+    } finally {
+      // "not recording": a rotation or resize ended the movie (a movie keeps one frame size), which is not an error
+      String s = control("record", "stop");
+      if (!s.startsWith("saved ") && !s.equals("not recording")) print("screenrecord: " + s + "\n");
+    }
+    return 0;
   }
 
   /**

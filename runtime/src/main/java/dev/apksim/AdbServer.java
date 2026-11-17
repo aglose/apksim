@@ -302,7 +302,7 @@ final class AdbServer {
             return;
           }
           if (s.isClosed()) return;  // the client gave up while the request was held
-          if (cmd.isBlank() && !exec) new AdbShell(s.out).interactive(s.in);
+          if (cmd.isBlank() && !exec) new AdbShell(s.out, InputStream.nullInputStream(), s::isClosed).interactive(s.in);
           else new AdbShell(s.out, s.in, s::isClosed).run(cmd);
         }
         s.out.flush();
@@ -403,6 +403,14 @@ final class AdbServer {
       @Override
       public int read() throws IOException {
         return fill() ? buf[pos++] & 0xff : -1;
+      }
+
+      /** Bytes that can be read without waiting: how a command that runs for a while sees an interactive Ctrl-C. */
+      @Override
+      public int available() {
+        if (pos < buf.length) return buf.length - pos;
+        byte[] next = incoming.peek();
+        return next == null || next == EOF ? 0 : next.length;
       }
 
       @Override
