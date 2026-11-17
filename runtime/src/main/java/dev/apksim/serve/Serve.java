@@ -194,6 +194,8 @@ public final class Serve {
     if (args.length > 1 && args[0].equals("--beam") && List.of("saved", "run", "to-device", "forget", "config", "sweep", "status", "stop").contains(args[1])) {
       // The agent's own commands: its rules for saved options (a server skin's device, a skin it does not have).
       Catalog.agent = true;
+      Catalog.checkLoopback = !args[1].equals("to-device");
+      Catalog.loopbackAllowance = () -> new BeamStore(state).loopbackNow(0);
       Catalog.hostAllowance = () -> new HostAllow(new Beam(state).hosts());  // run and to-device check saved options again
       System.exit(BeamStore.command(root, state, s.launcher, args[1], List.of(args).subList(2, args.length)));
     }
@@ -491,6 +493,8 @@ public final class Serve {
       agent = new Beam(state);
       Catalog.hostAllowance = () -> new HostAllow(agent.hosts());
       store = new BeamStore(state);
+      Catalog.checkLoopback = true;
+      Catalog.loopbackAllowance = () -> store.loopbackNow(port);
       BeamStore.Config c = store.config;
       store.config = new BeamStore.Config(keepDays != null ? keepDays : c.keepDays(),
           saveSessions != null ? saveSessions : c.saveSessions(), keepSavedDays != null ? keepSavedDays : c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback());

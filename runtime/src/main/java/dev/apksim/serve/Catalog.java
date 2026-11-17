@@ -53,6 +53,8 @@ final class Catalog {
    * the Mac's owner's (`apksim beam config allow-host`, read at every check). None by default.
    */
   static volatile java.util.function.Supplier<HostAllow> hostAllowance = HostAllow::new;
+  /** On the agent: the loopback ports its owner opened (`apksim beam config allow-loopback`, read at every check). */
+  static volatile java.util.function.Supplier<List<Integer>> loopbackAllowance = List::of;
   static final int NETWORK_HOST_MAX = 8;
   /** The most characters of a `--network-trust inline:` value (a certificate chain's DER, base64: a few KB). */
   static final int NETWORK_TRUST_MAX = 12000;
@@ -61,6 +63,13 @@ final class Catalog {
    * name its server's skin (which the page draws) and the error would list the visitor's own skins to any page.
    */
   static volatile boolean agent;
+  /** Whether a host-allow address is this Mac's own loopback (localhost, 127/8, ::1), in the spellings a list normalises to. */
+  static boolean isLoopback(String addr) {
+    return addr.equals("localhost") || addr.matches("127\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}") || addr.equals("::1");
+  }
+
+  /** On the agent, for starts that run in the beam sandbox (not `to-device`, which moves a session to an adb device): check loopback targets. */
+  static volatile boolean checkLoopback;
   /** `--move-shared-data` only changes how the app's own native libraries are mapped (macOS; a no-op on Linux). */
   /** The launch options and flags as a JSON array, sorted: `/beam/hello`'s `options` (what a start may carry). */
   static String optionsJson() {
@@ -287,6 +296,19 @@ final class Catalog {
                   ? "no target is allowed here (" + (agent ? "apksim beam config allow-host ADDR[:PORT]" : "serve --network-host-allow ADDR[:PORT]") + ")"
                   // The list itself is the operator's or the owner's to see (status, config), not a page's.
                   : "not an allowed target (" + (agent ? "apksim beam config allow-host ADDR[:PORT]" : "serve --network-host-allow ADDR[:PORT]") + ")"));
+        }
+        // Issue 439: the beam sandbox denies loopback but for the ports `allow-loopback` names, so a loopback target
+        // allowed only by `allow-host` failed at connect with an opaque SocketException. Say what is missing instead.
+        HostAllow.Target tt = HostAllow.parse(to);
+        if (checkLoopback && tt != null && tt.port() != 0 && isLoopback(tt.addr())) {
+          String shown = v.replaceAll("[^A-Za-z0-9.:=\\[\\]-]", "?");
+          if (!tt.addr().equals("localhost") && !tt.addr().equals("127.0.0.1")) {
+            throw new IOException("--network-host " + shown + ": the beam sandbox can open only 127.0.0.1 (or localhost) ports, not this address");
+          }
+          if (!loopbackAllowance.get().contains(tt.port())) {
+            throw new IOException("--network-host " + shown
+                + ": the target is on this Mac's loopback, which the beam sandbox denies unless its port is opened: apksim beam config allow-loopback " + tt.port());
+          }
         }
         if (++networkHosts > NETWORK_HOST_MAX) throw new IOException("--network-host: at most " + NETWORK_HOST_MAX);
       }
