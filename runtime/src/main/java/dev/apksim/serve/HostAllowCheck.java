@@ -115,14 +115,23 @@ public final class HostAllowCheck {
     // Issue 439: on the agent a loopback target also needs its port opened with allow-loopback.
     Catalog.hostAllowance = () -> new HostAllow(List.of("127.0.0.1:18003", "10.0.0.5:8443"));
     Catalog.agent = true;
+    Catalog.checkLoopback = true;
     Catalog.loopbackAllowance = List::of;
     String lb = why("--network-host", "some.host=127.0.0.1:18003");
     check(lb.contains("allow-loopback 18003"), "agent: a loopback target without allow-loopback names the command: " + lb);
     check(accepted("--network-host", "some.host=10.0.0.5:8443"), "agent: a non-loopback target needs no allow-loopback");
     Catalog.loopbackAllowance = () -> List.of(18003);
     check(accepted("--network-host", "some.host=127.0.0.1:18003"), "agent: with allow-loopback it is accepted");
+    check(!accepted("--network-host", "a.host=[::1]:18003"), "agent: ::1 cannot be opened, so it is refused");
+    Catalog.hostAllowance = () -> new HostAllow(List.of("localhost:18003", "127.example.com:8080", "127.0.0.2:5"));
+    check(accepted("--network-host", "a.host=localhost:18003"), "agent: localhost with its port open");
+    check(accepted("--network-host", "a.host=127.example.com:8080"), "agent: a name starting 127. is not loopback");
+    check(!accepted("--network-host", "a.host=127.0.0.2:5"), "agent: another 127/8 address is refused");
+    Catalog.checkLoopback = false;
+    check(accepted("--network-host", "a.host=127.0.0.2:5"), "to-device: no sandbox check");
     Catalog.agent = false;
     Catalog.loopbackAllowance = List::of;
+    Catalog.hostAllowance = () -> new HostAllow(List.of("127.0.0.1:18003"));
     check(accepted("--network-host", "some.host=127.0.0.1:18003"), "serve: loopback is the operator's own, no second list");
     Catalog.hostAllowance = HostAllow::new;
     if (failures > 0) {
