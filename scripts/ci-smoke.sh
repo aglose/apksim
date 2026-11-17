@@ -109,6 +109,15 @@ signin="$(drive nodes | grep -oE 'text="signin: [^"]*"')"
 echo "Sign-in: $signin"
 [[ "$signin" == 'text="signin: code=smoke42 (instances 1, new intents 1)"' ]] \
   || { echo "a sign-in's redirect did not reach the waiting activity" >&2; exit 1; }
+# The same with an SDK's strictness (Auth0): resumed while waiting with no callback in its intent, it reports a cancel.
+# The trampoline finishes in onCreate, so the activity below must get onNewIntent before any resume (issue 435). The
+# running one turns strict on the delivered start (new intents 2); the redirect is the third. Not a restart: the backs
+# below expect the stack as it is.
+drive 'open apksim://signin?strict=1' 'wait 1500' 'tap-text Sign in' 'wait 500' 'open apksim://signin-callback?code=strict7' 'wait 1500' >/dev/null
+signin="$(drive nodes | grep -oE 'text="signin: [^"]*"')"
+echo "Sign-in (strict): $signin"
+[[ "$signin" == 'text="signin: code=strict7 (instances 1, new intents 3)"' ]] \
+  || { echo "a strict sign-in saw a resume before the redirect's intent" >&2; exit 1; }
 # Activity.recreate() relaunches the activity (issue 410: Robolectric's ActivityController.recreate threw in
 # windowFocusChanged, exit 10); twice in a row is one relaunch, and one from the new activity's onCreate runs after.
 recreated() { drive nodes | grep -oE 'text="recreate: [^"]*"'; }
