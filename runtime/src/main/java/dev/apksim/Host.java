@@ -814,10 +814,34 @@ public class Host {
       return e;
     }
     SimWindow.Event e = pendingScript.isEmpty() ? SimWindow.poll() : pendingScript.poll();
+    if (e != null) e = mergeQueued(e);
     if (e == null || e.type() != DRAG) return e;
     drag = drags.poll();
     drag.start = now;
     return new SimWindow.Event(SimWindow.DOWN, drag.x1, drag.y1, 0);
+  }
+
+  /**
+   * As a device's input dispatcher batches touch input: a MOVE followed in the script queue by more MOVEs is
+   * dispatched as the newest of them, and WHEELs at one point as one with their amounts summed. DOWN, UP and
+   * everything else stay in order and are never merged, so a page sending one move per animation frame stays at most
+   * a frame behind its pointer and its UP is not stuck behind a backlog (issue 450).
+   */
+  private SimWindow.Event mergeQueued(SimWindow.Event e) {
+    if (e.type() == SimWindow.MOVE) {
+      for (SimWindow.Event n; (n = pendingScript.peek()) != null && n.type() == SimWindow.MOVE; ) {
+        e = pendingScript.poll();
+      }
+    } else if (e.type() == SimWindow.WHEEL) {
+      float sum = e.value();
+      for (SimWindow.Event n; (n = pendingScript.peek()) != null && n.type() == SimWindow.WHEEL
+          && n.x() == e.x() && n.y() == e.y(); ) {
+        sum += n.value();
+        pendingScript.poll();
+      }
+      if (sum != e.value()) e = new SimWindow.Event(SimWindow.WHEEL, e.x(), e.y(), sum);
+    }
+    return e;
   }
 
   /** Where the simulated clock and real time stood together when the loop started (`stats` reports the drift). */
