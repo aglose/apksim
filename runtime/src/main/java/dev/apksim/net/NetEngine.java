@@ -554,8 +554,7 @@ final class NetEngine {
       } catch (IOException e) {
         // Only for an address the machine has no route to: a timeout or a refusal is the server's answer, and an address the
         // app's own DNS chose (not one of the system's) must not be swapped for another.
-        if (!(e instanceof java.net.NoRouteToHostException) && !(e instanceof java.net.ConnectException
-            && String.valueOf(e.getMessage()).toLowerCase(Locale.ROOT).contains("unreachable"))) throw e;
+        if (!noRoute(e)) throw e;
         if (address == null || Net.hostMap.containsKey(host.toLowerCase(Locale.ROOT)) || closed) throw e;
         InetAddress[] all;
         try {
@@ -579,6 +578,19 @@ final class NetEngine {
         }
         throw e;
       }
+    }
+
+    /**
+     * A connect failure that means the machine has no way to the address, not that the server said no: macOS reports a
+     * missing IPv6 route as NoRouteToHostException, Linux as a SocketException "Network is unreachable" (ENETUNREACH;
+     * a ConnectException with that text on some JDKs), and "No route to host" (EHOSTUNREACH) or "Cannot assign requested
+     * address" (EADDRNOTAVAIL) are the same kind. A refusal or a timeout is not (issue 470).
+     */
+    static boolean noRoute(IOException e) {
+      if (e instanceof java.net.NoRouteToHostException) return true;
+      if (!(e instanceof java.net.SocketException)) return false; // ConnectException is one
+      String m = String.valueOf(e.getMessage()).toLowerCase(Locale.ROOT);
+      return m.contains("unreachable") || m.contains("no route to host") || m.contains("cannot assign requested address");
     }
 
     private Socket connectTo(InetSocketAddress to) throws IOException {
