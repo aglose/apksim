@@ -83,6 +83,7 @@ final class BeamStore {
       return "keep-days " + num(keepDays) + ", save-sessions " + (saveSessions ? "on" : "off") + ", keep-saved-days "
           + (keepSavedDays < 0 ? "never" : num(keepSavedDays)) + ", rec " + rec
           + ", inspect-network " + inspectNetwork + ", allow-adb " + (allowAdb ? "on" : "off")
+          + ", forward-allow " + (forwardAllow.isEmpty() ? "none" : String.join(" ", forwardAllow))
           + ", allow-loopback " + (allowLoopback.isEmpty() ? "off" : allowLoopback);
     }
   }
