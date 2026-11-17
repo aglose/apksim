@@ -78,7 +78,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     drawn then and again at the vsync (`frames` counts the frames `held for their vsync`). A vsync asked for since the
     last frame waits for the display's next one, and while a timed drag (`swipe ... MS`) runs the loop turns at each
     vsync and sends the move there, as a device consumes batched touch input in the vsync's frame; other input goes
-    out 7 ms apart. When nothing is wanted (no frame, no input for 100 ms, no command or `settle`), it sleeps in
+    out 7 ms apart, and scripted input that queued up meanwhile is batched as a device's input dispatcher does
+    (`mergeQueued`, issue 450): consecutive queued `touch move`s go out as the newest, consecutive `wheel`s at one point
+    as their sum, nothing else is merged or reordered (`stats` inputMerged counts them; `scripts/input-merge-check.py`).
+    A burst sent with no time between its moves is therefore a down, one move and an up: pace moves for a real drag. When nothing is wanted (no frame, no input for 100 ms, no command or `settle`), it sleeps in
     Robolectric's `ShadowPausedLooper.poll` until the next main-queue message is due, at most 40 ms: a post to the main
     queue ends it, as do `Control.submit` and window input (`apksim-input-wait` thread); `-Dapksim.idleSleep=false`
     keeps the old 2 ms poll. `Host.Memory`: once the screen has been still for 2 s and the footprint has grown by
@@ -587,7 +590,7 @@ click/longclick listeners, focus; `[compose]` marks an AndroidComposeView and `[
 AndroidViews; the reply joins lines with `; `, FILE gets them as lines, `adb shell apksim viewtree` prints lines),
 `insets` (system bar insets the app sees), `slop` (gesture thresholds), `frames` (frame-interval percentiles since the
 last call, then what reached the screen per display vsync), `fps` (per-stage cost), `display`, `shaders` (which AGSL runs on GPU vs CPU), `stats`
-(frames, heap, `footprintMb`: the physical footprint as `footprint PID` shows it (`Footprint`), `cpuMs`, PID, data slot, `clockAheadMs`: how far SystemClock has run ahead of real time, `lastDown`: where the last touch went down, in display pixels), `redraw`, `stream [QUALITY] [h264 [KBPS]]` (the connection becomes a JPEG or H.264 frame stream: see "apksim serve"), `ping`, `quit`,
+(frames, heap, `footprintMb`: the physical footprint as `footprint PID` shows it (`Footprint`), `cpuMs`, PID, data slot, `clockAheadMs`: how far SystemClock has run ahead of real time, `lastDown`: where the last touch went down, in display pixels, `inputMerged`: queued moves and wheel events merged into a later one), `redraw`, `stream [QUALITY] [h264 [KBPS]]` (the connection becomes a JPEG or H.264 frame stream: see "apksim serve"), `ping`, `quit`,
 `audio [on|mute]` (sound or silence now, open AudioTracks included; off is launch only) and `video [on|blank]` (next codec),
 `maxfps [N]` (frame rate cap, 1-120; see "Per-instance costs" below), `animscale N` (animation speed, any time),
 `vsync [PERIOD_US SHIFT_US|off]` (pace to a viewer's display: see `Host`).
