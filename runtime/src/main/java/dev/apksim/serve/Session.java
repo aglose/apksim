@@ -21,6 +21,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -532,6 +533,18 @@ final class Session {
       // A hidden tab's one frame a second, asked for before the app was up: not while anyone watches (viewersChanged
       // sends it when the last viewer leaves).
       if (viewers != null && viewers.count() > 0) early.removeIf(e -> e.getKey().startsWith("maxfps ") && lowFps(e.getKey()));
+      // Inspector rules the tab sent meanwhile go before everything (issue 445): the instance answers them on the
+      // connection's own thread, but reads one line at a time, and `stats` waits for Host's loop, which runs only after
+      // the app's first activity has started. Taken here, with controlOut set, so none can arrive behind `stats`.
+      List<Map.Entry<String, Consumer<String>>> rules = new ArrayList<>();
+      for (Iterator<Map.Entry<String, Consumer<String>>> it = early.iterator(); it.hasNext(); ) {
+        Map.Entry<String, Consumer<String>> e = it.next();
+        if (e.getKey().startsWith("network rule ") || e.getKey().startsWith("network detail ")) {
+          rules.add(e);
+          it.remove();
+        }
+      }
+      first.addAll(0, rules);
       first.addAll(early);
       early.clear();
       for (Map.Entry<String, Consumer<String>> e : first) {

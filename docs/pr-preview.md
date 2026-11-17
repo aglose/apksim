@@ -187,6 +187,8 @@ with `--inspect-network optional` (issue 371: `/ws?...&inspect=1` asks; the beam
 same there, and `/beam/hello` says `"inspect": "off|optional|on"` for an agent that has it). The `i` message's `"inspectAllowed"` says whether a session could have it. Where the inspector is on for every session (`--inspect-network`, the agent's `inspect-network on`) a session
 may decline it (issue 389: `/ws?...&inspect=0`, a start's `"inspect": false`; `/beam/hello` says `"inspectOptOut": true`) and runs with no network engine.
 
+Rules sent as soon as the session opens (issue 445) are held with the tab's other early commands and, once the instance's control port is up, applied in order on the control connection's own thread, not through Host's loop: they are in place before the Application and the first activity exist, so the app's first requests meet every rule (`scripts/inspector-early-rules-check.py APK`, by hand). `Session` sends them ahead of its `stats`, as the connection reads one line at a time and `stats` waits for the loop. The other `network` and device commands still wait for the loop. These rule commands are not logged as `control` lines and not kept by the flight recorder, so a replay of a recording does not re-apply them.
+
 ## Sample workflow
 
 `.github/actions/preview` wraps the script. A pull request job that builds the debug APKs of the head and the base and posts the
