@@ -552,6 +552,10 @@ final class NetEngine {
       try {
         return connectTo(first);
       } catch (IOException e) {
+        // Only for an address the machine has no route to: a timeout or a refusal is the server's answer, and an address the
+        // app's own DNS chose (not one of the system's) must not be swapped for another.
+        if (!(e instanceof java.net.NoRouteToHostException) && !(e instanceof java.net.ConnectException
+            && String.valueOf(e.getMessage()).toLowerCase(Locale.ROOT).contains("unreachable"))) throw e;
         if (address == null || Net.hostMap.containsKey(host.toLowerCase(Locale.ROOT)) || closed) throw e;
         InetAddress[] all;
         try {
@@ -560,6 +564,7 @@ final class NetEngine {
           throw e;
         }
         InetAddress chosen = first.getAddress();
+        if (!java.util.Arrays.asList(all).contains(chosen)) throw e;
         // The other family's addresses first: the chosen one failed for a route, not for a host that is down.
         boolean v6 = chosen instanceof java.net.Inet6Address;
         java.util.List<InetAddress> others = new java.util.ArrayList<>();
