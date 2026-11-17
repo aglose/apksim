@@ -222,7 +222,7 @@ unless it ran `apksim network unmatched clear` (a test that checks the unmatched
   datagram), and `getaddrinfo` of a non-local name fails with EAI_NONAME. A plain `write()` on a socket that was
   connected before is not stopped. libwebrtc and Cronet's native stack are not recorded.
 - A connection through the engine tells it the address the app chose as well as the name (custom DNS, one address
-  of several), and the engine connects there; `--network-host` still wins, and TLS and the recording use the name.
+  of several), and the engine connects there; `--network-host` still wins, and TLS and the recording use the name. If that address cannot be reached (a host's AAAA on a network with no IPv6 route), the engine tries the host's other addresses, the other family first, as the app's own fast fallback would have (issue 447).
   `SocketFactory.createSocket(InetAddress, port)` keeps the address it is given too (no new lookup).
 - The app's own proxy, reached through a socket the engine answers (OkHttp with `.proxy(...)`): an absolute-form
   request is recorded under its URL and forwarded to the proxy as it was; a CONNECT is forwarded too (replaying, the
