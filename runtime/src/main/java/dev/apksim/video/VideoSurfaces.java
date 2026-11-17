@@ -33,6 +33,11 @@ public final class VideoSurfaces {
 
   private static final Map<SurfaceTexture, Entry> ENTRIES = new ConcurrentHashMap<>();
   private static final java.util.concurrent.atomic.AtomicLong published = new java.util.concurrent.atomic.AtomicLong();
+
+  /** Pictures published to any surface so far: what the flight recorder counts as the app drawing, whatever the frame cap lets through. */
+  public static long publishedCount() {
+    return published.get();
+  }
   /** libwebrtc frames dropped for --video blank (here: SimEglRenderer references org.webrtc, which not every app has). */
   static final java.util.concurrent.atomic.AtomicLong webrtcBlank = new java.util.concurrent.atomic.AtomicLong();
 

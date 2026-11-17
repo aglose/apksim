@@ -595,7 +595,7 @@ final class FlightRecorder {
   private static final long REST_MS = 1500;
   /** Frames in {@link #REST_MS} that still count as a screen standing still (a blinking caret draws about three). */
   private static final int REST_FRAMES = 5;
-  /** The Host's frame count at each of the last quarter seconds, newest last. */
+  /** The Host's frame count, plus pictures a video decoder published (a hidden tab's frame cap lets few frames through while a video plays), at each of the last quarter seconds, newest last. */
   private final long[] frameSamples = new long[8], frameSampleAt = new long[8];
   private int frameSample;
   private long framesNow;

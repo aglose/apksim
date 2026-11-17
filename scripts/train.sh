@@ -24,6 +24,17 @@ fi
 # installed release downloads it below, once).
 APK="${1:-$ROOT/testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk}"
 [[ $# -eq 0 && ! -f "$APK" && -f "$ROOT/work/testapp.apk" ]] && APK="$ROOT/work/testapp.apk"
+# A git worktree has no build outputs of its own: the test app the main checkout built or fetched does as well (the
+# cache holds the framework only).
+if [[ $# -eq 0 && ! -f "$APK" && ! -f "$ROOT/work/release" ]]; then
+  COMMON="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  MAIN="${COMMON%/.git}"
+  if [[ -n "$COMMON" && "$MAIN" != "$COMMON" && "$MAIN" != "$ROOT" ]]; then
+    for f in "$MAIN/testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk" "$MAIN/work/testapp.apk"; do
+      [[ -f "$f" ]] && { APK="$f"; break; }
+    done
+  fi
+fi
 RELEASE_APK=""
 if [[ $# -eq 0 && ! -f "$APK" && -f "$ROOT/work/release" && -f "$ROOT/work/testapp.sha256" ]]; then
   VERSION="$(cat "$ROOT/work/release")"
@@ -64,6 +75,11 @@ if [[ -n "$RELEASE_APK" && ! -f "$RELEASE_APK" ]]; then
   fi
   for old in "$STATE"/testapp-*.apk; do [[ -e "$old" ]] && rm -f "$old"; done
   mv -f "$DL" "$RELEASE_APK"
+fi
+if [[ ! -f "$APK" ]]; then
+  echo "train.sh: no APK to train on: $APK does not exist" >&2
+  echo "train.sh: build the test app (./gradlew :app:assembleDebug in testapks/composeapp), run scripts/fetch-testapp.sh, or pass an APK: train.sh [--headless] APP.apk" >&2
+  exit 1
 fi
 rm -f "$STATE/train.failed"
 # Each stage keeps its output, and a failure says which stage and where to look, rather than ending silently.
