@@ -144,12 +144,12 @@ final class NetEngine {
     } catch (Exception e) {
       ctx = SSLContext.getInstance("TLS");
     }
-    if (Net.trust == null) {
+    if (!Net.hasTrust()) {
       ctx.init(null, null, null);
     } else {
       KeyStore ks = KeyStore.getInstance(java.nio.file.Path.of(System.getProperty("java.home"), "lib", "security", "cacerts").toFile(), (char[]) null);
       int n = 0;
-      try (InputStream in = Files.newInputStream(Net.trust)) {
+      try (InputStream in = Net.trustStream()) {
         for (Certificate c : CertificateFactory.getInstance("X.509").generateCertificates(in)) ks.setCertificateEntry("apksim-trust-" + n++, c);
       }
       TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
@@ -166,7 +166,7 @@ final class NetEngine {
     try {
       CertificateFactory cf = CertificateFactory.getInstance("X.509");
       List<java.security.cert.X509Certificate> trusted = new ArrayList<>();
-      try (InputStream in = Files.newInputStream(Net.trust)) {
+      try (InputStream in = Net.trustStream()) {
         for (Certificate c : cf.generateCertificates(in)) trusted.add((java.security.cert.X509Certificate) c);
       }
       for (String b64 : chain) {
@@ -184,7 +184,7 @@ final class NetEngine {
         }
       }
     } catch (Exception e) {
-      Net.log("network record: cannot read --network-trust " + Net.trust + ": " + e);
+      Net.log("network record: cannot read --network-trust " + Net.trustName() + ": " + e);
     }
     return false;
   }
@@ -610,7 +610,7 @@ final class NetEngine {
       try {
         return upgradeUpstream(appTls);
       } catch (javax.net.ssl.SSLException refused) {
-        if (Net.trust == null) throw refused;
+        if (!Net.hasTrust()) throw refused;
         closeUpstream();
         String err = connectUpstream();
         if (err != null) throw refused;

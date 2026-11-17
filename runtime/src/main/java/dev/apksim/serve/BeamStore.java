@@ -965,6 +965,15 @@ final class BeamStore {
               beam.setDownload(p, k.equals("allow-download"));
               System.out.println((k.equals("allow-download") ? "downloads allowed from " : "downloads no longer allowed from ") + p);
             }
+            // Issue 429: the addresses a start's --network-host may point a host at (read at every start).
+            case "allow-host", "disallow-host" -> {
+              if (HostAllow.parse(v) == null) {
+                System.err.println("apksim beam config " + k + ": takes ADDR[:PORT] (a host name, an IPv4 address or [IPV6], and a port of 1 to 65535)");
+                return 2;
+              }
+              beam.setHost(v, k.equals("allow-host"));
+              System.out.println((k.equals("allow-host") ? "apps may be pointed at " : "apps may no longer be pointed at ") + HostAllow.parse(v));
+            }
             case "keep-days" -> {
               Double d = days(v, false);
               if (d == null) return usage();
@@ -1016,6 +1025,8 @@ final class BeamStore {
         if (changed) store.writeConfig(c);
         System.out.println(c.describe() + (changed && store.agentPort() >= 0 ? "  (the running agent reads it at its next start)" : ""));
         List<String> dl = beam.downloads();
+        List<String> hosts = beam.hosts();
+        System.out.println("network hosts: " + (hosts.isEmpty() ? "none (a start's --network-host is refused)" : String.join(", ", hosts)));
         System.out.println("downloads from: " + (dl.isEmpty() ? "none (the agent fetches builds only from the page's own server)" : String.join(", ", dl)));
         return 0;
       }
@@ -1051,6 +1062,8 @@ final class BeamStore {
             + (never.isEmpty() ? "" : "; refused: " + String.join(", ", never)));
         List<String> dl = new Beam(state).downloads();
         if (!dl.isEmpty()) System.out.println("downloads from: " + String.join(", ", dl));
+        List<String> nh = new Beam(state).hosts();
+        if (!nh.isEmpty()) System.out.println("network hosts: " + String.join(", ", nh));
         long bytes = 0;
         int builds = 0;
         Path uploads = state.resolve("beam/uploads");
@@ -1167,6 +1180,7 @@ final class BeamStore {
                                 [inspect-network on|optional|off]   (a trusted page sees the app's HTTP(S) traffic: of every session, or only of a start that asks)
                                 [allow-adb on|off]   (every trusted site's page may ask for an adb device on this Mac's loopback and run any adb shell command in its session)
                                 [allow-download URL] [disallow-download URL]   (where it may fetch a build a page names)
+                                [allow-host ADDR[:PORT]] [disallow-host ADDR[:PORT]]   (where a start's --network-host may point a host)
              apksim beam stop [--force]         ends the running agent (not while sessions run, unless --force); launchd starts it again
              apksim beam sweep                  deletes what is past its time now (the agent does it by itself)
              apksim beam status                 what the agent runs, the sites it lets in, what it keeps

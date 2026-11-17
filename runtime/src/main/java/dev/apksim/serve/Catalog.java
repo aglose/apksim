@@ -47,7 +47,15 @@ final class Catalog {
   static final Set<String> LAUNCH_OPTIONS = Set.of("--activity", "--build", "--setting", "--feature", "--timezone",
       "--clock", "--anim-scale", "--serial", "--bluetooth", "--status-bar", "--nav-bar", "--max-fps", "--video",
       "--audio", "--biometrics", "--camera", "--network-profile", "--device", "--rec", "--sdcard-file", "--broadcast", "--skin",
-      "--device-kind", "--fold", "--sysfs");
+      "--device-kind", "--fold", "--sysfs", "--network-host", "--network-trust");
+  /**
+   * The addresses a `--network-host` may point at (issue 429): the server's `--network-host-allow` list, or on the agent
+   * the Mac's owner's (`apksim beam config allow-host`, read at every check). None by default.
+   */
+  static volatile java.util.function.Supplier<HostAllow> hostAllowance = HostAllow::new;
+  static final int NETWORK_HOST_MAX = 8;
+  /** The most characters of a `--network-trust inline:` value (a certificate chain's DER, base64: a few KB). */
+  static final int NETWORK_TRUST_MAX = 12000;
   /**
    * This process is `apksim beam`'s agent: a --skin it does not have is dropped, not refused, since a site's start may
    * name its server's skin (which the page draws) and the error would list the visitor's own skins to any page.
@@ -173,7 +181,7 @@ final class Catalog {
   /** The options as given, if every one is allowed ({@link #LAUNCH_OPTIONS}) with a plain value; else the reason. */
   static List<String> launchOptions(List<String> given) throws IOException {
     List<String> out = new ArrayList<>();
-    int sdcardTotal = 0, sdcardArgChars = 0, sdcardSeeds = 0, broadcasts = 0, sysfsSeeds = 0;
+    int networkHosts = 0, networkTrusts = 0, sdcardTotal = 0, sdcardArgChars = 0, sdcardSeeds = 0, broadcasts = 0, sysfsSeeds = 0;
     for (int i = 0; i < given.size(); i++) {
       String o = given.get(i);
       if (LAUNCH_FLAGS.contains(o)) {
@@ -201,6 +209,23 @@ final class Catalog {
         if (sdcardArgChars > dev.apksim.SdcardSeeds.ARG_CHARS_MAX || ++sdcardSeeds > dev.apksim.SdcardSeeds.COUNT_MAX) {
           throw new IOException("--sdcard-file: at most " + dev.apksim.SdcardSeeds.COUNT_MAX + " files and 96 KB of arguments in all");
         }
+        out.add(o);
+        out.add(v);
+        continue;
+      }
+      if (o.equals("--network-trust")) {
+        // The certificate itself, never a host file: inline:BASE64 of PEM or DER, one to four certificates.
+        if (v == null || !v.startsWith("inline:") || v.length() > NETWORK_TRUST_MAX || !v.matches("inline:[A-Za-z0-9+/]+={0,2}")) {
+          throw new IOException("--network-trust takes inline:BASE64 (the certificate's PEM or DER, at most " + NETWORK_TRUST_MAX + " characters), not a file");
+        }
+        try {
+          var certs = java.security.cert.CertificateFactory.getInstance("X.509")
+              .generateCertificates(new java.io.ByteArrayInputStream(java.util.Base64.getDecoder().decode(v.substring(7))));
+          if (certs.isEmpty() || certs.size() > 4) throw new IOException("--network-trust: one to four certificates");
+        } catch (java.security.GeneralSecurityException | IllegalArgumentException e) {
+          throw new IOException("--network-trust: not an X.509 certificate (PEM or DER)");
+        }
+        if (++networkTrusts > 1) throw new IOException("--network-trust: one value");
         out.add(o);
         out.add(v);
         continue;
@@ -247,6 +272,23 @@ final class Catalog {
           throw new IOException("--sysfs takes /sys/PATH=VALUE (a plain path, a value of at most 128 characters)");
         }
         if (++sysfsSeeds > dev.apksim.SysFiles.SEED_MAX) throw new IOException("--sysfs: at most " + dev.apksim.SysFiles.SEED_MAX);
+      }
+      if (o.equals("--network-host")) {
+        // HOST=ADDR[:PORT]: a plain host name, and a target the server's (or this Mac's owner's) allow list names.
+        int eq = v.indexOf('=');
+        if (eq < 1 || !v.substring(0, eq).matches("[A-Za-z0-9]([A-Za-z0-9.-]{0,250}[A-Za-z0-9])?")) {
+          throw new IOException("--network-host takes HOST=ADDR[:PORT] with a plain host name");
+        }
+        String to = v.substring(eq + 1);
+        HostAllow allow = hostAllowance.get();
+        if (!allow.allows(to)) {
+          throw new IOException("--network-host " + v.replaceAll("[^A-Za-z0-9.:=\\[\\]-]", "?") + ": "
+              + (HostAllow.parse(to) == null ? "the target is not ADDR[:PORT]" : allow.isEmpty()
+                  ? "no target is allowed here (" + (agent ? "apksim beam config allow-host ADDR[:PORT]" : "serve --network-host-allow ADDR[:PORT]") + ")"
+                  // The list itself is the operator's or the owner's to see (status, config), not a page's.
+                  : "not an allowed target (" + (agent ? "apksim beam config allow-host ADDR[:PORT]" : "serve --network-host-allow ADDR[:PORT]") + ")"));
+        }
+        if (++networkHosts > NETWORK_HOST_MAX) throw new IOException("--network-host: at most " + NETWORK_HOST_MAX);
       }
       if (o.equals("--rec") && BeamStore.recSetting(v) == null) {
         throw new IOException("--rec takes off, all or flight recorder channels such as input,logcat");
