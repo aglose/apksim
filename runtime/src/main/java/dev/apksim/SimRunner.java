@@ -255,6 +255,9 @@ public class SimRunner extends RobolectricTestRunner {
         if (Crashes.installed() && !Crashes.wasLogged(crash)) Crashes.mainThreadDied(crash);
         throw crash;
       }
+      // A handheld's windows start in touch mode, so nothing gets initial focus (issue 424). Here, not before the
+      // Application: the window manager's stand-in needs Robolectric's configuration, and no window exists yet.
+      TouchMode.start();
       // Test runs have no Host loop to say so: the main Looper exists now, so held adb requests may run. (A normal
       // launch waits for Host.)
       if (TestActivities.testRun()) AdbServer.frameworkReady();

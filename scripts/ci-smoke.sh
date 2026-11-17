@@ -66,6 +66,18 @@ after="$(trip)"
 echo "Trips: $before -> $after"
 [[ -n "$before" && -n "$after" && "$before" != "$after" ]] || { echo "the trip rename did not show" >&2; exit 1; }
 
+# Touch mode (issue 424): on from the start with no view focused, a navigation key leaves it (and gives a view focus,
+# as a device does), the next touch enters it again.
+touchmode() { drive touchmode | sed 's/.*-> //'; }
+tm0="$(touchmode)"
+drive 'key TAB' 'wait 300' >/dev/null
+tm1="$(touchmode)"
+drive 'tap 400 900' 'wait 300' >/dev/null
+tm2="$(touchmode)"
+echo "Touch mode: $tm0 | $tm1 | $tm2"
+[[ "$tm0" == "touch mode on; DecorView touch" && "$tm1" == "touch mode off; DecorView keys focus="* \
+    && "$tm2" == "touch mode on; DecorView touch"* ]] || { echo "touch mode did not follow the input" >&2; exit 1; }
+
 # Adaptive layout: the test app shows its window size class in the top bar. Another device, then a custom size.
 sizeclass() { drive nodes | grep -oE 'text="(compact|medium|expanded) [0-9]+×[0-9]+"' | head -1; }
 drive 'device tablet' 'wait 2000' >/dev/null

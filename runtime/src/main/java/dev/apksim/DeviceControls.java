@@ -1041,6 +1041,7 @@ final class DeviceControls {
     }
     // A folding device has a hinge-angle sensor: to or from one is another set of sensors and features too.
     if (!now.kind().equals(was.kind()) || Fold.spec(now) != Fold.spec(was)) SystemFeatures.deviceChanged(app, now);  // a TV has no touchscreen, has leanback...
+    if (now.tv() != was.tv()) TouchMode.deviceChanged(now);
     applySystemUi(now);
     android.util.DisplayMetrics m = app.getResources().getDisplayMetrics();
     w = m.widthPixels;

@@ -1223,7 +1223,7 @@ public class Host {
         if (!dispatchPredictiveBack()) sendKey(KeyEvent.KEYCODE_BACK, 0, now);
       }
       case SimWindow.KEY -> sendKey((int) e.value(), (int) e.x(), now);
-      case SimWindow.CHAR -> sendChar((char) e.value(), now);
+      case SimWindow.CHAR -> sendChar((char) e.value(), now, e.y() == SimWindow.PASTED);
       case SimWindow.CLOSE -> {
         return true;
       }
@@ -1250,6 +1250,7 @@ public class Host {
   private String lastDown = "none";
 
   private void dispatchTouch(SimWindow.Event e, long now) {
+    if (e.type() == SimWindow.DOWN) TouchMode.set(true);  // a touch on the screen enters touch mode, as on a device
     SystemBars.touch(e.type(), e.x(), e.y(), rootViews(), h);  // a swipe in from a bar the app hid shows it
     if (e.type() == SimWindow.DOWN) {
       downTime = now;
@@ -1352,6 +1353,7 @@ public class Host {
     }
     float x1 = e.x();
     float y1 = e.y();
+    if (e.type() == SimWindow.TOUCH2_DOWN) TouchMode.set(true);
     if (e.type() == SimWindow.TOUCH2_DOWN) {
       parallel = e.value() == 1;
       offsetX = 2 * (centreX - x1);
@@ -1430,15 +1432,20 @@ public class Host {
     for (int i = 0; i < modifiers.length; i++) {
       if ((meta & masks[i]) == 0) continue;
       held |= masks[i] | metaSide(masks[i]);
-      root.dispatchKeyEvent(keyboardEvent(now, KeyEvent.ACTION_DOWN, modifiers[i], held));
+      sendKeyEvent(root, keyboardEvent(now, KeyEvent.ACTION_DOWN, modifiers[i], held));
     }
-    root.dispatchKeyEvent(keyboardEvent(now, KeyEvent.ACTION_DOWN, code, meta));
-    root.dispatchKeyEvent(keyboardEvent(now, KeyEvent.ACTION_UP, code, meta));
+    sendKeyEvent(root, keyboardEvent(now, KeyEvent.ACTION_DOWN, code, meta));
+    sendKeyEvent(root, keyboardEvent(now, KeyEvent.ACTION_UP, code, meta));
     for (int i = modifiers.length - 1; i >= 0; i--) {
       if ((meta & masks[i]) == 0) continue;
       held &= ~(masks[i] | metaSide(masks[i]));
-      root.dispatchKeyEvent(keyboardEvent(now, KeyEvent.ACTION_UP, modifiers[i], held));
+      sendKeyEvent(root, keyboardEvent(now, KeyEvent.ACTION_UP, modifiers[i], held));
     }
+  }
+
+  /** A key event to its window, unless leaving touch mode used it up (TouchMode.key: a device's early input stage). */
+  private static void sendKeyEvent(View root, KeyEvent k) {
+    if (!TouchMode.key(root, k)) root.dispatchKeyEvent(k);
   }
 
   private static int metaSide(int mask) {
@@ -1467,13 +1474,16 @@ public class Host {
     return null;
   }
 
-  private void sendChar(char ch, long now) {
+  /** PASTED: text put in whole, as an IME commits it; its key events keep touch mode (FLAG_KEEP_TOUCH_MODE), as an IME's do. */
+  private void sendChar(char ch, long now, boolean pasted) {
     List<View> roots = rootViews();
     View root = keyTarget(roots);
     if (root == null) return;
     KeyEvent[] events = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD).getEvents(new char[] {ch});
     if (events != null) {
-      for (KeyEvent k : events) root.dispatchKeyEvent(k);
+      for (KeyEvent k : events) {
+        sendKeyEvent(root, pasted ? KeyEvent.changeFlags(k, k.getFlags() | KeyEvent.FLAG_KEEP_TOUCH_MODE) : k);
+      }
     }
   }
 
@@ -2017,6 +2027,9 @@ public class Host {
         Object level = severity.getField("LS_" + (a.length > 1 ? a[1] : "info").toUpperCase()).get(null);
         logging.getMethod("enableLogToDebugOutput", severity).invoke(null, level);
         return "ok";
+      }
+      case "touchmode" -> {
+        return TouchMode.command(a);
       }
       case "slop" -> {
         android.view.ViewConfiguration vc = android.view.ViewConfiguration.get(app);
