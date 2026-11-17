@@ -2757,7 +2757,7 @@ public final class Serve {
           Http.text(out, 400, e.getMessage());
           return;
         }
-              }
+      }
       case "loopback" -> {
         int n = v instanceof Number num && num.doubleValue() == Math.rint(num.doubleValue()) ? num.intValue()
             : v instanceof String str && str.matches("[0-9]{1,5}") ? Integer.parseInt(str) : 0;

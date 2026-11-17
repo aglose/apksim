@@ -357,10 +357,10 @@ final class Beam {
       Long until = deniedAllowUntil.get(key);
       if (until != null && until > System.currentTimeMillis()) return false;
       if (alreadyAllowed.getAsBoolean()) return true;  // allowed while this request waited for another prompt
-      boolean ok;
+      Boolean answer;  // null: nobody answered
       askingFor = origin;
       try {
-        ok = switch (consentMode) {
+        answer = switch (consentMode) {
           case "allow" -> true;
           case "deny" -> false;
           case "allow-after-2s" -> {
@@ -372,13 +372,14 @@ final class Beam {
       } finally {
         askingFor = null;
       }
-      if (!ok) deniedAllowUntil.put(key, System.currentTimeMillis() + DENIED_MS);
-      System.err.printf("[beam] %s asked to allow %s %s: %s%n", origin, kind, target, ok ? "Allow" : "refused");
-      return ok;
+      // Nobody saw an unanswered dialog, so the page may ask again; a refusal holds for a while.
+      if (Boolean.FALSE.equals(answer)) deniedAllowUntil.put(key, System.currentTimeMillis() + DENIED_MS);
+      System.err.printf("[beam] %s asked to allow %s %s: %s%n", origin, kind, target, answer == null ? "no answer" : answer ? "Allow" : "refused");
+      return Boolean.TRUE.equals(answer);
     }
   }
 
-  private static boolean promptAllow(String origin, String kind, String target) {
+  private static Boolean promptAllow(String origin, String kind, String target) {
     notifyOwner(origin, "asks to reach a server on this Mac: see apksim's dialog");
     String what = switch (kind) {
       case "forward" -> "send this app's requests to " + target;
@@ -402,7 +403,7 @@ final class Beam {
       if (!p.waitFor(PROMPT_MS, TimeUnit.MILLISECONDS)) {
         p.descendants().forEach(ProcessHandle::destroyForcibly);
         p.destroyForcibly();
-        return false;
+        return null;
       }
       String out;
       try {
@@ -410,7 +411,8 @@ final class Beam {
       } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException e) {
         out = "";
       }
-      return out.contains("button returned:Allow") && !out.contains("gave up:true");
+      if (out.contains("gave up:true")) return null;
+      return out.contains("button returned:Allow");
     } catch (IOException | InterruptedException e) {
       System.err.println("[beam] no prompt: " + e);
       return false;
