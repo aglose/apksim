@@ -227,6 +227,11 @@ public final class TapCheck {
 
     System.setProperty("apksim.networkInspect", "true");
     Net.configure();
+    if (args.length == 2 && args[0].equals("allowed-loopback")) {
+      allowedLoopback(Integer.parseInt(args[1]));
+      System.out.println(failures == 0 ? "all ok" : failures + " FAILED");
+      System.exit(failures == 0 ? 0 : 1);
+    }
     check(Tap.on && Inspector.on && Net.engine == null, "the inspector and an in-memory capture are on, and no engine was started for them");
 
     http1();
@@ -240,6 +245,41 @@ public final class TapCheck {
 
     System.out.println(failures == 0 ? "all ok" : failures + " FAILED");
     System.exit(failures == 0 ? 0 : 1);
+  }
+
+  /**
+   * Issue 440: run with APKSIM_BEAM_LOOPBACK=PORT and without apksim.netCheckLoopback, as a beamed instance whose owner
+   * opened PORT is: a plain request to it is a row, and a request to another loopback port is not read.
+   */
+  private static void allowedLoopback(int port) throws Exception {
+    System.out.println("== allow-loopback");
+    ServerSocket other = new ServerSocket(0, 5, InetAddress.getLoopbackAddress());
+    ServerSocket open = new ServerSocket(port, 5, InetAddress.getLoopbackAddress());
+    for (ServerSocket ss : new ServerSocket[] {open, other}) {
+      Thread t = new Thread(() -> {
+        try (Socket c = ss.accept()) {
+          head(c.getInputStream());
+          c.getOutputStream().write(ascii("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"));
+          c.getOutputStream().flush();
+          Thread.sleep(300);
+        } catch (Exception ignored) {
+        }
+      });
+      t.setDaemon(true);
+      t.start();
+    }
+    for (int p : new int[] {port, other.getLocalPort()}) {
+      Socket s = new Socket();
+      Net.connect(s, new InetSocketAddress("127.0.0.1", p), 5000);
+      InputStream in = Net.inputStream(s);
+      Net.outputStream(s).write(ascii("GET /loop" + p + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"));
+      head(in);
+      new DataInputStream(in).readFully(new byte[2]);
+      s.close();
+    }
+    Net.drain(2000);
+    check(find("/loop" + port) != null && "ok".equals(body(find("/loop" + port))), "a request to the opened port is an exchange in the inspector");
+    check(find("/loop" + other.getLocalPort()) == null, "another loopback port stays untouched");
   }
 
   private static void http1() throws Exception {
@@ -468,6 +508,21 @@ public final class TapCheck {
     Map<String, Object> silence = find("/silence");
     check(silence != null && String.valueOf(silence.get("_apksimError")).contains("SocketTimeoutException") && ((Number) resp(silence).get("status")).intValue() == 0,
         "a request that never got an answer is kept, with the timeout that ended it (" + (silence == null ? null : silence.get("_apksimError")) + ")");
+    // Issue 440: TLS the app's factory refuses (an untrusted certificate) leaves a row, with the reason.
+    int selfSigned = serve(new String[] {"http/1.1"}, (s3, in3, out3) -> Thread.sleep(500));
+    Socket raw = new Socket();
+    Net.connect(raw, new InetSocketAddress("localhost", selfSigned), 5000);
+    SSLSocket refused = (SSLSocket) Net.createSocket((javax.net.ssl.SSLSocketFactory) javax.net.ssl.SSLContext.getDefault().getSocketFactory(), raw, "localhost", selfSigned, true);
+    try {
+      refused.startHandshake();
+      check(false, "an untrusted certificate fails the handshake");
+    } catch (IOException expected) {
+      refused.close();
+    }
+    Thread.sleep(2500);
+    Net.drain(2000);
+    check(Inspector.eventsForCheck().stream().anyMatch(e -> e.contains("\"CONNECT\"") && e.contains(":" + selfSigned)),
+        "a TLS handshake that failed is a row in the inspector");
     ServerSocket closed = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
     int dead = closed.getLocalPort();
     closed.close();

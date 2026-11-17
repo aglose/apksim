@@ -101,6 +101,8 @@ final class Tap {
     volatile boolean dead;
     /** App data has flowed, so the TLS handshake is over and the session can be read without starting one. */
     volatile boolean established;
+    /** TLS layered by the app's factory whose handshake has not been seen to finish (a listener on the socket says so). */
+    volatile boolean handshakePending;
     private volatile boolean queuedEnd;
 
     // The tap's thread only, from here.
@@ -188,6 +190,16 @@ final class Tap {
     Conn c = new Conn(tls, host, port, true, under == null ? -1 : under.connectMs);
     c.relayed = under != null && under.relayed;
     known.put(tls, c);
+    if (under != null && tls instanceof SSLSocket ssl) {
+      c.handshakePending = true;
+      handshaking.add(c);
+      if (parked) LockSupport.unpark(thread);  // it may be parked for 30 s: a closed socket is noticed within a second
+      try {
+        ssl.addHandshakeCompletedListener(e -> c.handshakePending = false);
+      } catch (RuntimeException | LinkageError e) {
+        c.handshakePending = false;  // a provider's socket that takes none: no claim either way
+      }
+    }
   }
 
   /** A connection for a socket whose streams the caller wraps itself ({@link TapSslSocket}). */
@@ -388,6 +400,8 @@ final class Tap {
 
   /** The connections that have carried bytes and are not over. */
   private static final Set<Conn> live = new LinkedHashSet<>();
+  /** Connections whose app-layered TLS handshake has not been seen to finish; read only for what they leave if they end first. */
+  private static final Set<Conn> handshaking = java.util.concurrent.ConcurrentHashMap.newKeySet();
   private static final ArrayDeque<Map<String, Object>> closed = new ArrayDeque<>();
   private static long sweptAt;
 
@@ -401,7 +415,7 @@ final class Tap {
           Net.log("network tap: " + t);
         }
         parked = true;
-        if (queue.isEmpty()) LockSupport.parkNanos(Tap.class, live.isEmpty() ? 30_000_000_000L : 1_000_000_000L);
+        if (queue.isEmpty()) LockSupport.parkNanos(Tap.class, live.isEmpty() && handshaking.isEmpty() ? 30_000_000_000L : 1_000_000_000L);
         parked = false;
         continue;
       }
@@ -564,6 +578,11 @@ final class Tap {
     c.bytesIn += c.uncopiedIn.get();
     c.bytesOut += c.uncopiedOut.get();
     if (never && error != null && error.startsWith("connect failed")) Inspector.failure(c.host, c.port, error);
+    else if (never && c.handshakePending && !c.established) {
+      // Issue 440: TLS the app layered on a connected socket that ended before any byte crossed it and before its
+      // handshake completed: a row, as the app got an error and the server saw a connection.
+      Inspector.failure(c.host, c.port, "TLS closed before the handshake was seen to finish" + (error != null ? ": " + error : ""));
+    }
     else if (c.decoder instanceof Opaque o && c.bytesIn + c.bytesOut > 0) Inspector.opaque(c.host, c.port, c.bytesOut, c.bytesIn, o.why);
     if (never && c.error == null) return;  // made and closed with nothing said on it: not worth a line
     closed.addLast(describe(c));
@@ -576,6 +595,16 @@ final class Tap {
    */
   private static void sweep() {
     sweptAt = System.nanoTime();
+    for (Conn c : handshaking) {  // TLS layered on a socket that has carried nothing yet (issue 440)
+      Socket s = c.socket.get();
+      if (!c.handshakePending || c.live || c.ended) {
+        handshaking.remove(c);
+      } else if (s == null || s.isClosed()) {
+        handshaking.remove(c);
+        c.swept = true;
+        put(new Chunk(c, END, sweptAt, null, null));
+      }
+    }
     if (live.isEmpty()) return;
     for (Conn c : live) {
       if (c.swept) continue;
@@ -594,6 +623,11 @@ final class Tap {
       c.ended = true;
     }
     live.clear();
+    for (Conn c : handshaking) {
+      c.dead = true;
+      c.ended = true;
+    }
+    handshaking.clear();
   }
 
   private static Map<String, Object> describe(Conn c) {
