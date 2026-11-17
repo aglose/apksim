@@ -541,7 +541,7 @@ final class DeviceControls {
         return show();
       }
       case "record" -> {
-        // record start [FILE.mov] | stop | toggle: the screen as a movie (Mac window only). Default file: work/screenshots.
+        // record start [FILE.mov|FILE.mp4] | stop | toggle: the screen as a movie (Mac window only). Default file: work/screenshots.
         String op = a.length > 1 ? a[1] : "toggle";
         if (op.equals("toggle")) op = recording == null ? "start" : "stop";
         try {

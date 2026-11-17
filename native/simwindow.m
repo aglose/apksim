@@ -728,6 +728,7 @@ JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativePresent(JNIEnv *env, jcla
 // the time they were shown, so the movie keeps real timing even though frames arrive only when something changes.
 static AVAssetWriterInputPixelBufferAdaptor *recAdaptor;
 static CMTime recLast;
+static CVPixelBufferRef recLastBuf;  // the last frame written, held until the movie ends
 static uint64_t recStartNanos, recLastNanos;
 static pthread_mutex_t recLock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -749,7 +750,8 @@ static void recordFrame(IOSurfaceRef s) {
         CVPixelBufferUnlockBaseAddress(pb, 0);
         recLast = CMTimeMake((int64_t)(now - recStartNanos), 1000000000);
         [recAdaptor appendPixelBuffer:pb withPresentationTime:recLast];
-        CVPixelBufferRelease(pb);
+        if (recLastBuf) CVPixelBufferRelease(recLastBuf);
+        recLastBuf = pb;  // kept (not released) for the closing frame in nativeRecordStop
         recLastNanos = now;
       }
     }
@@ -769,7 +771,7 @@ JNIEXPORT jstring JNICALL Java_dev_apksim_SimWindow_nativeRecordStart(JNIEnv *en
   } else {
     NSError *e = nil;
     [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
-    AVAssetWriter *w = [AVAssetWriter assetWriterWithURL:url fileType:AVFileTypeQuickTimeMovie error:&e];
+    AVAssetWriter *w = [AVAssetWriter assetWriterWithURL:url fileType:([url.pathExtension.lowercaseString isEqualToString:@"mp4"] ? AVFileTypeMPEG4 : AVFileTypeQuickTimeMovie) error:&e];
     NSDictionary *settings = @{AVVideoCodecKey : AVVideoCodecTypeH264, AVVideoWidthKey : @(devW), AVVideoHeightKey : @(devH)};
     AVAssetWriterInput *in = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:settings];
     in.expectsMediaDataInRealTime = YES;
@@ -786,6 +788,7 @@ JNIEXPORT jstring JNICALL Java_dev_apksim_SimWindow_nativeRecordStart(JNIEnv *en
       recWriter = w;
       recAdaptor = ad;
       recStartNanos = recLastNanos = 0;
+      if (recLastBuf) { CVPixelBufferRelease(recLastBuf); recLastBuf = NULL; }
       recLast = kCMTimeZero;
     }
   }
@@ -798,14 +801,33 @@ JNIEXPORT jstring JNICALL Java_dev_apksim_SimWindow_nativeRecordStart(JNIEnv *en
 
 // Finishes the movie; returns its duration in milliseconds, or -1 if nothing was recording.
 JNIEXPORT jlong JNICALL Java_dev_apksim_SimWindow_nativeRecordStop(JNIEnv *env, jclass c) {
+  // What is on screen now is the movie's last picture: recordFrame drops presents under 16 ms after the last one it
+  // wrote, so the last frame written may be an earlier state. Ask for one past that limit.
+  IOSurfaceRef shown = surfaces[(nextSurface + SURFACES - 1) % SURFACES];
+  pthread_mutex_lock(&recLock);
+  recLastNanos = 0;
+  pthread_mutex_unlock(&recLock);
+  if (shown) recordFrame(shown);
   pthread_mutex_lock(&recLock);
   AVAssetWriter *w = recWriter;
   recWriter = nil;
   uint64_t start = recStartNanos;
+  AVAssetWriterInputPixelBufferAdaptor *ad = recAdaptor;
+  CVPixelBufferRef held = recLastBuf;
+  CMTime lastT = recLast;
+  recLastBuf = NULL;
   pthread_mutex_unlock(&recLock);
   if (!w) return -1;
   uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
   CMTime end = CMTimeMake((int64_t)(now - (start ? start : now)), 1000000000);
+  // A frame is written only when the screen changes, and a track ends where its last frame's duration does: repeat the
+  // last picture just before the end so a still stretch at the end plays for its real length.
+  if (held) {
+    CMTime t = CMTimeSubtract(end, CMTimeMake(1000000, 1000000000));
+    if (CMTimeCompare(t, lastT) > 0 && ad.assetWriterInput.readyForMoreMediaData)
+      [ad appendPixelBuffer:held withPresentationTime:t];
+    CVPixelBufferRelease(held);
+  }
   [w.inputs.firstObject markAsFinished];
   [w endSessionAtSourceTime:end];
   dispatch_semaphore_t done = dispatch_semaphore_create(0);
