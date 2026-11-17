@@ -36,6 +36,10 @@ final class TestRecorder {
   static final boolean ON = ("failed".equals(MODE) || "all".equals(MODE)) && DIR != null && TestActivities.testRun()
       && !Boolean.parseBoolean(System.getProperty("apksim.instrument.log"));
   private static final boolean ALL = "all".equals(MODE);
+  /** `--record-format mp4` (H.264, {@link Mp4Recorder}) or avi (Motion-JPEG, the default). */
+  private static final boolean MP4 = "mp4".equals(System.getProperty("apksim.record.format", "avi"));
+  private static boolean warnedNoEncoder;
+  private static boolean usingMp4;
   private static final int FPS = Math.max(1, Math.min(30, Integer.getInteger("apksim.record.fps", 15)));
   private static final int[] MAX = size(System.getProperty("apksim.record.size", "1280x720"));
   /** A frame that took this long stops the test's movie (the rest of the test runs without one). */
@@ -46,6 +50,7 @@ final class TestRecorder {
 
   private static Description current;
   private static Path file;
+  private static Path base;  // the movie's path without its extension (also the sidecar's)
   private static boolean started, capturing, active, pending, scheduled, failed;
   private static android.os.Handler main;
   private static java.util.concurrent.ScheduledExecutorService timer;
@@ -84,7 +89,8 @@ final class TestRecorder {
     finish(false);
     resetScheduling();
     current = d;
-    file = Paths.get(DIR, d.getClassName(), Bundles.folder(d.getClassName(), d.getMethodName()) + ".avi");
+    base = Paths.get(DIR, d.getClassName(), Bundles.folder(d.getClassName(), d.getMethodName()));
+    file = Paths.get(base + (MP4 ? ".mp4" : ".avi"));
     started = false;
     lastNanos = 0;
     lastTookNanos = 0;
@@ -213,7 +219,22 @@ final class TestRecorder {
         try {
           Files.createDirectories(file.getParent());
           shareWithHost(file.getParent());
-          String err = MjpegRecorder.start(file.toString(), w, h, FPS);
+          String err = null;
+          usingMp4 = false;
+          if (MP4) {
+            err = Mp4Recorder.start(file.toString(), w, h, FPS);
+            if (err == null) {
+              usingMp4 = true;
+            } else {
+              // No H.264 encoder here (Linux without libopenh264): an AVI, said once.
+              if (!warnedNoEncoder) {
+                warnedNoEncoder = true;
+                System.err.println("[apksim] --record-format mp4: no H.264 encoder (" + err + "); recording AVI instead");
+              }
+              file = Paths.get(base + ".avi");
+            }
+          }
+          if (!usingMp4) err = MjpegRecorder.start(file.toString(), w, h, FPS);
           if (err != null) throw new IOException(err);
         } catch (IOException | RuntimeException e) {
           // Not the expected no-window case: say why there is no movie, and do not retry for this test.
@@ -238,7 +259,7 @@ final class TestRecorder {
       ByteBuffer pixels = ByteBuffer.allocate(w * h * 4);
       scaled.copyPixelsToBuffer(pixels);
       pixels.flip();
-      MjpegRecorder.frame(pixels);
+      if (usingMp4) Mp4Recorder.frame(pixels); else MjpegRecorder.frame(pixels);
     } catch (VirtualMachineError e) {
       throw e;  // out of memory and the like: not the recorder's to hide
     } catch (Throwable e) {
@@ -267,7 +288,7 @@ final class TestRecorder {
     pending = false;
     if (started) {
       try {
-        cutOffMs = MjpegRecorder.stop();
+        cutOffMs = usingMp4 ? Mp4Recorder.stop() : MjpegRecorder.stop();
       } catch (VirtualMachineError e) {
         throw e;
       } catch (Throwable e) {
@@ -318,7 +339,7 @@ final class TestRecorder {
     started = false;
     long ms;
     try {
-      ms = cutOff ? cutOffMs : MjpegRecorder.stop();
+      ms = cutOff ? cutOffMs : usingMp4 ? Mp4Recorder.stop() : MjpegRecorder.stop();
     } catch (VirtualMachineError e) {
       throw e;
     } catch (Throwable e) {
@@ -327,13 +348,28 @@ final class TestRecorder {
     }
     cutOff = false;
     try {
+      Path sidecar = Paths.get(base + ".json");
       if (keep && ms >= 0) {
         keptFor = file;
+        writeSidecar(sidecar);
       } else {
         Files.deleteIfExists(file);
+        Files.deleteIfExists(sidecar);
       }
     } catch (IOException e) {
       System.err.println("[apksim] could not remove the recording " + file + ": " + e);
     }
+  }
+
+  /**
+   * DIR/&lt;class&gt;/&lt;method&gt;-&lt;hash&gt;.json beside the movie: when its first frame (t = 0) was taken in wall-clock time, so a
+   * test's own timestamps (Allure steps under --realtime-clock) can be placed on the movie's timeline.
+   */
+  private static void writeSidecar(Path sidecar) throws IOException {
+    long start = usingMp4 ? Mp4Recorder.lastStartEpochMs : MjpegRecorder.lastStartEpochMs;
+    long dur = usingMp4 ? Mp4Recorder.lastDurationMs : MjpegRecorder.lastDurationMs;
+    String json = "{\"start_epoch_ms\": " + start + ", \"duration_ms\": " + dur + ", \"fps\": " + FPS + ", \"width\": "
+        + w + ", \"height\": " + h + ", \"format\": \"" + (usingMp4 ? "mp4" : "avi") + "\"}\n";
+    Files.writeString(sidecar, json);
   }
 }

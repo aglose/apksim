@@ -10,8 +10,10 @@ header, MJPG, an index with as many entries as the header's frame count, at leas
 --record-size and at the --record-fps rate in its header, the JUnit XML's property and attachment, and that a movie
 left by an earlier run is removed first. Then one camera test with every capture slowed to 150 ms (issue 360):
 it must pass and the captures must leave the main thread most of its time. OUT (default work/record-check) is emptied first.
+`--record-format mp4` (issue 454) is checked too: H.264 MP4s with moov before mdat, a sidecar .json with the wall-clock
+start, and the XML property; where no encoder opens it expects the documented AVI fallback.
 """
-import argparse, os, re, shutil, signal, struct, subprocess, sys, xml.etree.ElementTree as ET
+import argparse, json, os, re, shutil, signal, struct, subprocess, sys, time, xml.etree.ElementTree as ET
 
 ROOT = os.path.dirname(os.path.abspath(sys.argv[0])) + "/.."
 CLS = "dev.apksim.composeapp.FailureBundleTest"
@@ -22,6 +24,7 @@ def check(ok, what):
     print(("  ok    " if ok else "  FAIL  ") + what)
     if not ok:
         problems.append(what)
+    return ok
 
 
 def avi(path):
@@ -48,8 +51,25 @@ def run(out, name, *extra):
     return r, xml, rec
 
 
-def movies(rec):
-    return {f: os.path.join(d, f) for d, _, fs in os.walk(rec) for f in fs if f.endswith(".avi")}
+def movies(rec, ext=".avi"):
+    return {f: os.path.join(d, f) for d, _, fs in os.walk(rec) for f in fs if f.endswith(ext)}
+
+
+def mp4(path):
+    """(top-level box names, has avc1, frame count from stsz) of an MP4 as Mp4Recorder writes it, or a problem string."""
+    d = open(path, "rb").read()
+    boxes, i = [], 0
+    while i < len(d):
+        if i + 8 > len(d):
+            return "truncated box header"
+        size, name = struct.unpack(">I4s", d[i:i + 8])
+        if size < 8 or i + size > len(d):
+            return f"bad size for {name!r}"
+        boxes.append(name.decode("latin1"))
+        i += size
+    k = d.find(b"stsz")
+    frames = struct.unpack(">I", d[k + 12:k + 16])[0] if k >= 0 else 0
+    return boxes, b"avc1" in d and b"avcC" in d, frames
 
 
 def main():
@@ -97,6 +117,30 @@ def main():
     print("        movies:", names)
     check("a_passes" in names, "a movie for the passing test too")
     check(all(not isinstance(avi(p_), str) and avi(p_)[3] >= 1 for p_ in got.values()), "every movie is well formed")
+
+    print("--record all --record-format mp4 (issue 454):")
+    r, xml, rec = run(a.out, "mp4", "--record", "all", "--record-size", "320x320", "--record-fps", "10",
+                      "--record-format", "mp4")
+    if "recording AVI instead" in r.stderr:
+        print("  (no H.264 encoder here: apksim fell back to AVI, as documented)")
+        check(bool(movies(rec)) and not movies(rec, ".mp4"), "the AVI fallback wrote movies")
+    else:
+        mv = movies(rec, ".mp4")
+        check(len(mv) >= 3 and not movies(rec), f"{len(mv)} .mp4 movies and no .avi")
+        for name, path in sorted(mv.items()):
+            v = mp4(path)
+            if check(isinstance(v, tuple), f"{name} is well-formed: {v}"):
+                boxes, avc, frames = v
+                check(boxes[:3] == ["ftyp", "moov", "mdat"], f"{name}: moov before mdat ({boxes})")
+                check(avc and frames >= 1, f"{name}: avc1 with avcC, {frames} frames")
+            side = os.path.splitext(path)[0] + ".json"
+            if check(os.path.isfile(side), f"{name}: sidecar json"):
+                j = json.load(open(side))
+                check(abs(j["start_epoch_ms"] - time.time() * 1000) < 3_600_000 and j["fps"] == 10
+                      and j["width"] <= 320 and j["height"] <= 320 and j["width"] % 2 == 0 and j["duration_ms"] > 0,
+                      f"{name}: sidecar {j}")
+        t = open(xml).read()
+        check(t.count("apksim.recording.startEpochMs") == len(mv) and ".mp4" in t, "the XML links each .mp4 and its start")
 
     print("no --record: nothing written:")
     r, xml, rec = run(a.out, "none")

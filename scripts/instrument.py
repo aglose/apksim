@@ -5,7 +5,8 @@ Usage: instrument.py APP.apk TEST.apk [--isolate [--run-ignored] [--prewarm on|o
                       [--group-size N [--group-seconds T] [--isolate-classes REGEX]... [--retry-isolated N]]] [-j N] [--shards N [--timings XML]... [--shard I]] [--xml FILE]
                      [--record-deps FILE | --affected-by FILE (--changed PATH... | --diff REV) [--ignore GLOB]...]
                      [-e KEY VALUE]... [--apksim CMD] [--bundles DIR [--bundles-local PATH]] [--test-timeout SEC]
-                     [--record failed|all --record-dir DIR [--record-local PATH] [--record-size WxH] [--record-fps N]]
+                     [--record failed|all --record-dir DIR [--record-local PATH] [--record-size WxH] [--record-fps N]
+                     [--record-format avi|mp4]]
                      [--coverage DIR [--coverage-local PATH] [--mapping FILE] [--source-prefix P]]
                      [-- APKSIM_OPTION...]
 
@@ -91,6 +92,12 @@ drawn after a window traversal, at most --record-fps (default 15, up to 30) time
 time, and a test that never shows a window has none. The movie of a test whose process died or was killed is
 unfinished (no index). With --apksim, DIR is the path apksim sees and --record-local the same folder here. An earlier
 run's movies in DIR are removed first.
+--record-format mp4 writes DIR/<class>/<method>-<hash>.mp4 instead (issue 454): H.264 (avc1, yuv420p, even sizes, constant
+frame rate, moov before mdat), encoded by apksim's own encoder (VideoToolbox on the Mac, OpenH264 in the Linux image), so a
+browser plays it and no ffmpeg is needed. Where no encoder opens (Linux without libopenh264) apksim says so once on stderr
+and writes the AVI for that run. Beside each kept movie, <method>-<hash>.json has {"start_epoch_ms", "duration_ms", "fps",
+"width", "height", "format"}: start_epoch_ms is the wall-clock time of the movie's first frame (t = 0), and the JUnit XML
+carries it as the property apksim.recording.startEpochMs next to apksim.recording (the movie itself, .mp4 or .avi).
 Test impact and balanced shards (docs/affected-tests.md):
 --record-deps FILE records which of the app's and the tests' classes each test runs code of, into FILE.
 --affected-by FILE with --changed PATH... (or @LIST, a file of paths) or --diff REV (`git diff --name-only REV`, e.g.
@@ -107,7 +114,7 @@ shard I's tests, balanced by the same rule (by count without timings), each in i
 long tests start early but not together (stacked at the start, a machine's heaviest tests can slow each other past a
 test's own timeout); `longest-first`; `suite` keeps the suite's order.
 """
-import argparse, collections, concurrent.futures, glob, hashlib, html, os, re, shlex, shutil, signal, subprocess, sys, tempfile, threading
+import argparse, collections, concurrent.futures, glob, hashlib, html, json, os, re, shlex, shutil, signal, subprocess, sys, tempfile, threading
 import time
 import affected
 import coverage
@@ -1017,7 +1024,7 @@ def clear_recordings(local):
         if os.path.islink(cdir) or not os.path.isdir(cdir):
             continue
         for f in os.listdir(cdir):
-            if re.search(r"-[0-9a-f]{8}\.avi$", f) and os.path.isfile(os.path.join(cdir, f)):
+            if re.search(r"-[0-9a-f]{8}\.(avi|mp4|json|mp4\.part|mp4\.tmp)$", f) and os.path.isfile(os.path.join(cdir, f)):
                 os.remove(os.path.join(cdir, f))
         if not os.listdir(cdir):
             os.rmdir(cdir)
@@ -1027,10 +1034,21 @@ def collect_recordings(local, results):
     """{(class, method): path} of the movies this run kept."""
     out = {}
     for c, m, *_ in results:
-        f = os.path.join(local, bundle_folder(c, m) + ".avi")
-        if c and os.path.isfile(f):
-            out[(c, m)] = f
+        for ext in (".mp4", ".avi"):  # mp4 where asked and an encoder opened, else the AVI
+            f = os.path.join(local, bundle_folder(c, m) + ext)
+            if c and os.path.isfile(f):
+                out[(c, m)] = f
+                break
     return out
+
+
+def recording_start(movie):
+    """The wall-clock start (epoch ms) of a movie from its sidecar .json, or None."""
+    try:
+        with open(os.path.splitext(movie)[0] + ".json") as fh:
+            return int(json.load(fh)["start_epoch_ms"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def java_regex(rx):
@@ -1332,6 +1350,7 @@ def main():
     p.add_argument("--record-local", metavar="PATH")
     p.add_argument("--record-size", metavar="WxH")
     p.add_argument("--record-fps", type=int, metavar="N")
+    p.add_argument("--record-format", choices=["avi", "mp4"])
     p.add_argument("--record-deps", metavar="FILE")
     p.add_argument("--coverage", metavar="DIR", help="hit counts per method and line (docs/coverage.md): DIR gets one file "
                    "per process and, after the run, jacoco.xml, lcov.info and index.html")
@@ -1421,10 +1440,12 @@ def main():
             passthrough += ["--record-size", a.record_size]
         if a.record_fps:
             passthrough += ["--record-fps", str(a.record_fps)]
+        if a.record_format:
+            passthrough += ["--record-format", a.record_format]
         os.makedirs(a.record_local or a.record_dir, exist_ok=True)
         clear_recordings(a.record_local or a.record_dir)
-    elif a.record_dir or a.record_local or a.record_size or a.record_fps:
-        p.error("--record-dir, --record-local, --record-size and --record-fps need --record failed|all")
+    elif a.record_dir or a.record_local or a.record_size or a.record_fps or a.record_format:
+        p.error("--record-dir, --record-local, --record-size, --record-fps and --record-format need --record failed|all")
     if a.apksim:
         LAUNCHER[:] = shlex.split(a.apksim)
 
@@ -1651,10 +1672,11 @@ def main():
                 if res[2] != "failed":  # the failed attempt's bundle and movie go only now: a retry that fails keeps
                     for d in out_dirs:  # them until apksim writes its own over them (a retry that dies writes none)
                         shutil.rmtree(os.path.join(d, bundle_folder(*t)), ignore_errors=True)
-                        try:
-                            os.remove(os.path.join(d, bundle_folder(*t) + ".avi"))
-                        except OSError:
-                            pass
+                        for ext in (".avi", ".mp4", ".json"):
+                            try:
+                                os.remove(os.path.join(d, bundle_folder(*t) + ext))
+                            except OSError:
+                                pass
                 RETRIED[t] = (attempts, first[0] if first else "")
                 GROUPED.pop(t, None)
                 return i, res
@@ -1697,6 +1719,7 @@ def main():
                 rel = os.path.relpath(bundle, xml_dir) if bundle else None
                 movie = recordings.get((c, m))
                 mrel = os.path.relpath(movie, xml_dir) if movie else None
+                mstart = recording_start(movie) if movie else None
                 ph = PHASES.get((c, m))
                 pooled = (c, m) in POOLED
                 shares = [cell[0] / n for cell, n in CPU.get((c, m), ()) if cell[0] is not None]
@@ -1713,6 +1736,7 @@ def main():
                                f'<property name="apksim.exit_seconds" value="{ph[2]:.3f}"/>' if ph else "")
                             + (f'<property name="apksim.bundle" value={quoteattr(rel)}/>' if rel else "")
                             + (f'<property name="apksim.recording" value={quoteattr(mrel)}/>' if mrel else "")
+                            + (f'<property name="apksim.recording.startEpochMs" value="{mstart}"/>' if mstart else "")
                             + "</properties>")
                 if s == "failed":
                     f.write(f"<failure message={quoteattr(st.splitlines()[0] if st else '')}>{escape(st)}</failure>")
