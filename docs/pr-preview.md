@@ -168,8 +168,8 @@ answers are `n r rule|detail ...`. `inspect rule set [{"method", "pattern", "sta
 "headers": [[name, value], ...]}, ...]` (all but the pattern optional; a field of the wrong kind or an unknown name is refused) replaces every rule of the session with those, in that
 order, in one step, and answers the new list (new ids, hit counts from 0): the instance swaps one immutable list for another, so
 a request is matched against the old rules or the new ones, never some of each, and a set with a rule that is refused (`n r rule
-error: rule 2: ...`) changes nothing. The whole command is one message of at most 800,000 characters, bodies included. A forward rule is `inspect rule add METHOD PATTERN forward LATENCY_MS - URL64` (the target URL in
-base64 where a body would be), or in a set `{"pattern", "forward": URL}` with an optional method and latencyMs and nothing else; the instance's own
+error: rule 2: ...`) changes nothing. The whole command is one message of at most 800,000 characters, bodies included. A forward rule is `inspect rule add METHOD PATTERN forward LATENCY_MS - URL64` (`rebase` for `-`: see above; the target URL in
+base64 where a body would be), or in a set `{"pattern", "forward": URL}` with an optional `"rebase": true`, method and latencyMs and nothing else; the instance's own
 `network rule add|set` takes the same and checks only that it is an http(s) URL: the allow-list is the server's. A patch rule (issue 373) is `inspect rule add METHOD PATTERN patch LATENCY_MS - BODY64` (BODY64: base64 of a JSON merge patch, RFC 7386), or in
 a set `{"pattern", "patch": "JSON text"}` with an optional method and latencyMs and nothing else. The request goes to the real server; when the
 answer is 2xx with a JSON content type (`application/json`, `+json`), whole or gzip-encoded, it is parsed, merged with the patch (an object merges into

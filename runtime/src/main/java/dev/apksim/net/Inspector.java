@@ -621,6 +621,7 @@ public final class Inspector {
     String path = a.getRawPath() == null || a.getRawPath().isEmpty() ? "/" : a.getRawPath();
     String lower = path.toLowerCase(Locale.ROOT);
     if (!path.startsWith("/") || path.contains("\\") || path.contains(";") || path.contains("//") || lower.contains("%2e") || lower.contains("%2f") || lower.contains("%5c")) return null;
+    if (!path.matches("[\\x21-\\x7e]+")) return null;
     for (String seg : path.split("/", -1)) if (seg.equals(".") || seg.equals("..")) return null;
     String base = t.getRawPath() == null ? "" : t.getRawPath();
     while (base.endsWith("/")) base = base.substring(0, base.length() - 1);

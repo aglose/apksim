@@ -50,6 +50,13 @@ public final class InspectorRuleCheck {
     check("http://127.0.0.1:8001/v2/v1/items/42?x=1".equals(Inspector.rebaseUrl("http://127.0.0.1:8001/v2", "https://api.example.com/v1/items/42?x=1")), "rebase onto a path with a query");
     check("http://127.0.0.1:8001/v1/items/42".equals(Inspector.rebaseUrl("http://127.0.0.1:8001", "https://api.example.com/v1/items/42")), "rebase onto a bare host");
     check("http://127.0.0.1:8001/v2/".equals(Inspector.rebaseUrl("http://127.0.0.1:8001/v2/", "https://api.example.com")), "an empty app path is /, a base's trailing slash is not doubled");
+    dev.apksim.serve.ForwardAllow rebaseAllow = new dev.apksim.serve.ForwardAllow();
+    rebaseAllow.add("http://127.0.0.1:8001/v2");
+    for (String ok : new String[] {"/v1/items/42?x=1", "/", "", "/a/b/c?q=%20&r=2"}) {
+      String u = Inspector.rebaseUrl("http://127.0.0.1:8001/v2", "https://api.example.com" + ok);
+      check(u != null && rebaseAllow.allows(u), "a rebased URL stays under the allowed prefix: " + u);
+    }
+    check(Inspector.rebaseUrl("http://127.0.0.1:8001/v2", "https://api.example.com/caf\u00e9") == null, "no rebase of a non-ASCII app path");
     for (String bad : new String[] {"/a/../b", "/a/%2e%2e/b", "/a//b", "/a;x/b", "/a%2Fb"}) {
       check(Inspector.rebaseUrl("http://127.0.0.1:8001/v2", "https://api.example.com" + bad) == null, "no rebase of the app path " + bad);
     }
