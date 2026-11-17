@@ -1069,14 +1069,19 @@ final class NetEngine {
           if (over[0]) throw new IOException("a request body over " + Inspector.FORWARD_BODY_MAX + " bytes is not forwarded");
           // A name that did not resolve, or that stands for a recorded or mapped host, has a placeholder address here
           // (NetResolver): no server is there, and the client would wait out its connect timeout.
-          String fh = java.net.URI.create(rule.forward).getHost();
+          String dest = rule.forward;
+          if (rule.rebase) {
+            dest = Inspector.rebaseUrl(rule.forward, req.url);
+            if (dest == null) throw new IOException("the app's path cannot be added to a rebase target (dot segments, empty segments, ';', '\\\\' or an encoded '.', '/' or '\\\\')");
+          }
+          String fh = java.net.URI.create(dest).getHost();
           if (fh.startsWith("[") && fh.endsWith("]")) fh = fh.substring(1, fh.length() - 1);
           try {
             if (NetResolver.hostFor(java.net.InetAddress.getByName(fh).getHostAddress()) != null) throw new java.net.UnknownHostException(fh);
           } catch (java.net.UnknownHostException e) {
             throw new IOException("unable to resolve host " + fh + " (replaying or with --network-host, name the upstream by address)");
           }
-          java.net.http.HttpRequest.Builder b = java.net.http.HttpRequest.newBuilder(java.net.URI.create(rule.forward))
+          java.net.http.HttpRequest.Builder b = java.net.http.HttpRequest.newBuilder(java.net.URI.create(dest))
               .version(java.net.http.HttpClient.Version.HTTP_1_1).timeout(java.time.Duration.ofSeconds(30))
               .method(req.method, req.hasBody ? java.net.http.HttpRequest.BodyPublishers.ofByteArray(whole.toByteArray())
                   : java.net.http.HttpRequest.BodyPublishers.noBody());
