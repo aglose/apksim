@@ -228,7 +228,7 @@ public class Host {
         }
         if (autofill != null) autofill.tick(Host::rootViews);
         controls.tick();
-        recorder.tick(!firstFrame, frames);
+        recorder.tick(!firstFrame, frames + dev.apksim.video.VideoSurfaces.publishedCount());
         SlotDevice.tick();
         TimeTick.tick(app);
         Control.Pending cmd;
