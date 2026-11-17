@@ -505,7 +505,7 @@ final class SimWindow {
 
   /**
    * Opens a sign-in page in the system browser's authentication session, which ends at a redirect to `scheme://...`
-   * (host null) or to https://host/path. False when this Mac cannot wait for that redirect (https needs macOS 14.4).
+   * (host null) or to https://host/path. An https redirect is never used (it needs an Associated Domains entitlement for its host: issue 436); DeviceControls does not ask.
    */
   static boolean webAuth(String url, String scheme, String host, String path) {
     return !headless && nativeWebAuth(url, scheme, host, path);

@@ -2022,7 +2022,7 @@ static WebAuthAnchor *webAuthAnchor;
 static NSString *webAuthResult;
 static long webAuthGen;
 
-// Starts a session for url that ends at a redirect to `scheme://...` (host NULL), or to https://host/path (macOS 14.4+).
+// Starts a session for url that ends at a redirect to `scheme://...` (host NULL), or to https://host/path (which fails without an Associated Domains entitlement for host, so Java never asks: issue 436).
 // Returns false when this macOS cannot wait for that kind of redirect.
 JNIEXPORT jboolean JNICALL Java_dev_apksim_SimWindow_nativeWebAuth(JNIEnv *env, jclass c, jstring jurl, jstring jscheme,
                                                                     jstring jhost, jstring jpath) {
