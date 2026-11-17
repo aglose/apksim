@@ -549,7 +549,17 @@ final class DeviceControls {
             // On a Mac window: H.264 QuickTime through AVFoundation. Headless or on Linux: Motion-JPEG AVI.
             boolean avi = SimWindow.isHeadless() || (a.length > 2 && a[2].endsWith(".avi"));
             String path = a.length > 2 ? Storage.absolute(a[2]).toString() : newMediaFile(avi ? "avi" : "mov").toString();
-            String err = avi ? MjpegRecorder.start(path, w, h) : SimWindow.recordStart(path);
+            // The sandbox may deny the folder (AVFoundation then fails silently): create the file here, where it says so.
+            String err = null;
+            if (!avi) {
+              try {
+                java.nio.file.Path pp = java.nio.file.Path.of(path);
+                java.nio.file.Files.write(pp, new byte[0]);
+              } catch (java.io.IOException e) {
+                return "error: cannot write " + path + ": " + e + " (the sandbox allows ~/.apksim and /tmp)";
+              }
+            }
+            if (err == null) err = avi ? MjpegRecorder.start(path, w, h) : SimWindow.recordStart(path);
             // Frames reach the AVI only as they are drawn: draw one now, so a still screen is recorded too.
             if (avi && err == null) for (android.view.View root : rootViews()) root.invalidate();
             if (err != null) return err;
@@ -561,7 +571,12 @@ final class DeviceControls {
           String path = recording;
           recording = null;
           SimWindow.setMenuState(TAG_RECORD, false);
-          return ms < 0 ? "not recording" : "saved " + path + " (" + ms / 1000.0 + " s)";
+          if (ms < 0) return "not recording";
+          java.nio.file.Path pp = java.nio.file.Path.of(path);
+          if (!java.nio.file.Files.isRegularFile(pp) || java.nio.file.Files.size(pp) == 0) {
+            return "error: the recording was not written to " + path + " (the sandbox allows ~/.apksim and /tmp)";
+          }
+          return "saved " + path + " (" + ms / 1000.0 + " s)";
         } catch (java.io.IOException e) {
           return e.toString();
         }
