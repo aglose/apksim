@@ -480,7 +480,7 @@ public final class Serve {
       store = new BeamStore(state);
       BeamStore.Config c = store.config;
       store.config = new BeamStore.Config(keepDays != null ? keepDays : c.keepDays(),
-          saveSessions != null ? saveSessions : c.saveSessions(), keepSavedDays != null ? keepSavedDays : c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb());
+          saveSessions != null ? saveSessions : c.saveSessions(), keepSavedDays != null ? keepSavedDays : c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.allowLoopback());
       if (!store.lockAgent(port)) {
         int other = store.agentPort();
         System.err.println("apksim beam: an agent already runs for " + state + (other > 0 ? " (port " + other + ")" : "")
@@ -697,6 +697,13 @@ public final class Serve {
     // The agent's: an APK a web site sent, in a sandbox of its own (docs/beam.md "The beam sandbox").
     if (beam) {
       pb.environment().put("APKSIM_BEAM_SANDBOX", "1");
+      // Issue 428: the loopback ports its owner opened (`apksim beam config allow-loopback`), read now: the launcher puts
+      // them in the sandbox profile and in the standby's name, so a change reaches the instances started after it.
+      pb.environment().remove("APKSIM_BEAM_LOOPBACK");
+      if (store != null) {
+        String ports = store.loopbackNow(port).stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(","));
+        if (!ports.isEmpty()) pb.environment().put("APKSIM_BEAM_LOOPBACK", ports);
+      }
       // Nothing from the agent's own environment that would skip or weaken the sandbox (the launcher refuses then,
       // but the instance should never get them): it runs outside any sandbox, so none of these describe it.
       for (String k : List.of("APKSIM_SANDBOXED", "APKSIM_NOCACHE", "APKSIM_SANDBOX_TEST")) pb.environment().remove(k);
@@ -2223,7 +2230,7 @@ public final class Serve {
     if (r.method().equals("GET") && r.path().equals("/beam/hello")) {
       int[] pr = Beam.protocols();
       Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + ",\"trusted\":"
-          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"adb\":" + store.allowAdbNow() + ",\"options\":" + Catalog.optionsJson() + "}");
+          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"adb\":" + store.allowAdbNow() + ",\"loopback\":" + store.loopbackNow(port) + ",\"options\":" + Catalog.optionsJson() + "}");
       return;
     }
     // `apksim beam status` (docs/beam.md, phase 6): to a local tool only, never a page (a browser always sends Origin).
