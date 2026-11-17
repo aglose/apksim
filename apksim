@@ -192,6 +192,8 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --record-dir) mkdir -p "$2" && RECORD_DIR="$(cd "$2" && pwd)"; EXTRA+=("-Dapksim.record.dir=$RECORD_DIR"); shift 2 ;;
     --record-size) EXTRA+=("-Dapksim.record.size=$2"); shift 2 ;;
     --record-fps) EXTRA+=("-Dapksim.record.fps=$2"); shift 2 ;;
+    --record-format) [[ "$2" == avi || "$2" == mp4 ]] || { echo "--record-format takes avi or mp4" >&2; exit 2; }
+      EXTRA+=("-Dapksim.record.format=$2"); shift 2 ;;
     --font-scale) EXTRA+=("-Dapksim.fontScale=$2"); shift 2 ;;
     --permissions) EXTRA+=("-Dapksim.permissions=$2"); shift 2 ;;
     # Device identity (DeviceIdentity.java): Build.getSerial(), a system feature (repeatable; NAME=false removes one),

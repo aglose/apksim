@@ -17,6 +17,9 @@ import java.util.List;
 final class MjpegRecorder {
   private static final int DEFAULT_FPS = 30;
   private static volatile MjpegRecorder active;
+  /** Wall-clock time of the last movie's first frame (its t = 0) and its length, for the sidecar (issue 454). */
+  static volatile long lastStartEpochMs;
+  static volatile long lastDurationMs;
 
   private final RandomAccessFile out;
   private final int w;
@@ -31,6 +34,7 @@ final class MjpegRecorder {
   private byte[] lastJpeg;
   private long moviStart;
   private int frames;
+  private long startEpochMs;
 
   private MjpegRecorder(String path, int w, int h, int fps) throws IOException {
     this.fps = fps;
@@ -52,6 +56,8 @@ final class MjpegRecorder {
   static synchronized String start(String path, int w, int h, int fps) {
     if (active != null) return "already recording";
     try {
+      lastStartEpochMs = 0;
+      lastDurationMs = 0;
       active = new MjpegRecorder(path, w, h, fps);
       return null;
     } catch (IOException e) {
@@ -135,6 +141,8 @@ final class MjpegRecorder {
       writer.join(2000);
       writeIndexAndPatch();
       out.close();
+      lastStartEpochMs = startEpochMs;
+      lastDurationMs = frames * 1000L / fps;
     } catch (IOException | InterruptedException e) {
       System.err.println("[apksim] could not finish the recording: " + e);
     }
@@ -215,6 +223,7 @@ final class MjpegRecorder {
     out.write(jpeg);
     if (pad == 1) out.write(0);
     index.add(new int[] {(int) (at - moviStart), jpeg.length});
+    if (frames == 0) startEpochMs = System.currentTimeMillis();
     frames++;
   }
 

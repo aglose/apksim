@@ -1578,7 +1578,14 @@ fail a test (issue 144: a capture taken inside `ViewRootImpl.performDraw` throug
 never returned from `nSyncAndDrawFrame`), so a frame is taken from a main-thread message posted after the window's draw
 (never inside one: `ShadowSimViewRootImpl.drawing`), drawn on a CPU canvas (no render thread; elevation shadows are not
 drawn, unlike a bundle's screen.png), and a frame slower than 2 s ends that test's movie with a line on stderr.
-Not done: H.264/mp4, `adb shell screenrecord`; a process that dies mid-test leaves an unfinished (index-less) movie.
+`--record-format mp4` (issue 454, `Mp4Recorder`) writes `<method>-<hash>.mp4` instead: the frames and real-time pacing of the
+AVI, encoded by `H264Encoder` (VideoToolbox, OpenH264 in the image), as avc1 with `moov` before `mdat`, in `.part` while it
+runs and put together at the end, so a dead process leaves no .mp4. A frame the encoder drops extends the previous one's
+duration (stts has runs). With no encoder (Linux without libopenh264) apksim says so once on stderr and writes the AVI;
+`instrument.py` links whichever exists. Each kept movie has a sidecar `<method>-<hash>.json` (`start_epoch_ms` of its first
+frame, `duration_ms`, `fps`, `width`, `height`, `format`), and the JUnit XML a property `apksim.recording.startEpochMs`
+(`scripts/record-check.py` checks both formats). Not done: `adb shell screenrecord`; a process that dies mid-test leaves an
+unfinished (index-less) AVI.
 `instrument.py` removes an earlier run's bundles from DIR first, adds `process.txt` for a test whose process died, links bundles from the XML (a property, and
 `[[ATTACHMENT|...]]` in `system-out`) and writes `DIR/index.html`; with `--apksim` it reads them from
 `--bundles-local`. The sandbox allows writes to DIR. As root (the image) the folders are made writable by everyone,

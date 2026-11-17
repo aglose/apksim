@@ -938,7 +938,7 @@ public final class Bundles {
         String s = a[i];
         if (s.equals("--pooled")) {
           continue;  // (a pooled process got its test on stdin: the repro names it below)
-        } else if (s.startsWith("--bundles") || List.of("--record", "--record-dir", "--record-size", "--record-fps").contains(s)) {
+        } else if (s.startsWith("--bundles") || List.of("--record", "--record-dir", "--record-size", "--record-fps", "--record-format").contains(s)) {
           i++;
         } else if (s.equals("-e") && i + 2 < a.length
             && List.of("class", "notClass", "package", "notPackage", "numShards", "shardIndex", "log").contains(a[i + 1])) {
