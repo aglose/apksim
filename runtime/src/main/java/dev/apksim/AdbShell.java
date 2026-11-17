@@ -1589,15 +1589,21 @@ final class AdbShell {
   /**
    * screenrecord [--time-limit N] [--size WxH] [--bit-rate BPS] [--verbose] FILE: the control channel's recorder
    * (`record start|stop`), run until the time limit (180 s, the tool's own cap, by default) or until the client closes
-   * the stream (Ctrl-C), then stopped. FILE is a device path, so /sdcard works for `adb pull`. The format is the
+   * the stream (Ctrl-C, interactive shells too), then stopped. FILE is a device path, so /sdcard works for `adb pull`. The format is the
    * recorder's (Motion-JPEG AVI without a Mac window, QuickTime H.264 with one), whatever FILE's name says; --size and
    * --bit-rate are accepted and not applied (the movie is the display's size). The file is at FILE once it returns.
    */
-  private int screenrecord(List<String> a) throws Exception {
+  private int screenrecord(List<String> opts) throws Exception {
+    List<String> a = new ArrayList<>(opts);
     long limit = 180;
     String file = null;
     for (int i = 0; i < a.size(); i++) {
       String o = a.get(i);
+      if (o.startsWith("--") && o.indexOf('=') > 0) {  // getopt_long's --opt=value
+        a.set(i, o.substring(0, o.indexOf('=')));
+        a.add(i + 1, o.substring(o.indexOf('=') + 1));
+        o = a.get(i);
+      }
       switch (o) {
         case "--time-limit" -> {
           try {
@@ -1642,13 +1648,13 @@ final class AdbShell {
     try {
       while (System.nanoTime() < end && !gone.getAsBoolean()) {
         Thread.sleep(50);
-        out.flush();  // also how a closed stream is noticed
       }
-    } catch (InterruptedException | java.io.IOException e) {
+    } catch (InterruptedException e) {
       // the client left: stop and keep what was recorded
     } finally {
+      // "not recording": a rotation or resize ended the movie (a movie keeps one frame size), which is not an error
       String s = control("record", "stop");
-      if (!s.startsWith("saved ")) print("screenrecord: " + s + "\n");
+      if (!s.startsWith("saved ") && !s.equals("not recording")) print("screenrecord: " + s + "\n");
     }
     return 0;
   }

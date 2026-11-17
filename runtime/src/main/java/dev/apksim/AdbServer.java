@@ -302,7 +302,7 @@ final class AdbServer {
             return;
           }
           if (s.isClosed()) return;  // the client gave up while the request was held
-          if (cmd.isBlank() && !exec) new AdbShell(s.out).interactive(s.in);
+          if (cmd.isBlank() && !exec) new AdbShell(s.out, InputStream.nullInputStream(), s::isClosed).interactive(s.in);
           else new AdbShell(s.out, s.in, s::isClosed).run(cmd);
         }
         s.out.flush();

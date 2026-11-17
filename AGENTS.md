@@ -1584,7 +1584,7 @@ runs and put together at the end, so a dead process leaves no .mp4. A frame the 
 duration (stts has runs). With no encoder (Linux without libopenh264) apksim says so once on stderr and writes the AVI;
 `instrument.py` links whichever exists. Each kept movie has a sidecar `<method>-<hash>.json` (`start_epoch_ms` of its first
 frame, `duration_ms`, `fps`, `width`, `height`, `format`), and the JUnit XML a property `apksim.recording.startEpochMs`
-(`scripts/record-check.py` checks both formats). Not done: `adb shell screenrecord`; a process that dies mid-test leaves an
+(`scripts/record-check.py` checks both formats). Not done: `adb shell screenrecord` in test runs; a process that dies mid-test leaves an
 unfinished (index-less) AVI.
 `instrument.py` removes an earlier run's bundles from DIR first, adds `process.txt` for a test whose process died, links bundles from the XML (a property, and
 `[[ATTACHMENT|...]]` in `system-out`) and writes `DIR/index.html`; with `--apksim` it reads them from
