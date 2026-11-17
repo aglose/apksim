@@ -801,12 +801,20 @@ JNIEXPORT jstring JNICALL Java_dev_apksim_SimWindow_nativeRecordStart(JNIEnv *en
 
 // Finishes the movie; returns its duration in milliseconds, or -1 if nothing was recording.
 JNIEXPORT jlong JNICALL Java_dev_apksim_SimWindow_nativeRecordStop(JNIEnv *env, jclass c) {
+  // What is on screen now is the movie's last picture: recordFrame drops presents under 16 ms after the last one it
+  // wrote, so the last frame written may be an earlier state. Ask for one past that limit.
+  IOSurfaceRef shown = surfaces[(nextSurface + SURFACES - 1) % SURFACES];
+  pthread_mutex_lock(&recLock);
+  recLastNanos = 0;
+  pthread_mutex_unlock(&recLock);
+  if (shown) recordFrame(shown);
   pthread_mutex_lock(&recLock);
   AVAssetWriter *w = recWriter;
   recWriter = nil;
   uint64_t start = recStartNanos;
   AVAssetWriterInputPixelBufferAdaptor *ad = recAdaptor;
   CVPixelBufferRef held = recLastBuf;
+  CMTime lastT = recLast;
   recLastBuf = NULL;
   pthread_mutex_unlock(&recLock);
   if (!w) return -1;
@@ -816,7 +824,7 @@ JNIEXPORT jlong JNICALL Java_dev_apksim_SimWindow_nativeRecordStop(JNIEnv *env, 
   // last picture just before the end so a still stretch at the end plays for its real length.
   if (held) {
     CMTime t = CMTimeSubtract(end, CMTimeMake(1000000, 1000000000));
-    if (CMTimeCompare(t, recLast) > 0 && ad.assetWriterInput.readyForMoreMediaData)
+    if (CMTimeCompare(t, lastT) > 0 && ad.assetWriterInput.readyForMoreMediaData)
       [ad appendPixelBuffer:held withPresentationTime:t];
     CVPixelBufferRelease(held);
   }
