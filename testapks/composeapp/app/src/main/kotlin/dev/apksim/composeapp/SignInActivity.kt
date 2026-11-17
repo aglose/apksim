@@ -54,6 +54,7 @@ class SignInActivity : Activity() {
   override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
     newIntents++
+    if (intent.data?.getQueryParameter("strict") == "1") strict = true
     setIntent(intent)
   }
 
