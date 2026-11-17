@@ -62,7 +62,12 @@ final class Mp4Recorder {
       if (encoder != null) encoder.close();
       throw new IOException("no H.264 encoder here");
     }
-    out = new java.io.BufferedOutputStream(Files.newOutputStream(part), 1 << 16);
+    try {
+      out = new java.io.BufferedOutputStream(Files.newOutputStream(part), 1 << 16);
+    } catch (IOException | RuntimeException e) {
+      encoder.close();
+      throw e;
+    }
     writer = new Thread(this::loop, "apksim-recorder");
     writer.setDaemon(true);
     writer.start();

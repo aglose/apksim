@@ -92,8 +92,8 @@ drawn after a window traversal, at most --record-fps (default 15, up to 30) time
 time, and a test that never shows a window has none. The movie of a test whose process died or was killed is
 unfinished (no index). With --apksim, DIR is the path apksim sees and --record-local the same folder here. An earlier
 run's movies in DIR are removed first.
---record-format mp4 writes DIR/<class>/<method>-<hash>.mp4 instead (issue 454): H.264 (avc1, yuv420p, even sizes, constant
-frame rate, moov before mdat), encoded by apksim's own encoder (VideoToolbox on the Mac, OpenH264 in the Linux image), so a
+--record-format mp4 writes DIR/<class>/<method>-<hash>.mp4 instead (issue 454): H.264 (avc1, yuv420p, even sizes, the
+--record-fps rate with a frame the encoder skips shown twice as long, moov before mdat), encoded by apksim's own encoder (VideoToolbox on the Mac, OpenH264 in the Linux image), so a
 browser plays it and no ffmpeg is needed. Where no encoder opens (Linux without libopenh264) apksim says so once on stderr
 and writes the AVI for that run. Beside each kept movie, <method>-<hash>.json has {"start_epoch_ms", "duration_ms", "fps",
 "width", "height", "format"}: start_epoch_ms is the wall-clock time of the movie's first frame (t = 0), and the JUnit XML
