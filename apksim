@@ -253,6 +253,8 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     # The tab relay (docs/beam.md): the app's plain-HTTP requests to page.apksim.invalid go to the browser tab that
     # started the session. The agent adds it for a start that asked.
     --tab-relay) EXTRA+=("-Dapksim.tabRelay=true"); shift ;;
+    # Forward rules sent by the beam agent (issue 426, docs/beam.md): the agent adds it to a session that runs the inspector.
+    --forward-link) EXTRA+=("-Dapksim.forwardLink=true"); shift ;;
     # System bars, overriding the --device preset (phone/foldable/tablet: both; desktop/TV: none).
     --status-bar) EXTRA+=("-Dapksim.statusBar=$2"); shift 2 ;;
     --nav-bar) EXTRA+=("-Dapksim.navBar=$2"); shift 2 ;;
@@ -383,7 +385,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
       -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.sensors=*|-Dapksim.sysfs.*|-Dapksim.ble.*|-Dapksim.health.*|-Dapksim.camera=*|-Dapksim.cameraSizes=*|-Dapksim.setting.*) ;;
       # Seeds and broadcasts travel twice in the hand-off's argv (macOS limits it): large ones launch cold.
       -Dapksim.sdcard.*|-Dapksim.broadcast.*) SDCARD_BYTES=$((${SDCARD_BYTES:-0} + ${#e})); ((SDCARD_BYTES <= 49152)) || WARM_OK="" ;;
-      -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*|-Dapksim.tabRelay=*) ;;
+      -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*|-Dapksim.tabRelay=*|-Dapksim.forwardLink=*) ;;
       # The flight recorder keeps everything in memory and saves into STATE, which every instance may write.
       -Dapksim.rec=*|-Dapksim.rec.*|-Dapksim.replay=*) ;;
       -Dapksim.replay.out=*) [[ "${e#*=}" == "$STATE"/* ]] || WARM_OK="" ;;  # a standby's sandbox writes only under STATE

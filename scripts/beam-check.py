@@ -898,6 +898,130 @@ def data_checks(apksim, apk, sha, size):
         shutil.rmtree(state, ignore_errors=True)
 
 
+def forward_checks(apksim, apk, sha, size):
+    """Issue 426: forward rules in a beamed session. Refused until the owner lists a target prefix
+    (`apksim beam config forward-allow`), then accepted for targets under it only, and the request the app makes is
+    sent by the agent to a server on this Mac's loopback, which the app's sandbox could not reach. A state folder and
+    agent of its own."""
+    import base64
+    import http.server
+    import threading
+    state = tempfile.mkdtemp(prefix="beam-check-fwd-")
+    env = dict(os.environ, APKSIM_HOME=state, APKSIM_BEAM_CONSENT="allow")
+    gp, origin = free_port(), "http://forward.beam-check.test"
+    with open(apk, "rb") as f:
+        body = f.read()
+    start = {"sha256": sha, "name": "beam-check.apk", "size": size, "options": []}
+    seen = []
+
+    class Backend(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append((self.path, self.headers.get("X-Apksim-Original-Url")))
+            data = b"from the backend on the mac"
+            self.send_response(201)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *a):
+            pass
+
+    backend = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Backend)
+    threading.Thread(target=backend.serve_forever, daemon=True).start()
+    bport = backend.server_address[1]
+    prefix = f"http://127.0.0.1:{bport}/api"
+
+    def b64(x):
+        return base64.b64encode(x.encode()).decode()
+
+    def run_agent():
+        log = open(os.path.join(state, f"agent-{time.time():.0f}.log"), "w")
+        g = subprocess.Popen([apksim, "beam", "--port", str(gp)], stdout=subprocess.DEVNULL, stderr=log, env=env)
+        check(wait_up(gp, "/beam/hello"), "forward: an agent")
+        return g
+
+    def instance(pid, cmd):
+        f = os.path.join(state, "tmp", str(pid), "control.port")
+        try:
+            c = socket.create_connection(("127.0.0.1", int(open(f).read().strip())), timeout=30)
+            io = c.makefile("rw")
+            io.write(cmd + "\n")
+            io.flush()
+            out = io.readline()
+            c.close()
+            return out
+        except (OSError, ValueError) as e:
+            return f"error: {e}"
+
+    def rule_answer(s, target):
+        n = len(s.texts)
+        s.ws.send(f"inspect rule add GET */hello* forward 0 - {b64(target)}")
+        s.pump(10, until=lambda: any(t.startswith("n r rule") for t in s.texts[n:]))
+        return next((t for t in s.texts[n:] if t.startswith("n r rule")), "")
+
+    r = subprocess.run([apksim, "beam", "config", "inspect-network", "on"], capture_output=True, text=True, env=env, timeout=60)
+    check(r.returncode == 0, "forward: config inspect-network on")
+    g = run_agent()
+    try:
+        h = json.loads(req(gp, "GET", "/beam/hello", origin)[2])
+        check(h.get("forward") == [], f"forward: hello lists no allowed target by default ({h.get('forward')})")
+        grant, _ = begin(gp, origin, start, body)
+        s = open_session(gp, grant, origin)
+        a = rule_answer(s, prefix + "/mock")
+        check(a.startswith("n r rule error") and "forward-allow" in a, f"forward: refused until the owner allows a target ({a[:140]})")
+        check(close_session(s), "forward: that session ends")
+        stop(g)
+        for bad in ("ftp://127.0.0.1/x", "http://user@127.0.0.1/x", "127.0.0.1/x"):
+            check(subprocess.run([apksim, "beam", "config", "forward-allow", bad], capture_output=True, text=True, env=env, timeout=60).returncode == 2,
+                  f"forward: config forward-allow refuses {bad!r}")
+        r = subprocess.run([apksim, "beam", "config", "forward-allow", prefix], capture_output=True, text=True, env=env, timeout=60)
+        check(r.returncode == 0 and prefix in r.stdout, f"forward: config forward-allow {prefix} ({r.stdout.strip()[:160]})")
+        g = run_agent()
+        h = json.loads(req(gp, "GET", "/beam/hello", origin)[2])
+        check(h.get("forward") == [prefix], f"forward: hello lists the owner's prefix ({h.get('forward')})")
+        grant, _ = begin(gp, origin, start, body)
+        s = open_session(gp, grant, origin)
+        pid = s.stats.get("pid", 0)
+        a = rule_answer(s, f"http://127.0.0.1:{bport}/other/mock")
+        check(a.startswith("n r rule error"), f"forward: a target outside the prefix is refused ({a[:140]})")
+        a = rule_answer(s, f"http://127.0.0.1:{bport}/apix")
+        check(a.startswith("n r rule error"), f"forward: and /apix is not under /api ({a[:140]})")
+        a = rule_answer(s, prefix + "/mock")
+        check(a.startswith("n r rule {") and "forward" in a, f"forward: a target under the prefix is accepted ({a[:160]})")
+        # The app asks a host that is not there; the rule answers it from the backend on this Mac, sent by the agent.
+        instance(pid, "open apksim://network?url=http://app.example.test/hello?x=1")
+        time.sleep(3)
+        tapped = instance(pid, "tap-text Get")
+        check(not tapped.startswith("error"), f"forward: the app's Get is tapped ({tapped.strip()[:80]})")
+        got = ""
+        for _ in range(30):
+            got = instance(pid, "nodes")
+            if "get okhttp: 201" in got or "get okhttp: " in got and "idle" not in got.split("get okhttp: ")[1][:6]:
+                break
+            time.sleep(1)
+        check("get okhttp: 201" in got, f"forward: the app got the backend's 201 ({got.split('get okhttp:')[1][:60] if 'get okhttp:' in got else got[:120]!r})")
+        check(seen and seen[0][0] == "/api/mock" and seen[0][1] and "app.example.test/hello" in seen[0][1], f"forward: the backend saw the agent's request ({seen})")
+        # The owner takes the target away: the rule stands, but the agent sends nothing (read again at each request).
+        del seen[:]
+        subprocess.run([apksim, "beam", "config", "forward-disallow", prefix], capture_output=True, text=True, env=env, timeout=60)
+        h = json.loads(req(gp, "GET", "/beam/hello", origin)[2])
+        check(h.get("forward") == [], f"forward: disallowed again, hello lists none ({h.get('forward')})")
+        instance(pid, "tap-text Get")
+        for _ in range(30):
+            got = instance(pid, "nodes")
+            if "get okhttp: 502" in got:
+                break
+            time.sleep(1)
+        check("get okhttp: 502" in got and not seen, f"forward: and the app gets a 502 with nothing sent ({seen})")
+        check(close_session(s), "forward: that session ends")
+    finally:
+        backend.shutdown()
+        if g is not None:
+            stop(g)
+        subprocess.run([apksim, "--stop-standbys"], env=env, capture_output=True)
+        shutil.rmtree(state, ignore_errors=True)
+
+
 def slot_nodes(pid):
     """The test app's slot screen as `nodes` reads it, from an instance of the main state folder."""
     f = os.path.join(STATE, "tmp", str(pid), "control.port")
@@ -1242,16 +1366,23 @@ def main():
     ap.add_argument("--apksim", default=os.path.join(os.path.dirname(HERE), "apksim"))
     ap.add_argument("--server-port", type=int, default=47480)
     ap.add_argument("--agent-port", type=int, default=47481)
-    ap.add_argument("--only", choices=["adb"], help="run only this part")
+    ap.add_argument("--only", choices=["adb", "forward"], help="run only this part")
     a = ap.parse_args()
     sp, gp, apksim = a.server_port, a.agent_port, a.apksim
     with open(a.apk, "rb") as f:
         apk = f.read()
     sha, size = hashlib.sha256(apk).hexdigest(), len(apk)
     with zipfile.ZipFile(a.apk) as z:
-        if not any(b"SlotStateActivity" in z.read(n) for n in z.namelist() if n.endswith(".dex")):
+        if a.only != "forward" and not any(b"SlotStateActivity" in z.read(n) for n in z.namelist() if n.endswith(".dex")):
             sys.exit(f"{a.apk} has no SlotStateActivity: build the test app from this checkout "
                      "(testapks/composeapp: ./gradlew :app:assembleDebug)")
+    if a.only == "forward":
+        forward_checks(apksim, a.apk, sha, size)
+        if sc.FAILED:
+            print(f"{len(sc.FAILED)} check(s) failed")
+            sys.exit(1)
+        print("beam check passed (forward)")
+        return
     if a.only == "adb":
         adb_checks(apksim, a.apk, sha, size)
         if sc.FAILED:
@@ -1269,6 +1400,7 @@ def main():
     warm_checks(apksim, a.apk, sha, size)
     data_checks(apksim, a.apk, sha, size)
     adb_checks(apksim, a.apk, sha, size)
+    forward_checks(apksim, a.apk, sha, size)
     r = beam(apksim, "status")
     check(r.returncode == 0 and "agent: not running" in r.stdout, f"status: no agent yet ({r.stdout.splitlines()[:1]})")
     server = subprocess.Popen([apksim, "serve", "--port", str(sp), "--allow-beam", "--beam-port", str(gp), "--apps", a.apk],

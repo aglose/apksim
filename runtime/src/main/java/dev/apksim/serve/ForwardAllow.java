@@ -23,7 +23,7 @@ public final class ForwardAllow {
   public void add(String prefix) {
     URI u = parse(prefix);
     if (u == null || u.getRawQuery() != null) {
-      throw new IllegalArgumentException("--inspect-forward-allow takes an http(s) URL prefix without user info, query or fragment, such as https://mocks.internal/api: " + prefix);
+      throw new IllegalArgumentException("a forward allow-list entry is an http(s) URL prefix without user info, query or fragment, such as https://mocks.internal/api: " + prefix);
     }
     prefixes.add(new Prefix(u.getScheme().toLowerCase(Locale.ROOT), u.getHost().toLowerCase(Locale.ROOT), port(u), u.getRawPath() == null ? "" : u.getRawPath()));
   }

@@ -335,6 +335,7 @@ final class Session {
     System.err.printf("[beam] session %s: the tab left, carried on in the window%n", id);
     closeQuietly(stream);
     closeQuietly(netwatch);
+    closeQuietly(fwdwatch);
     closeQuietly(relaywatch);  // no tab answers the app's relayed requests any more: they get their 502 now
     synchronized (this) {
       waiting.clear();
@@ -422,6 +423,7 @@ final class Session {
     if (perms.equals("grant") || perms.equals("deny")) cmd.addAll(List.of("--permissions", perms));
     if (serve.noNetwork) cmd.add("--no-network");
     if (inspecting() && !app.launch().contains("--network-inspect")) cmd.add("--network-inspect");
+    if (inspecting() && serve.beam) cmd.add(FORWARD_MARKER);  // its forward rules are sent by this agent (issue 426)
     if (inspecting() && serve.inspectMaxRules != dev.apksim.net.Inspector.MAX_RULES) cmd.addAll(List.of("--network-inspect-rules", String.valueOf(serve.inspectMaxRules)));
     // The report button's recording (docs/pr-preview.md) holds the last five minutes: the rings keep that long (default 120 s).
     if (serve.allowRec && !serve.beam && !app.launch().contains("--rec-window")) cmd.addAll(List.of("--rec-window", "300"));
@@ -544,6 +546,7 @@ final class Session {
     stream.getOutputStream().write(("stream " + serve.quality + ask + "\n").getBytes(StandardCharsets.US_ASCII));
     if (inspecting()) watchNetwork(p);
     if (serve.beam && app.launch().contains("--tab-relay")) watchRelay(p);
+    if (serve.beam && inspecting()) watchForward(p);
     watchLinks(p);
   }
 
@@ -626,6 +629,84 @@ final class Session {
     try {
       synchronized (s) {
         s.getOutputStream().write((text + "\n").getBytes(StandardCharsets.UTF_8));
+      }
+    } catch (IOException e) {
+      // the instance went away
+    }
+  }
+
+  // ---------------------------------------------------------------- forward rules sent by the agent (issue 426)
+
+  /** The launch option the agent adds for a session that runs the inspector: its forwards are sent from here (`ForwardLink`). */
+  static final String FORWARD_MARKER = "--forward-link";
+  private volatile Socket fwdwatch;
+  private static final int FORWARD_BODY_MAX = 4 * 1024 * 1024;
+
+  /**
+   * A forward rule's request, sent for a beam instance whose sandbox cannot reach this Mac's loopback: the instance's
+   * `fwdwatch` connection carries `q ID {json}` (method, url, headers, body in base64), and its answer goes back the same
+   * way. Whatever rule the page set, the target is checked here against the owner's list (`apksim beam config
+   * forward-allow`, read at each request), and redirects are not followed, so a target cannot lead the agent anywhere
+   * the owner did not name. The page's own tab never sees the request: it reads the exchange in the inspector as for any.
+   */
+  private void watchForward(int port) throws IOException {
+    Socket s = fwdwatch = connect(port);
+    s.getOutputStream().write("fwdwatch\n".getBytes(StandardCharsets.US_ASCII));
+    Thread.ofVirtual().name("serve-forward-" + id).start(() -> {
+      try (BufferedReader r = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8))) {
+        String first = r.readLine();
+        if (first == null || !first.equals("ok fwdwatch")) {
+          logLine("[beam] forward link: " + first);
+          closeQuietly(s);
+          return;
+        }
+        for (String line; (line = r.readLine()) != null; ) {
+          String l = line;
+          Thread.ofVirtual().name("serve-forward-req-" + id).start(() -> forwardRequest(s, l));
+        }
+      } catch (IOException e) {
+        // the instance went away
+      }
+    });
+  }
+
+  private void forwardRequest(Socket s, String line) {
+    java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?s)q ([0-9]{1,18}) (.*)").matcher(line);
+    if (!m.matches()) return;
+    String reply;
+    try {
+      if (!(Json.parse(m.group(2)) instanceof Map<?, ?> q)) throw new IOException("not an object");
+      String method = q.get("method") instanceof String x ? x : "", url = q.get("url") instanceof String x ? x : "";
+      if (!method.matches("[A-Za-z]{3,10}")) throw new IOException("bad method");
+      if (!forwardAllow().allows(url)) {
+        throw new IOException("the target is not under a prefix this Mac's owner allowed (apksim beam config forward-allow)");
+      }
+      List<String[]> headers = new ArrayList<>();
+      if (q.get("headers") instanceof List<?> hl) {
+        for (Object o : hl) if (o instanceof List<?> p && p.size() == 2) headers.add(new String[] {String.valueOf(p.get(0)), String.valueOf(p.get(1))});
+      }
+      String b64 = q.get("body") instanceof String x ? x : "";
+      byte[] body = b64.isEmpty() ? null : java.util.Base64.getDecoder().decode(b64);
+      if (body != null && body.length > FORWARD_BODY_MAX) throw new IOException("a request body over " + FORWARD_BODY_MAX + " bytes");
+      dev.apksim.net.ForwardSend.Result res = dev.apksim.net.ForwardSend.send(method, url, headers, body, FORWARD_BODY_MAX);
+      StringBuilder b = new StringBuilder("q ").append(m.group(1)).append(" {\"status\":").append(res.status()).append(",\"headers\":[");
+      boolean first = true;
+      for (String[] h : res.headers()) {
+        if (!first) b.append(',');
+        first = false;
+        b.append('[').append(Http.q(h[0])).append(',').append(Http.q(h[1])).append(']');
+      }
+      reply = b.append("],\"body\":\"").append(java.util.Base64.getEncoder().encodeToString(res.body())).append("\"}").toString();
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return;
+    } catch (IOException | RuntimeException e) {
+      String why = (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()).replaceAll("[^\\x20-\\x7e]", " ");
+      reply = "q " + m.group(1) + " {\"error\":" + Http.q(why) + "}";
+    }
+    try {
+      synchronized (s) {
+        s.getOutputStream().write((reply.replace('\n', ' ').replace('\r', ' ') + "\n").getBytes(StandardCharsets.UTF_8));
       }
     } catch (IOException e) {
       // the instance went away
@@ -740,7 +821,7 @@ final class Session {
       } catch (IllegalArgumentException e) {
         target = "";
       }
-      if (!serve.inspectForwardAllow.allows(target)) {
+      if (!forwardAllow().allows(target)) {
         ws.sendText("n r rule error: " + forwardRefusal());
         return;
       }
@@ -757,9 +838,15 @@ final class Session {
   }
 
   /** `inspect rule set JSON` as the instance's `network rule set COUNT ...`: every field checked as `add` checks it. */
+  /** The targets a forward rule may name now: the server's list, or on the agent the owner's, read from the config at each use. */
+  private ForwardAllow forwardAllow() {
+    return serve.beam && serve.store != null ? serve.store.forwardAllowNow() : serve.inspectForwardAllow;
+  }
+
   /** Why a forward target is refused: the reason, never the target back (what the tab sent is the tab's, and the line stays short). */
   private String forwardRefusal() {
-    return "forward target not allowed (" + (serve.beam ? "apksim beam has no forward rules"
+    return "forward target not allowed (" + (serve.beam ? (forwardAllow().isEmpty() ? "this Mac's owner allows none: apksim beam config forward-allow URL_PREFIX"
+        : "not under one of the prefixes this Mac's owner allowed")
         : serve.inspectForwardAllow.isEmpty() ? "the server allows none: --inspect-forward-allow URL_PREFIX" : "not under one of the server's --inspect-forward-allow prefixes") + ")";
   }
 
@@ -797,7 +884,7 @@ final class Session {
         // A forward rule (issue 363): the upstream's answer is the answer, so it has no status, type, body or headers of its own.
         for (String k : List.of("status", "type", "body", "headers")) if (r.containsKey(k)) throw new IOException(at + "a forward rule has no " + k);
         if (latency == null || !latency.matches(RULE_LATENCY)) throw new IOException(at + "latencyMs is 0-60000");
-        if (!serve.inspectForwardAllow.allows(target)) throw new IOException(at + forwardRefusal());
+        if (!forwardAllow().allows(target)) throw new IOException(at + forwardRefusal());
         b.append(' ').append(method).append(' ').append(pattern).append(" forward ").append(latency).append(" - ")
             .append(java.util.Base64.getEncoder().encodeToString(target.getBytes(StandardCharsets.UTF_8))).append(" -");
         continue;

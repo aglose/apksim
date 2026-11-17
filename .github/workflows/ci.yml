@@ -129,6 +129,8 @@ jobs:
         run: scripts/check-pacer.sh
       - name: tab relay check (a stand-in tab, both clients, bodies, limits, timeouts)
         run: scripts/check-tab-relay.sh
+      - name: forward link check (a beam agent's stand-in sends a forward rule's request; answer, refusal, no agent, link lost)
+        run: scripts/check-forward-link.sh
       - name: serve ttl check (added apps expire; a running session keeps its APK)
         run: scripts/check-ttl.sh
       - name: inspector rule patterns (no regex backtracking)
