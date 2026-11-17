@@ -67,6 +67,12 @@ def mp4(path):
             return f"bad size for {name!r}"
         boxes.append(name.decode("latin1"))
         i += size
+    k = d.find(b"mvhd")
+    if k < 4 or struct.unpack(">I", d[k - 4:k])[0] != 108:
+        return "mvhd is not 108 bytes (version 0)"
+    k = d.find(b"tkhd")
+    if k < 4 or struct.unpack(">I", d[k - 4:k])[0] != 92:
+        return "tkhd is not 92 bytes (version 0)"
     k = d.find(b"stsz")
     frames = struct.unpack(">I", d[k + 12:k + 16])[0] if k >= 0 else 0
     return boxes, b"avc1" in d and b"avcC" in d, frames

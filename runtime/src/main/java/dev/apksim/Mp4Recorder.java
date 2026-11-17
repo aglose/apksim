@@ -202,6 +202,12 @@ final class Mp4Recorder {
     long ms = -1;
     try {
       writer.join(5000);
+      if (writer.isAlive()) {
+        // Still inside the encoder: closing it now would free what that thread is using. The encoder is left to it
+        // (leaked) and the movie is not kept.
+        System.err.println("[apksim] the recording's writer did not stop: no movie");
+        return -1;
+      }
       out.close();
       encoder.close();
       if (!samples.isEmpty() && sps != null && pps != null) {
@@ -252,7 +258,7 @@ final class Mp4Recorder {
     long dur = total * 1000;  // in media units: a tick is 1000 of fps*1000 a second
     long ms = total * 1000L / fps;
     byte[] mvhd = box("mvhd", cat(u32(0), u32(0), u32(0), u32(1000), u32((int) ms), u32(0x00010000), new byte[]{1, 0, 0, 0},
-        new byte[10], matrix(), new byte[24], u32(2)));
+        new byte[8], matrix(), new byte[24], u32(2)));
     byte[] tkhd = box("tkhd", cat(u32(3), u32(0), u32(0), u32(1), u32(0), u32((int) ms), new byte[8], new byte[]{0, 0, 0, 0},
         new byte[]{0, 0, 0, 0}, matrix(), u32(w << 16), u32(h << 16)));
     byte[] mdhd = box("mdhd", cat(u32(0), u32(0), u32(0), u32(scale), u32((int) dur), new byte[]{0x55, (byte) 0xc4, 0, 0}));
