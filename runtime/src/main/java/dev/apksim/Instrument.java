@@ -354,6 +354,17 @@ final class Instrument {
     return out;
   }
 
+  /**
+   * A parameterized test's method name without its trailing {@code [...]}, as androidx.test's
+   * {@code TestRequestBuilder.MethodFilter} compares it: {@code Class#bar} selects {@code bar[A]} and {@code bar[B]},
+   * while an exact {@code Class#bar[A]} still selects that one alone.
+   */
+  static String stripParameter(String method) {
+    if (method == null) return null;
+    int i = method.indexOf('[');
+    return i > 0 && method.endsWith("]") ? method.substring(0, i) : method;
+  }
+
   /** -e class a.B,a.C#m and -e notClass, as tests to keep. */
   private static Filter methodFilter(String only, String not) {
     List<String> keep = selectors(only);
@@ -365,8 +376,9 @@ final class Instrument {
         if (!d.isTest()) return true;  // a suite: run it if any of its tests run
         String c = d.getClassName();
         String full = c + "#" + d.getMethodName();
-        if (drop.contains(c) || drop.contains(full)) return false;
-        return keep.isEmpty() || keep.contains(c) || keep.contains(full);
+        String bare = c + "#" + stripParameter(d.getMethodName());
+        if (drop.contains(c) || drop.contains(full) || drop.contains(bare)) return false;
+        return keep.isEmpty() || keep.contains(c) || keep.contains(full) || keep.contains(bare);
       }
 
       @Override
