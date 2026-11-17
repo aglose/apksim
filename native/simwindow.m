@@ -2064,6 +2064,7 @@ JNIEXPORT jboolean JNICALL Java_dev_apksim_SimWindow_nativeWebAuth(JNIEnv *env, 
     }
     [old cancel];
     void (^done)(NSURL *, NSError *) = ^(NSURL *callback, NSError *error) {
+      if (error && !callback) NSLog(@"[apksim] sign-in session ended: %@ code=%ld: %@", error.domain, (long)error.code, error.localizedDescription);
       @synchronized([WebAuthAnchor class]) {
         if (gen != webAuthGen) return;
         webAuthResult = callback ? callback.absoluteString : @"";

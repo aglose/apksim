@@ -820,7 +820,7 @@ Wi-Fi, battery, dark icons when the app asks for light bars) and gesture handle 
 each only while the device has it and the app has not hidden it (`wshot` shows them, `shot` does not). The Mac and app clipboards stay in sync both ways. http(s)/mailto links the
 app opens outside itself go to the Mac's browser/mail app. A browser sign-in comes back (issue 336,
 `DeviceControls.openOnHost`): a web link with a `redirect_uri`/`redirect_url` that one of the app's own VIEW/BROWSABLE
-filters takes (a custom scheme, or an https App Link on macOS 14.4+) runs in `ASWebAuthenticationSession`
+filters takes (a custom scheme; an https App Link never: `ASWebAuthenticationSession` needs an Associated Domains entitlement for its host, so it goes the way below, issue 436) runs in `ASWebAuthenticationSession`
 (`SimWindow.webAuth`), in the Mac window and in a beamed instance (its window is hidden, not absent), and the callback
 URL is delivered as `open URL` does; cancelled delivers nothing. Without a window (`apksim serve`), or when this Mac
 cannot wait for the redirect, the link goes to the session's tab: the instance's `hostwatch` control connection
