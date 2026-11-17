@@ -190,7 +190,7 @@ final class Tap {
     Conn c = new Conn(tls, host, port, true, under == null ? -1 : under.connectMs);
     c.relayed = under != null && under.relayed;
     known.put(tls, c);
-    if (tls instanceof SSLSocket ssl) {
+    if (under != null && tls instanceof SSLSocket ssl) {
       c.handshakePending = true;
       handshaking.add(c);
       if (parked) LockSupport.unpark(thread);  // it may be parked for 30 s: a closed socket is noticed within a second
@@ -581,7 +581,7 @@ final class Tap {
     else if (never && c.handshakePending && !c.established) {
       // Issue 440: TLS the app layered on a connected socket that ended before any byte crossed it and before its
       // handshake completed: a row, as the app got an error and the server saw a connection.
-      Inspector.failure(c.host, c.port, "TLS handshake failed: " + (error != null ? error : "the connection closed before the handshake finished"));
+      Inspector.failure(c.host, c.port, "TLS closed before the handshake was seen to finish" + (error != null ? ": " + error : ""));
     }
     else if (c.decoder instanceof Opaque o && c.bytesIn + c.bytesOut > 0) Inspector.opaque(c.host, c.port, c.bytesOut, c.bytesIn, o.why);
     if (never && c.error == null) return;  // made and closed with nothing said on it: not worth a line
@@ -623,6 +623,11 @@ final class Tap {
       c.ended = true;
     }
     live.clear();
+    for (Conn c : handshaking) {
+      c.dead = true;
+      c.ended = true;
+    }
+    handshaking.clear();
   }
 
   private static Map<String, Object> describe(Conn c) {

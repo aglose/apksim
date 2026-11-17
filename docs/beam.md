@@ -528,7 +528,7 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   `java.net.preferIPv4Stack`, so Java still reaches IPv4 hosts; IPv6-only hosts are out of reach) and no standby's
   socket (it would run an APK in the ordinary sandbox), nor any other local socket but the resolver's
   (`mDNSResponder`) and `syslog`: not an `ssh-agent`'s (signing with the visitor's keys) or a container engine's.
-  `apksim beam config allow-loopback PORT[,PORT...]|off` (issue 428; at most 16 ports, off by default, read by each launch,
+  `apksim beam config allow-loopback PORT[,PORT...]|off` (issue 428; at most 16 ports, off by default, read by each launch, An opened port's exchanges are listed by the network inspector (raw sockets, OkHttp; a plain-http `HttpURLConnection` is not read in the beam sandbox), and it stays reachable offline: conditions and rules do not apply to it (issue 440).
   `/beam/hello` says `"loopback": [PORTS]` to a trusted site, `[]` to any other) opens named loopback ports to the app, for a backend the owner runs on this
   Mac: one `(allow network-outbound (remote tcp4 "localhost:PORT"))` per port, after the deny rules (before the IPv6 deny
   it does not hold), so TCP to that port over IPv4 and nothing else on loopback (`::1` on that port and `::ffff:127.0.0.1` stay denied: plain `tcp` would open `::1` too).

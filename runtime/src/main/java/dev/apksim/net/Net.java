@@ -600,10 +600,16 @@ public final class Net {
   /** The loopback ports the owner opened to the app (empty outside a beamed instance). */
   private static final java.util.Set<Integer> ALLOWED_LOOPBACK = dev.apksim.LoopbackPorts.allowed();
 
+  /**
+   * Issue 440: a loopback port the beam agent's owner opened (`allow-loopback`) is a server the app is meant to reach:
+   * connected directly as any loopback is (no offline, conditions or rules), but read by the tap.
+   */
+  static boolean openedLoopback(InetSocketAddress a) {
+    return !ALLOWED_LOOPBACK.isEmpty() && ALLOWED_LOOPBACK.contains(a.getPort()) && bypass(a);
+  }
+
   static boolean bypass(InetSocketAddress a) {
     if (loopbackToo) return false;
-    // Issue 440: a port the beam agent's owner opened (`allow-loopback`) is a server the app is meant to reach, and its
-    // exchanges are read like any other host's. Everything else on loopback is apksim's own (control, adb, the engine).
     boolean loopback;
     if (a.isUnresolved()) {
       String h = a.getHostString().toLowerCase(Locale.ROOT);
@@ -612,7 +618,7 @@ public final class Net {
       InetAddress ip = a.getAddress();
       loopback = ip.isLoopbackAddress() || ip.isAnyLocalAddress();
     }
-    return loopback && !ALLOWED_LOOPBACK.contains(a.getPort());
+    return loopback;
   }
 
   public static void connect(Socket s, SocketAddress a) throws IOException {
@@ -640,7 +646,9 @@ public final class Net {
       raw = rs.real();
     }
     if (!(a instanceof InetSocketAddress isa) || bypass(isa)) {
+      long t0 = System.nanoTime();
       raw.connect(a, timeout);
+      if (Tap.on && a instanceof InetSocketAddress o && openedLoopback(o)) Tap.connected(s, hostOf(o), o.getPort(), (System.nanoTime() - t0) / 1_000_000);
       return;
     }
     Conditions c = conditions;
@@ -895,8 +903,9 @@ public final class Net {
       return new RelayConnection(u);
     }
     int urlPort = u.getPort() > 0 ? u.getPort() : u.getDefaultPort();
+    // An opened loopback port's plain-http URLConnection is not listed (the JDK's client has no socket the tap reads).
     if (!(proto.equals("http") || proto.equals("https")) || bypass(InetSocketAddress.createUnresolved(host, urlPort))
-        || (isLiteralLoopback(host) && !ALLOWED_LOOPBACK.contains(urlPort))) {
+        || isLiteralLoopback(host)) {
       return p == null ? u.openConnection() : u.openConnection(p);
     }
     // Offline, a connection that fails when used, without the JDK: its cached keep-alive sockets and a numeric address
