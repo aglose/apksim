@@ -1472,7 +1472,7 @@ and listeners are not set up. Robolectric resets its providers before JUnit repo
 (`SimTestStorage`: test_outputfiles, test_runfiles, internal_use and testargs, files under `--test-outputs DIR`,
 default `cache/test-outputs` in the state folder) is registered again before each listener call. The test app's
 `HarnessRunner` adds `RecordingListener` (`RunnerListenersTest`).
-`-e class a.B#m,a.C`, `notClass`, `package`, `notPackage`, `log true` (list only) work (in `class`/`notClass`, `\,` is
+`-e class a.B#m,a.C`, `notClass`, `package`, `notPackage`, `log true` (list only) work (`Class#method` also selects every parameter of a Parameterized `method[...]`, as androidx's MethodFilter strips the suffix; `Class#method[A]` stays exact; in `class`/`notClass`, `\,` is
 a comma inside a name and `\\` a backslash, for Parameterized's `test[0: x, y]`: an apksim extension, which
 `instrument.py` writes when it names tests; any other backslash is literal), and every `-e` reaches
 `InstrumentationRegistry.getArguments()`; `--device tablet` is 2560x1600 at density 2, the emulator's Nexus 10.
