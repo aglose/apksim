@@ -1000,7 +1000,7 @@ its certificate). Any option turns it on; without one, the hooks cost one static
   `TapSslSocket` (the real socket, every call passed on, streams copied); plain http, and anything the engine
   answers, gets the engine as an HTTP proxy.
   `NetResolver` (META-INF/services) answers every JVM lookup: offline fails it, replaying returns a 198.18/15
-  placeholder. Natives: offline only (`bionic_net.c`, Mac). Loopback is never touched
+  placeholder. Natives: offline only (`bionic_net.c`, Mac). Loopback is never touched, except the ports `apksim beam config allow-loopback` opened (`Net.bypass`, issue 440: read like any host)
   (`-Dapksim.netCheckLoopback=true` lifts that for `scripts/check-net-tap.sh`, whose servers are on this machine).
 - `--network-host` and `--network-trust` are also serve and beam launch options (issue 429): `--network-host` only to an
   address on `serve --network-host-allow ADDR[:PORT]` or the beam owner's `apksim beam config allow-host` (`HostAllow`,

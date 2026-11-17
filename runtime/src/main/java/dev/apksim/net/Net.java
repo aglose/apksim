@@ -597,14 +597,22 @@ public final class Net {
   /** Checks only (scripts/check-net-tap.sh): loopback counts as any other address, so a server on this machine stands in for a remote one. */
   private static final boolean loopbackToo = Boolean.getBoolean("apksim.netCheckLoopback");
 
+  /** The loopback ports the owner opened to the app (empty outside a beamed instance). */
+  private static final java.util.Set<Integer> ALLOWED_LOOPBACK = dev.apksim.LoopbackPorts.allowed();
+
   static boolean bypass(InetSocketAddress a) {
     if (loopbackToo) return false;
+    // Issue 440: a port the beam agent's owner opened (`allow-loopback`) is a server the app is meant to reach, and its
+    // exchanges are read like any other host's. Everything else on loopback is apksim's own (control, adb, the engine).
+    boolean loopback;
     if (a.isUnresolved()) {
       String h = a.getHostString().toLowerCase(Locale.ROOT);
-      return h.equals("localhost") || h.endsWith(".localhost");
+      loopback = h.equals("localhost") || h.endsWith(".localhost");
+    } else {
+      InetAddress ip = a.getAddress();
+      loopback = ip.isLoopbackAddress() || ip.isAnyLocalAddress();
     }
-    InetAddress ip = a.getAddress();
-    return ip.isLoopbackAddress() || ip.isAnyLocalAddress();
+    return loopback && !ALLOWED_LOOPBACK.contains(a.getPort());
   }
 
   public static void connect(Socket s, SocketAddress a) throws IOException {
@@ -886,8 +894,9 @@ public final class Net {
       if (!proto.equals("http")) throw new ConnectException(TabRelay.HOST + " is plain HTTP only");
       return new RelayConnection(u);
     }
-    if (!(proto.equals("http") || proto.equals("https")) || bypass(InetSocketAddress.createUnresolved(host, 1))
-        || isLiteralLoopback(host)) {
+    int urlPort = u.getPort() > 0 ? u.getPort() : u.getDefaultPort();
+    if (!(proto.equals("http") || proto.equals("https")) || bypass(InetSocketAddress.createUnresolved(host, urlPort))
+        || (isLiteralLoopback(host) && !ALLOWED_LOOPBACK.contains(urlPort))) {
       return p == null ? u.openConnection() : u.openConnection(p);
     }
     // Offline, a connection that fails when used, without the JDK: its cached keep-alive sockets and a numeric address
