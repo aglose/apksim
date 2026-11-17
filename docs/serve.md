@@ -516,7 +516,7 @@ screen rectangle, a click at its centre landing at the app's centre, the cutout 
   (its send time plus the quickest ping round trip, so neither the app's idle time nor a slow link's delay counts), and
   the link's, an ack round trip per window of frames; before 4 acks with `--in-flight 1`, the ack round trip)), and the encoder makes at
   most one new frame per MS, the newest at that time, so the stream stays a valid chain at the rate the tab manages.
-  After 8 s without a drop the pace is tried 15% quicker (a faster tab gets its rate back); a drop during that trial
+  After 8 s without a drop the pace is tried 15% quicker (a faster tab gets its rate back); a tab that acks quickly again does not wait for those steps: once 8 acks since the pace last changed all came back fast, the pace jumps to the slowest of them x 1.15 (none under 8 ms), as a trial too (issue 465); a drop during that trial
   puts the pace that held back and doubles the wait before the next one (128 s at most), so a tab at its limit sees a
   keyframe ever more rarely. A drop under a pace that was not a trial makes it a quarter slower. A tab that has acked nothing for 2 s while a frame is owed is stalled, not slow (held acks, a hung decoder): its drops change no pace, and the first ack for a frame sent over 2 s earlier clears the pace, trial and backoff and sends `pace 0` (issue 401). An instance with
   several stream viewers keeps a pace per H.264 viewer and uses the slowest, and none while a JPEG viewer is attached.

@@ -651,6 +651,17 @@ def check_h264_pacing(url, token, app, a):
     check(pace and pace > 0, f"a tab decoding {s.decode_ms:.0f} ms a frame gets a pace (paceMs {pace}, keyDrops {s.stats.get('keyDrops')})")
     check(keys <= 1, f"paced, at most one keyframe in {secs:.0f} s ({keys}; drops to keyframes would be several a second)")
     check(len(tail) / secs >= 0.5 * tab_fps, f"paced, the tab still gets at least half its rate ({len(tail) / secs:.1f} fps of {tab_fps:.0f})")
+    # The tab is quick again (issue 465): the pace goes within a few seconds, not in 15% steps 8 s apart.
+    s.decode_ms = 0
+    s.pump(3)
+    n0, t0 = len(s.frames), time.time()
+    s.pump(3)
+    fps = (len(s.frames) - n0) / (time.time() - t0)
+    s.ws.send("stats")
+    s.pump(1)
+    pace = s.stats.get("paceMs", 0)
+    check(not pace, f"a tab quick again has no pace within 6 s (paceMs {pace})")
+    check(fps >= 0.8 * app_fps, f"and the app's rate back ({fps:.0f} fps of {app_fps:.0f})")
     s.ws.s.close()
 
 

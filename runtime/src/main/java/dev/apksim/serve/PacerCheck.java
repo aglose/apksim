@@ -1,7 +1,7 @@
 package dev.apksim.serve;
 
 /**
- * Checks {@link Pacer} on a simulated clock (scripts/check-pacer.sh, CI): a slow tab gets a pace from its measured rate,
+ * Checks {@link Pacer} on a simulated clock (scripts/check-pacer.sh, CI), the jump to a quicker pace on quick acks included: a slow tab gets a pace from its measured rate,
  * one drop alone gets none, a too-low pace is raised, easing after a quiet spell, a failed trial restoring the pace that
  * held with a doubling wait (capped), the one-frame window's round-trip fallback, the app's idle time and the link's delay
  * kept out of the tab's busy time, and a link with delay limiting a frame to its round trip per window. Exits 1 if any
@@ -19,6 +19,7 @@ public final class PacerCheck {
     repeatedDrops();
     raisedWhenTooLow();
     easingAndBackoff();
+    fastRecovery();
     easedToNothing();
     oneFrameWindow();
     ackGapIgnoresIdle();
@@ -79,6 +80,56 @@ public final class PacerCheck {
       p.frame(t);
     }
     check(p.easeWaitNanos == Pacer.MAX_EASE_WAIT_NANOS, "the wait stops doubling at 128 s");
+  }
+
+  private static void fastRecovery() {
+    // Issue 465: a tab slow for a while (acks 80 ms late) gets a pace; once it acks at once the pace goes at once, not in
+    // 15% steps 8 s apart.
+    Pacer p = new Pacer();
+    long t = 100 * S;
+    for (int i = 1; i <= 10; i++) p.acked(t + i * 80 * MS, t + (i - 1) * 80 * MS + 40 * MS, -1);
+    p.dropped(t + S, 80);
+    check(p.dropped(t + S + 100 * MS, 80) == 92, "a slow tab's pace (92)");
+    long n = t + 3 * S;
+    int ask = -1;
+    for (int i = 0; i < Pacer.FAST_ACKS - 1; i++) {
+      ask = p.acked(n + i * 33 * MS + 3 * MS, n + i * 33 * MS, -1);
+      check(ask == -1, "fewer than " + Pacer.FAST_ACKS + " quick acks ask for nothing");
+    }
+    ask = p.acked(n + 7 * 33 * MS + 3 * MS, n + 7 * 33 * MS, -1);
+    check(ask == 0 && p.paceMs == 0 && p.eased, "then quick acks drop the pace at once (" + ask + ")");
+    check(p.dropped(n + 10 * S, 40) == 92 && !p.eased, "and a drop in that trial restores it");
+    // A tab acking in 60 ms with a pace of 92 may go to 70 (60 x 1.15), not to nothing.
+    Pacer q = new Pacer();
+    for (int i = 1; i <= 10; i++) q.acked(t + i * 80 * MS, t + (i - 1) * 80 * MS + 40 * MS, -1);
+    q.dropped(t + S, 80);
+    q.dropped(t + S + 100 * MS, 80);
+    int a = -1;
+    for (int i = 0; i < Pacer.FAST_ACKS; i++) a = q.acked(n + i * 90 * MS + 60 * MS, n + i * 90 * MS, -1);
+    check(a == 69 && q.paceMs == 69, "acks of 60 ms give a pace of 69 (" + a + ")");
+    // After a slow easing step (eased set, pace 78) quick acks still jump.
+    Pacer e = new Pacer();
+    for (int i = 1; i <= 10; i++) e.acked(t + i * 80 * MS, t + (i - 1) * 80 * MS + 40 * MS, -1);
+    e.dropped(t + S, 80);
+    e.dropped(t + S + 100 * MS, 80);
+    e.frame(t + 20 * S);
+    int b = -1;
+    for (int i = 0; i < Pacer.FAST_ACKS; i++) b = e.acked(t + 22 * S + i * 33 * MS + 3 * MS, t + 22 * S + i * 33 * MS, -1);
+    check(b == 0 && e.goodPaceMs == 92, "quick acks jump even during a slow trial, keeping its way back (" + b + ")");
+    // A failed jump doubles the wait before the next: quick acks 1.5 s after the drop ask for nothing, 2.5 s after do.
+    long d = t + 23 * S;
+    check(e.dropped(d, 40) == 92, "a drop in the jump's trial restores 92");
+    for (int i = 0; i < Pacer.FAST_ACKS; i++) b = e.acked(d + 1500 * MS + i * MS + 3 * MS, d + 1500 * MS + i * MS, -1);
+    check(b == -1 && e.paceMs == 92, "after a failed jump, quick acks within 2 s of the drop keep the pace");
+    b = e.acked(d + 2500 * MS + 3 * MS, d + 2500 * MS, -1);
+    check(b == 0 && e.paceMs == 0, "and jump again once 2 s have passed (" + b + ")");
+    // Acks that are not all quick change nothing.
+    Pacer r = new Pacer();
+    for (int i = 1; i <= 10; i++) r.acked(t + i * 80 * MS, t + (i - 1) * 80 * MS + 40 * MS, -1);
+    r.dropped(t + S, 80);
+    r.dropped(t + S + 100 * MS, 80);
+    for (int i = 0; i < 12; i++) r.acked(n + i * 90 * MS + (i == 5 ? 90 : 3) * MS, n + i * 90 * MS, -1);
+    check(r.paceMs == 92, "a slow ack among the last eight keeps the pace (" + r.paceMs + ")");
   }
 
   private static void easedToNothing() {
