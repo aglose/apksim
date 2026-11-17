@@ -615,8 +615,8 @@ click at a point of the window's content, in points from its top left, sent thro
 which view takes it), `skin [NAME|off]` (`Skinning`: a stored skin around the screen; alone, where it falls), `window close` (as the close button: while a stream viewer is attached, apksim beam's
 tab, it only hides the window),
 `animscale 10|1|0|toggle`, `memory [moderate|low|critical]`, `home`/`resume`, `lock`/`unlock` (a click on the window
-also returns), `open URL` (deep link into the app), `clipboard [set TEXT]`, `record start [file.mov]|stop|toggle` (Mac
-window only), `reveal`, `pinch CX CY FROM TO [ms]` (two fingers), `rotate left|right|portrait|landscape`,
+also returns), `open URL` (deep link into the app), `clipboard [set TEXT]`, `record start [file.mov|file.mp4]|stop|toggle` (Mac
+window only; a `.mp4` name gets MP4, else QuickTime; the last picture is held to the stop time, so the file lasts as long as the recording), `reveal`, `pinch CX CY FROM TO [ms]` (two fingers), `rotate left|right|portrait|landscape`,
 `zoom actual|fit|in|out` (window size only), `permission [allow|deny|grant NAME|revoke NAME|reset]`,
 `notifications [open N|last|clear]`, `location LAT LNG|run|bike|drive|gpx FILE|none`,
 `network [online|offline|3g|lossy|latency MS|bandwidth KBPS|unmatched [clear]|save|reconnect]` (see "Network"),
