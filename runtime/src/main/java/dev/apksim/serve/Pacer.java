@@ -13,6 +13,10 @@ package dev.apksim.serve;
  *   <li>After {@link #easeWaitNanos} without a drop the pace is tried 15% quicker (none once under 8 ms, the instance's
  *       own frame interval at 120 Hz). A drop during that trial puts back the pace that held and doubles the wait, to
  *       128 s at most, so a tab at its limit is probed ever more rarely instead of freezing every few seconds.
+ *   <li>A tab that was slow and is quick again does not wait for those 8 s steps (issue 465: 20+ s to get from 23 fps
+ *       back to the app's 30): once {@link #FAST_ACKS} acks since the pace last changed all came back well within it,
+ *       the pace goes straight to what their latency allows (the slowest of them, plus 15%; none under 8 ms), as a
+ *       trial like the slow easing: a drop puts the pace back.
  * </ul>
  */
 final class Pacer {
@@ -23,6 +27,10 @@ final class Pacer {
   static final int MAX_PACE_MS = 250;
   /** No ack for this long: the tab is stalled (held acks, a hung decoder), not slow (issue 401). */
   static final long STALL_NANOS = 2_000_000_000L;
+
+  /** Acks that must all be quick, since the pace last changed, for a jump to a quicker one (issue 465). */
+  static final int FAST_ACKS = 8;
+  private static final long FAST_EASE_NANOS = 1_000_000_000L;
 
   /** Drops to a keyframe so far. */
   int keyDrops;
@@ -46,6 +54,7 @@ final class Pacer {
     int quicker = paceMs * 85 / 100;
     paceMs = quicker <= 8 ? 0 : quicker;
     lastPaceNanos = now;
+    fastAcks = 0;
     return paceMs;
   }
 
@@ -76,6 +85,7 @@ final class Pacer {
         eased = false;
         paceMs = goodPaceMs;
         lastPaceNanos = now;
+        fastAcks = 0;
         return paceMs;
       }
       return -1;
@@ -87,6 +97,7 @@ final class Pacer {
       easeWaitNanos = Math.min(easeWaitNanos * 2, MAX_EASE_WAIT_NANOS);
       paceMs = goodPaceMs;
       lastPaceNanos = now;
+      fastAcks = 0;
       return paceMs;
     }
     // Only from the tab's own measured rate: the app's frame interval says nothing about the tab.
@@ -97,6 +108,7 @@ final class Pacer {
     if (ms <= paceMs) return -1;
     paceMs = ms;
     lastPaceNanos = now;
+    fastAcks = 0;
     return ms;
   }
 
@@ -145,13 +157,36 @@ final class Pacer {
       easeWaitNanos = EASE_WAIT_NANOS;
       lastDropNanos = 0;
       lastPaceNanos = 0;
+      fastAcks = 0;
       lastAckNanos = resumedNanos = now;
       return ask;
     }
     long arrived = sentNanos + (linkMs > 0 ? (long) (linkMs * 1e6) : 0);
     busy[busyCount++ % SAMPLES] = Math.max(0, now - Math.max(lastAckNanos, arrived)) / 1e6;
     lastAckNanos = now;
-    return -1;
+    return fastEase(now, now - sentNanos);
+  }
+
+  /** Latest ack latencies (sent to acked, ns) since the pace last changed, newest at {@code fastAcks % FAST_ACKS}. */
+  private final long[] ackLatency = new long[FAST_ACKS];
+  private int fastAcks;
+
+  /** After an ack with the given latency: the quicker pace the recent acks allow, or -1 for no change. */
+  private int fastEase(long now, long latencyNanos) {
+    if (paceMs <= 0 || eased) return -1;
+    ackLatency[fastAcks++ % FAST_ACKS] = latencyNanos;
+    if (fastAcks < FAST_ACKS || now - lastPaceNanos < FAST_EASE_NANOS || now - lastDropNanos < FAST_EASE_NANOS) return -1;
+    long worst = 0;
+    for (long l : ackLatency) worst = Math.max(worst, l);
+    // A window of one carries a frame per latency, so the slowest recent ack bounds the pace from below.
+    int want = (int) Math.ceil(worst / 1e6 * 1.15);
+    if (want >= paceMs * 85 / 100) return -1;
+    goodPaceMs = paceMs;
+    eased = true;
+    paceMs = want <= 8 ? 0 : want;
+    lastPaceNanos = now;
+    fastAcks = 0;
+    return paceMs;
   }
 
   /** The mean of the recent busy times in ms, or -1 before there are 4. */
