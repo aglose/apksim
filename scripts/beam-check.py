@@ -578,6 +578,78 @@ def tab_shell(s, line, n=[0]):
     return answer() or {"error": "no answer"}
 
 
+def loopback_checks(apksim, apk):
+    """Issue 428: `apksim beam config allow-loopback PORTS` opens named loopback ports (TCP over IPv4) in the beam
+    sandbox profile, and nothing else on loopback; /beam/hello reports them; the agent's own port never. A state
+    folder and agent of its own."""
+    state = tempfile.mkdtemp(prefix="beam-check-lb-")
+    env = dict(os.environ, APKSIM_HOME=state, APKSIM_BEAM_CONSENT="allow")
+    l1, l2 = socket.socket(), socket.socket()
+    for l in (l1, l2):
+        l.bind(("127.0.0.1", 0))
+        l.listen(8)
+    p1, p2 = l1.getsockname()[1], l2.getsockname()[1]
+    l6 = socket.socket(socket.AF_INET6)  # the opened port on ::1 too: it must stay out of reach
+    l6.bind(("::1", p1))
+    l6.listen(8)
+    # The profile: the opened port connects, another loopback port and the same port over IPv6 do not. A malformed
+    # entry in the list is dropped, the valid ones stay.
+    script = ("if nc -z -w 2 127.0.0.1 $1 >/dev/null 2>&1; then echo 'open allowed'; else echo 'open denied'; fi\n"
+              "if nc -z -w 2 127.0.0.1 $2 >/dev/null 2>&1; then echo 'other allowed'; else echo 'other denied'; fi\n"
+              "if nc -6 -z -w 2 ::1 $1 >/dev/null 2>&1; then echo 'v6 allowed'; else echo 'v6 denied'; fi")
+    for listing, want in ((str(p1), True), (f"junk,0,70000,{p1}", True), ("", False)):
+        e = dict(ENV, APKSIM_BEAM_SANDBOX="1", APKSIM_BEAM_LOOPBACK=listing,
+                 APKSIM_SANDBOX_TEST=f"sh -c {sh_quote(script)} probe {p1} {p2}")
+        r = subprocess.run([apksim, apk], capture_output=True, text=True, timeout=60, env=e)
+        got = {l.split()[0]: l.split()[1] for l in r.stdout.split("\n") if len(l.split()) == 2}
+        check(got.get("open") == ("allowed" if want else "denied"), f"loopback: port {p1} with APKSIM_BEAM_LOOPBACK={listing!r}: {got.get('open')}")
+        check(got.get("other") == "denied", f"loopback: a port not opened stays denied ({got.get('other')})")
+        check(got.get("v6") == "denied", f"loopback: IPv6 stays denied ({got.get('v6')})")
+    gp, origin = free_port(), "http://lb.beam-check.test"
+    standbys = []
+    for bad in ("0", "65536", "abc", "80,", "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17"):
+        r = subprocess.run([apksim, "beam", "config", "allow-loopback", bad], capture_output=True, text=True, env=env, timeout=60)
+        check(r.returncode == 2, f"loopback: config allow-loopback {bad!r} is refused ({r.returncode})")
+    r = subprocess.run([apksim, "beam", "config", "allow-loopback", f"{p2},{p1},{p2}"], capture_output=True, text=True, env=env, timeout=60)
+    want = ",".join(str(x) for x in sorted({p1, p2}))
+    check(r.returncode == 0 and f"allow-loopback {want}" in r.stdout, f"loopback: config sorts and dedupes ({r.stdout.strip()[:140]})")
+    subprocess.run([apksim, "beam", "trust", "allow", origin], capture_output=True, text=True, env=env, timeout=60)
+    log = open(os.path.join(state, "agent.log"), "w")
+    g = subprocess.Popen([apksim, "beam", "--port", str(gp)], stdout=subprocess.DEVNULL, stderr=log, env=env)
+    try:
+        check(wait_up(gp, "/beam/hello"), "loopback: an agent")
+        h = json.loads(req(gp, "GET", "/beam/hello", "http://other.beam-check.test")[2])
+        check(h.get("loopback") == [], f"loopback: hello tells a site that is not trusted nothing ({h.get('loopback')})")
+        h = json.loads(req(gp, "GET", "/beam/hello", origin)[2])
+        check(h.get("loopback") == sorted({p1, p2}), f"loopback: hello reports the ports to a trusted site ({h.get('loopback')})")
+        # The agent's standby carries the ports (its name and its profile), so launches with them are warm.
+        deadline, found = time.time() + 30, False
+        while time.time() < deadline and not found:
+            ps = subprocess.run(["ps", "eww", "-ax", "-o", "pid,command"], capture_output=True, text=True).stdout
+            standbys = [int(l.split()[0]) for l in ps.split("\n")
+                        if f"APKSIM_BEAM_LOOPBACK={want}" in l and f"APKSIM_HOME={state}" in l and "dev.apksim.Main" in l]
+            found = bool(standbys)
+            time.sleep(0.5)
+        check(found, "loopback: the agent's standby is started with the opened ports")
+        r = subprocess.run([apksim, "beam", "config", "allow-loopback", str(gp)], capture_output=True, text=True, env=env, timeout=60)
+        check(r.returncode == 2 and "agent's own port" in r.stderr, f"loopback: the running agent's own port is refused ({r.returncode})")
+        r = subprocess.run([apksim, "beam", "config", "allow-loopback", "off"], capture_output=True, text=True, env=env, timeout=60)
+        check(r.returncode == 0 and "allow-loopback off" in r.stdout, "loopback: config allow-loopback off")
+        h = json.loads(req(gp, "GET", "/beam/hello", origin)[2])
+        check(h.get("loopback") == [], f"loopback: hello reports none once off ({h.get('loopback')})")
+    finally:
+        stop(g)
+        l1.close()
+        l2.close()
+        l6.close()
+        for pid in standbys:  # this check's own standby (its state folder goes below)
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+        shutil.rmtree(state, ignore_errors=True)
+
+
 def adb_checks(apksim, apk, sha, size):
     """Issue 397: a page's `shell` message in a beamed session (am start, am broadcast and settings by default), and
     `apksim beam config allow-adb on`: a start that asks ("adb": true) gets an adb device on loopback whose port the
@@ -1242,9 +1314,16 @@ def main():
     ap.add_argument("--apksim", default=os.path.join(os.path.dirname(HERE), "apksim"))
     ap.add_argument("--server-port", type=int, default=47480)
     ap.add_argument("--agent-port", type=int, default=47481)
-    ap.add_argument("--only", choices=["adb"], help="run only this part")
+    ap.add_argument("--only", choices=["adb", "loopback"], help="run only this part")
     a = ap.parse_args()
     sp, gp, apksim = a.server_port, a.agent_port, a.apksim
+    if a.only == "loopback":
+        loopback_checks(apksim, a.apk)
+        if sc.FAILED:
+            print(f"{len(sc.FAILED)} check(s) failed")
+            sys.exit(1)
+        print("beam check passed (loopback)")
+        return
     with open(a.apk, "rb") as f:
         apk = f.read()
     sha, size = hashlib.sha256(apk).hexdigest(), len(apk)
@@ -1269,6 +1348,7 @@ def main():
     warm_checks(apksim, a.apk, sha, size)
     data_checks(apksim, a.apk, sha, size)
     adb_checks(apksim, a.apk, sha, size)
+    loopback_checks(apksim, a.apk)
     r = beam(apksim, "status")
     check(r.returncode == 0 and "agent: not running" in r.stdout, f"status: no agent yet ({r.stdout.splitlines()[:1]})")
     server = subprocess.Popen([apksim, "serve", "--port", str(sp), "--allow-beam", "--beam-port", str(gp), "--apps", a.apk],

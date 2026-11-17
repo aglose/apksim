@@ -424,7 +424,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     allowed, the consent dialog (`/beam/hello`'s `asking` while it is up, issue 178) and the addresses it may download a
     build a page names from (`apksim beam config allow-download`, a start's `source`, issue 177); `SharedDataLibs`: the agent adds
     `--move-shared-data` itself for a build with a 4 KB-aligned library macOS cannot map as it is (issue 171); `BeamSandbox` (in `dev.apksim`): a beamed instance's
-    sandbox, its own standbys (`b`) and caches per build, docs/beam.md "The beam sandbox"; `BeamStore`: what the agent
+    sandbox (`apksim beam config allow-loopback PORTS` opens named loopback ports in its profile, issue 428; `LoopbackPorts`), its own standbys (`b`) and caches per build, docs/beam.md "The beam sandbox"; `BeamStore`: what the agent
     keeps and for how long, builds held `keep-days` after their last session, sessions kept on request, `apksim beam
     saved|run|to-device|forget|config|sweep|status`, and a saved session reopened from its site's tab on a copy written back when
     it ends, or a newer build of the same app started on a copy (`/beam/start`'s `saved`/`dataFrom`, `GET /beam/saved`,

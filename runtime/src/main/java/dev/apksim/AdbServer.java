@@ -64,7 +64,7 @@ final class AdbServer {
 
   static void start(int requested) throws IOException {
     String bind = System.getProperty("apksim.controlBind");
-    ServerSocket server = new ServerSocket(requested, 8, bind == null ? InetAddress.getLoopbackAddress() : InetAddress.getByName(bind));
+    ServerSocket server = LoopbackPorts.listen(requested, bind == null ? InetAddress.getLoopbackAddress() : InetAddress.getByName(bind));
     port = server.getLocalPort();
     Files.writeString(Path.of(System.getProperty("java.io.tmpdir"), "adb.port"), String.valueOf(port));
     System.err.println("[apksim] adb device on localhost:" + port + " (adb connect localhost:" + port + ")");
