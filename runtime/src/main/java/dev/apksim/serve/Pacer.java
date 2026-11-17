@@ -173,15 +173,17 @@ final class Pacer {
 
   /** After an ack with the given latency: the quicker pace the recent acks allow, or -1 for no change. */
   private int fastEase(long now, long latencyNanos) {
-    if (paceMs <= 0 || eased) return -1;
+    if (paceMs <= 0) return -1;
     ackLatency[fastAcks++ % FAST_ACKS] = latencyNanos;
+    if (fastAcks >= 2 * FAST_ACKS) fastAcks = FAST_ACKS + fastAcks % FAST_ACKS;
     if (fastAcks < FAST_ACKS || now - lastPaceNanos < FAST_EASE_NANOS || now - lastDropNanos < FAST_EASE_NANOS) return -1;
     long worst = 0;
     for (long l : ackLatency) worst = Math.max(worst, l);
-    // A window of one carries a frame per latency, so the slowest recent ack bounds the pace from below.
+    // Conservative: frames overlap in a window of two or more, so a frame per latency is slower than the tab can go.
     int want = (int) Math.ceil(worst / 1e6 * 1.15);
     if (want >= paceMs * 85 / 100) return -1;
-    goodPaceMs = paceMs;
+    // A trial already under way keeps the pace that held as its way back.
+    if (!eased) goodPaceMs = paceMs;
     eased = true;
     paceMs = want <= 8 ? 0 : want;
     lastPaceNanos = now;

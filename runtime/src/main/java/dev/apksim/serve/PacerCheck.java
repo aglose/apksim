@@ -1,7 +1,7 @@
 package dev.apksim.serve;
 
 /**
- * Checks {@link Pacer} on a simulated clock (scripts/check-pacer.sh, CI): a slow tab gets a pace from its measured rate,
+ * Checks {@link Pacer} on a simulated clock (scripts/check-pacer.sh, CI), the jump to a quicker pace on quick acks included: a slow tab gets a pace from its measured rate,
  * one drop alone gets none, a too-low pace is raised, easing after a quiet spell, a failed trial restoring the pace that
  * held with a doubling wait (capped), the one-frame window's round-trip fallback, the app's idle time and the link's delay
  * kept out of the tab's busy time, and a link with delay limiting a frame to its round trip per window. Exits 1 if any
@@ -107,6 +107,15 @@ public final class PacerCheck {
     int a = -1;
     for (int i = 0; i < Pacer.FAST_ACKS; i++) a = q.acked(n + i * 90 * MS + 60 * MS, n + i * 90 * MS, -1);
     check(a == 69 && q.paceMs == 69, "acks of 60 ms give a pace of 69 (" + a + ")");
+    // After a slow easing step (eased set, pace 78) quick acks still jump.
+    Pacer e = new Pacer();
+    for (int i = 1; i <= 10; i++) e.acked(t + i * 80 * MS, t + (i - 1) * 80 * MS + 40 * MS, -1);
+    e.dropped(t + S, 80);
+    e.dropped(t + S + 100 * MS, 80);
+    e.frame(t + 20 * S);
+    int b = -1;
+    for (int i = 0; i < Pacer.FAST_ACKS; i++) b = e.acked(t + 22 * S + i * 33 * MS + 3 * MS, t + 22 * S + i * 33 * MS, -1);
+    check(b == 0 && e.goodPaceMs == 92, "quick acks jump even during a slow trial, keeping its way back (" + b + ")");
     // Acks that are not all quick change nothing.
     Pacer r = new Pacer();
     for (int i = 1; i <= 10; i++) r.acked(t + i * 80 * MS, t + (i - 1) * 80 * MS + 40 * MS, -1);
