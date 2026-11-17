@@ -204,6 +204,17 @@ public final class TapCheck {
     return b.toByteArray();
   }
 
+  /** Issue 470: which connect failures make the engine try a host's other addresses. */
+  private static void noRouteTable() {
+    java.io.IOException[] yes = {new java.net.NoRouteToHostException("x"), new java.net.SocketException("Network is unreachable"),
+        new java.net.ConnectException("connect failed: ENETUNREACH (Network is unreachable)"),
+        new java.net.SocketException("No route to host"), new java.net.SocketException("Cannot assign requested address")};
+    java.io.IOException[] no = {new java.net.ConnectException("Connection refused"), new java.net.SocketTimeoutException("connect timed out"),
+        new java.net.SocketException("Connection reset"), new java.io.IOException("Network is unreachable")};
+    for (java.io.IOException e : yes) check(NetEngine.noRoute(e), "fallback to other addresses on " + e);
+    for (java.io.IOException e : no) check(!NetEngine.noRoute(e), "no fallback on " + e);
+  }
+
   public static void main(String[] args) throws Exception {
     Path dir = Files.createTempDirectory("tapcheck");
     Path ks = dir.resolve("ks.p12");
@@ -225,6 +236,7 @@ public final class TapCheck {
       public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
     }}, null);
 
+    noRouteTable();
     System.setProperty("apksim.networkInspect", "true");
     Net.configure();
     if (args.length == 2 && args[0].equals("allowed-loopback")) {
