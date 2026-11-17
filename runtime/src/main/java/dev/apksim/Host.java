@@ -897,7 +897,11 @@ public class Host {
       ActivityController<? extends Activity> c = Robolectric.buildActivity(cls, started);
       stack.push(c);
       c.setup();
-      arrange(new ArrayList<>(stack), false);
+      // One that finished in onCreate (a redirect trampoline that started the real target and finished) never comes
+      // up on a device, and the one below is not resumed for it: it gets the pending start's onNewIntent first. Resumed
+      // here, an SDK that reads its old intent on resume reported a cancel and finished, and the start then made a
+      // second instance (issue 435). updateActivityStack arranges once the pending starts are handled.
+      if (!c.get().isFinishing()) arrange(new ArrayList<>(stack), false);
       return null;
     });
   }

@@ -16,16 +16,19 @@ import android.widget.TextView
  * hands it to this activity (singleTask) with CLEAR_TOP | SINGLE_TOP, so it arrives in onNewIntent, and the next
  * onResume reads it: "signin: code=abc (instances 1, new intents 1)". A second copy of this activity, where the
  * running one should have got the intent, shows "signin: not started" and a higher instance count.
- * `apksim://signin?authorize=URL` sets the authorize page (a local fixture).
+ * `apksim://signin?authorize=URL` sets the authorize page (a local fixture). `?strict=1` makes it Auth0's: resumed
+ * while waiting with no callback in its intent (no onNewIntent first), it reports a cancel and finishes (issue 435).
  */
 class SignInActivity : Activity() {
   private val status by lazy { TextView(this).apply { textSize = 18f; gravity = Gravity.CENTER } }
   private var launched = false
   private var newIntents = 0
+  private var strict = false
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     instances++
+    strict = intent.data?.getQueryParameter("strict") == "1"
     val authorize = intent.data?.getQueryParameter("authorize") ?: "https://example.com/authorize"
     setContentView(LinearLayout(this).apply {
       orientation = LinearLayout.VERTICAL
@@ -60,6 +63,10 @@ class SignInActivity : Activity() {
     if (launched && back != null && back.host == "signin-callback") {
       launched = false
       show("code=" + back.getQueryParameter("code"))
+    } else if (strict && launched) {
+      launched = false
+      show("cancelled")
+      finish()
     }
   }
 
