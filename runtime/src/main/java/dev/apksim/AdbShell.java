@@ -56,6 +56,8 @@ final class AdbShell {
   private long tabDeadline;
   /** The command's standard input (the adb stream's), for `pm install-write ... -`; empty when there is none. */
   private final InputStream in;
+  /** An interactive shell's keys, where a command that waits (`screenrecord`) looks for Ctrl-C; null otherwise. */
+  private InputStream keys;
   /** Whether the client closed the stream, for commands that wait (`am instrument -w`). */
   private final java.util.function.BooleanSupplier gone;
 
@@ -217,6 +219,7 @@ final class AdbShell {
   /** `adb shell` with no command: a prompt that echoes, as a terminal would, since the client sends raw keys. */
   void interactive(InputStream in) throws Exception {
     interactive = true;
+    keys = in;
     OutputStream terminal = out;
     out = new FilterOutputStream(terminal) {
       @Override
@@ -1588,10 +1591,12 @@ final class AdbShell {
 
   /**
    * screenrecord [--time-limit N] [--size WxH] [--bit-rate BPS] [--verbose] FILE: the control channel's recorder
-   * (`record start|stop`), run until the time limit (180 s, the tool's own cap, by default) or until the client closes
-   * the stream (Ctrl-C, interactive shells too), then stopped. FILE is a device path, so /sdcard works for `adb pull`. The format is the
-   * recorder's (Motion-JPEG AVI without a Mac window, QuickTime H.264 with one), whatever FILE's name says; --size and
-   * --bit-rate are accepted and not applied (the movie is the display's size). The file is at FILE once it returns.
+   * (`record start|stop`), run until the time limit (180 s, the tool's own cap, by default), until the client closes
+   * the stream (Ctrl-C on `adb shell screenrecord ...`) or until Ctrl-C is typed in an interactive shell, then
+   * stopped. FILE is a device path, so /sdcard works for `adb pull`. The format is the recorder's (Motion-JPEG AVI
+   * without a Mac window, QuickTime H.264 with one), whatever FILE's name says; --size and --bit-rate are accepted
+   * and not applied (the movie is the display's size). The file is at FILE once it returns. Not from the main thread
+   * (the app's own executeShellCommand): the wait would stop the app it records.
    */
   private int screenrecord(List<String> opts) throws Exception {
     List<String> a = new ArrayList<>(opts);
@@ -1633,6 +1638,10 @@ final class AdbShell {
       print("Time limit must be 1 to 180 seconds\n");
       return 2;
     }
+    if (Looper.getMainLooper().isCurrentThread()) {
+      print("screenrecord: cannot run on the app's main thread\n");
+      return 1;
+    }
     Path p = Paths.host(file, cwd);
     if (p == null) {
       print("Unable to open '" + file + "': Read-only file system\n");
@@ -1646,9 +1655,12 @@ final class AdbShell {
     }
     long end = System.nanoTime() + limit * 1_000_000_000L;
     try {
-      while (System.nanoTime() < end && !gone.getAsBoolean()) {
+      boolean interrupted = false;
+      while (!interrupted && System.nanoTime() < end && !gone.getAsBoolean()) {
         Thread.sleep(50);
+        while (keys != null && !interrupted && keys.available() > 0) interrupted = keys.read() == 0x03;
       }
+      if (interrupted) print("^C\n");
     } catch (InterruptedException e) {
       // the client left: stop and keep what was recorded
     } finally {

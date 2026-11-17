@@ -405,6 +405,14 @@ final class AdbServer {
         return fill() ? buf[pos++] & 0xff : -1;
       }
 
+      /** Bytes that can be read without waiting: how a command that runs for a while sees an interactive Ctrl-C. */
+      @Override
+      public int available() {
+        if (pos < buf.length) return buf.length - pos;
+        byte[] next = incoming.peek();
+        return next == null || next == EOF ? 0 : next.length;
+      }
+
       @Override
       public int read(byte[] b, int off, int len) throws IOException {
         if (len == 0) return 0;
