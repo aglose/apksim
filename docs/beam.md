@@ -532,8 +532,10 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   `/beam/hello` says `"loopback": [PORTS]` to a trusted site, `[]` to any other) opens named loopback ports to the app, for a backend the owner runs on this
   Mac: one `(allow network-outbound (remote tcp4 "localhost:PORT"))` per port, after the deny rules (before the IPv6 deny
   it does not hold), so TCP to that port over IPv4 and nothing else on loopback (`::1` on that port and `::ffff:127.0.0.1` stay denied: plain `tcp` would open `::1` too).
-  A start's `--network-host H=127.0.0.1:PORT` (or `localhost`) needs both lists (`localhost` too; not `[::1]` or another 127/8 address, which the sandbox cannot open and a start refuses): `allow-host` names the
-  target and `allow-loopback PORT` opens it, and a start naming a port that is not open is refused with that command (issue 439). A target with no port is not checked.
+  A start's `--network-host H=127.0.0.1:PORT` (or `localhost:PORT`) needs both lists: `allow-host` names the target and
+  `allow-loopback PORT` opens it; a start naming a port that is not open is refused with that command (issue 439). `[::1]`
+  and other 127/8 addresses are refused outright, as the sandbox cannot open them. A target with no port is not checked,
+  nor is `beam to-device`, which runs on an adb device rather than in the sandbox.
   Never the agent's own port (refused by the CLI while it runs, dropped by the agent's launches), and an instance's own
   control and adb ports are opened on a free port that is not an allowed one (`LoopbackPorts`). The profile is fixed
   when a standby boots, so the launcher puts the ports in the standby's name (`b+3000+8080`), and the agent boots its standbys under that name: a change reaches the
