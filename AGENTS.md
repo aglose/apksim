@@ -681,6 +681,22 @@ reads. `HealthConnectTest` (18; all but three apksim-only ones pass on an API 36
 (`HealthActivity`, ci-smoke.sh, with the week preset's stability across clocks).
 `camera [pattern|image PATH|off]` (`Cameras`, see "Camera": what the simulated cameras see; alone, their state: source,
 open and streaming devices, frames, images, drops, outputs, then `manager: idLists N availabilityCallbacks N (registered N) announced N opens N open [...]`: what the app asked CameraManager, also logged as `[apksim] camera: ...` lines on stderr outside test runs).
+`touchmode [on|off]` (`TouchMode`, issue 424): the display's touch mode as a device's window manager keeps it. A handheld's
+windows start in touch mode (Robolectric's window session already did), a touch (`tap`, `drag`, `swipe`, `pinch`, the
+window's clicks) enters it, and a navigation key (Tab, D-pad) or a typing key (`key`, `type`, the Mac keyboard: a hardware
+keyboard's keys, as `adb shell input text`) leaves it, through ViewRootImpl's own `checkForLeavingTouchModeAndConsume`,
+which Host's direct dispatch to the views bypassed; every window is told (`ensureTouchModeLocally`), and the window
+session's answer for later windows set (not through IWindowManager.setInTouchMode, which Robolectric's stand-in drops). A
+TV starts out of touch mode. `TouchMode.start` (each launch and test setup, once the Application is up) also clears
+ViewRootImpl's `sCompatibilityDone`: the framework decides once per process, from its first window's app, whether focus is
+always assigned (`sAlwaysAssignFocus`, targetSdk below 28), and in a warm launch that window was the standby's warm-up's,
+so every warm launch gave the first text field focus at launch and whenever a window gained focus with none (a resume,
+a recreation; Compose then scrolled to it), which a cold launch never showed. The command alone reports the mode, "focus
+always assigned" when that flag is set, and per window `touch|keys`, the window focus and the focused view's class; in
+test runs through `executeShellCommand("apksim touchmode")`. Test runs get the starting mode only (Robolectric's
+injection does not leave touch mode on keys). `-Dapksim.touchMode=false` leaves all of it as before (launches cold).
+`TouchModeTest`, `ci-smoke.sh` (the Linux image has no standby, so the warm case is checked by hand: launch twice,
+`restart apksim://composeapp/trips`, `touchmode` must show no `focus=`).
 `thermal [none|light|moderate|severe|critical|emergency|shutdown]` (`Thermal`, issue 149): PowerManager's thermal status,
 NONE at launch; `addThermalStatusListener(Executor, listener)` registers (Robolectric's shadow covered only the one-argument
 overload, and the real one threw "Thermal status listener failed to set"), is called at once with the status and again on
