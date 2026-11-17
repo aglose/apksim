@@ -87,6 +87,7 @@ final class Beam {
   private final Path trustFile;
   /** URL prefixes the agent may download a build from when a page names one (`source`, issue 177). */
   private final Path downloadsFile;
+  private final Path hostsFile;
   /**
    * `ask` (the prompt), or `allow` / `deny` for checks only (scripts/beam-check.py): from `-Dapksim.beam.consent` or
    * `APKSIM_BEAM_CONSENT`, which only whoever starts the agent sets. A page can never change it.
@@ -113,6 +114,7 @@ final class Beam {
     this.state = state;
     this.trustFile = state.resolve("beam/trust.json");
     this.downloadsFile = state.resolve("beam/downloads.json");
+    this.hostsFile = state.resolve("beam/hosts.json");
   }
 
   /** The version line `/beam/hello` reports: an installed release's number, else "dev". */
@@ -422,6 +424,38 @@ final class Beam {
     if (lower.contains("%2f") || lower.contains("%2e") || lower.contains("%5c") || path.contains("\\")) return null;
     for (String seg : path.split("/", -1)) if (seg.equals("..") || seg.equals(".")) return null;
     return u;
+  }
+
+  /** The targets a start's `--network-host` may name, as kept (`apksim beam config allow-host`, issue 429), read at every check. */
+  synchronized List<String> hosts() {
+    List<String> d = new java.util.ArrayList<>();
+    try {
+      if (Files.isRegularFile(hostsFile) && Json.parse(Files.readString(hostsFile)) instanceof List<?> l) {
+        for (Object x : l) if (x instanceof String str) d.addAll(new HostAllow(List.of(str)).list());
+      }
+    } catch (IOException | RuntimeException e) {
+      System.err.println("[beam] cannot read " + hostsFile + ": " + e.getMessage());
+    }
+    return d.stream().distinct().toList();
+  }
+
+  /** Adds or removes a target (ADDR[:PORT], checked by the caller), under trust's lock. */
+  synchronized void setHost(String target, boolean allow) throws IOException {
+    String t = new HostAllow(List.of(target)).list().get(0);
+    Files.createDirectories(hostsFile.getParent());
+    try (java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(trustFile.resolveSibling("trust.lock"),
+        java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE);
+         java.nio.channels.FileLock l = ch.lock()) {
+      List<String> d = new java.util.ArrayList<>(hosts());
+      d.remove(t);
+      if (allow) d.add(t);
+      StringBuilder b = new StringBuilder("[");
+      for (String p : d) b.append(b.length() > 1 ? "," : "").append("\n  ").append(Http.q(p));
+      b.append(d.isEmpty() ? "]\n" : "\n]\n");
+      Path tmp = hostsFile.resolveSibling("hosts.json." + ProcessHandle.current().pid() + ".tmp");
+      Files.writeString(tmp, b, StandardCharsets.UTF_8);
+      Files.move(tmp, hostsFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+    }
   }
 
   /** The prefixes allowed, as kept (`apksim beam config allow-download`). */

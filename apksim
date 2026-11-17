@@ -338,6 +338,8 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --network-replay-mark) EXTRA+=("-Dapksim.networkReplayMark=$2"); shift 2 ;;
     --network-host) NET_HOSTS="${NET_HOSTS:+$NET_HOSTS,}$2"; shift 2 ;;
     --network-trust)
+      # inline:BASE64 is the certificate itself (serve and beam, which name no host file)
+      if [[ "$2" == inline:* ]]; then EXTRA+=("-Dapksim.networkTrust=$2"); shift 2; continue; fi
       [[ -f "$2" ]] || { echo "no certificate at $2" >&2; exit 2; }
       EXTRA+=("-Dapksim.networkTrust=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"); shift 2 ;;
     --no-sandbox) NO_SANDBOX=1; shift ;;

@@ -985,6 +985,10 @@ its certificate). Any option turns it on; without one, the hooks cost one static
   `NetResolver` (META-INF/services) answers every JVM lookup: offline fails it, replaying returns a 198.18/15
   placeholder. Natives: offline only (`bionic_net.c`, Mac). Loopback is never touched
   (`-Dapksim.netCheckLoopback=true` lifts that for `scripts/check-net-tap.sh`, whose servers are on this machine).
+- `--network-host` and `--network-trust` are also serve and beam launch options (issue 429): `--network-host` only to an
+  address on `serve --network-host-allow ADDR[:PORT]` or the beam owner's `apksim beam config allow-host` (`HostAllow`,
+  checked by `scripts/check-host-allow.sh`), and the certificate inline as `--network-trust inline:BASE64`
+  (`Net.trustInline`; the launcher passes it through), never a host file.
 - Code that runs for every app references only JDK types (no OkHttp), as for org.webrtc ("Video").
 - Offline also drops the engine's open connections, flushes the JDK's lookup cache (`InetAddress.cache`, as Android
   flushes its resolver's) and takes ConnectivityManager's default network away (`NetConnectivity`). Robolectric finds

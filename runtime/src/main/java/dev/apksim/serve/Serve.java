@@ -34,7 +34,7 @@ public final class Serve {
   private static final String USAGE = """
       usage: apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
                           [--max-upload MB] [--max-push MB] [--allow-rec] [--no-shell] [--issue-url TEMPLATE] [--inspect-network [optional]] [--inspect-max-rules N] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
-                          [--inspect-forward-allow URL_PREFIX]... [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--in-flight N]
+                          [--inspect-forward-allow URL_PREFIX]... [--network-host-allow ADDR[:PORT]]... [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--in-flight N]
                           [--allow-share] [--max-viewers N]
                           [--trust-proxy] [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
                           [--skins DIR]... [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N]
@@ -44,7 +44,7 @@ public final class Serve {
              apksim beam saved | run ID [OPTIONS] | to-device ID [OPTIONS] | forget ID | sweep | status
              apksim beam install [--port N] [--agent-idle SECONDS] [--trust ORIGIN]... | uninstall   (launchd starts it when a page asks)
              apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS]
-                               [allow-download URL] [disallow-download URL]""";
+                               [allow-download URL] [disallow-download URL] [allow-host ADDR[:PORT]] [disallow-host ADDR[:PORT]]""";
   private static final SecureRandom RANDOM = new SecureRandom();
 
   final Path root;
@@ -99,6 +99,8 @@ public final class Serve {
    * Empty by default: no forward rules.
    */
   final ForwardAllow inspectForwardAllow = new ForwardAllow();
+  /** `--network-host-allow ADDR[:PORT]` (repeatable): where an app's `--network-host` may point a host (issue 429). Empty: none. */
+  final HostAllow networkHostAllow = new HostAllow();
   /** `--inspect-max-rules N`: the most rules a session's inspector takes (32 by default, 1 to 256); told to the tab as `inspectMaxRules`. */
   int inspectMaxRules = dev.apksim.net.Inspector.MAX_RULES;
   /** `--issue-url TEMPLATE`: the report button also opens this new-issue page, prefilled, in the reviewer's own browser. */
@@ -264,6 +266,15 @@ public final class Serve {
         case "--inspect-forward-allow" -> {
           try {
             s.inspectForwardAllow.add(need(a, v));
+          } catch (IllegalArgumentException e) {
+            System.err.println("[serve] " + e.getMessage());
+            System.exit(2);
+          }
+        }
+        // Issue 429: where an app's `--network-host` (catalog line, URL add) may point a host; none unless listed.
+        case "--network-host-allow" -> {
+          try {
+            s.networkHostAllow.add(need(a, v));
           } catch (IllegalArgumentException e) {
             System.err.println("[serve] " + e.getMessage());
             System.exit(2);
@@ -477,6 +488,7 @@ public final class Serve {
       if (!maxGiven) max = 2;
       if (!bitrateGiven) bitrateKbps = BEAM_KBPS;
       agent = new Beam(state);
+      Catalog.hostAllowance = () -> new HostAllow(agent.hosts());
       store = new BeamStore(state);
       BeamStore.Config c = store.config;
       store.config = new BeamStore.Config(keepDays != null ? keepDays : c.keepDays(),
@@ -511,6 +523,7 @@ public final class Serve {
       System.exit(2);
     }
     if (!Files.isExecutable(launcher)) throw new IOException("no launcher at " + launcher);
+    if (!beam) Catalog.hostAllowance = () -> networkHostAllow;
     catalog = new Catalog(apps, state, home, maxUploadMb << 20);
     try (InputStream in = Serve.class.getResourceAsStream("serve.html")) {
       if (in == null) throw new IOException("serve.html is missing from apksim.jar");

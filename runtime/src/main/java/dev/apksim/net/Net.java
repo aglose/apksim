@@ -86,6 +86,22 @@ public final class Net {
    */
   static boolean replayMark = true;
   static Path trust;
+  /** `--network-trust inline:BASE64`: the certificate's own bytes (PEM or DER), for launches that may name no host file. */
+  static byte[] trustInline;
+
+  /** Whether `--network-trust` gave a certificate, as a file or inline. */
+  static boolean hasTrust() {
+    return trust != null || trustInline != null;
+  }
+
+  static java.io.InputStream trustStream() throws IOException {
+    return trustInline != null ? new java.io.ByteArrayInputStream(trustInline) : java.nio.file.Files.newInputStream(trust);
+  }
+
+  /** The option's value as the log names it. */
+  static String trustName() {
+    return trustInline != null ? "(inline certificate)" : String.valueOf(trust);
+  }
   /** Sockets connected to the engine, and how: answered by it (FakeTlsSocket wraps them) or relayed. */
   private static final Map<Socket, Route> redirected = Collections.synchronizedMap(new WeakHashMap<>());
   /**
@@ -137,7 +153,8 @@ public final class Net {
       else redact.add(r);
     }
     String t = System.getProperty("apksim.networkTrust");  // and trusts this certificate when it starts the engine
-    if (t != null) trust = Path.of(t);
+    if (t != null && t.startsWith("inline:")) trustInline = java.util.Base64.getDecoder().decode(t.substring(7));
+    else if (t != null) trust = Path.of(t);
     if (spec == null && profile == null && hosts == null) return;
     try {
       for (String h : list(hosts)) {
