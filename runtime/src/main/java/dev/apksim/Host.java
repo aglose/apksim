@@ -814,10 +814,43 @@ public class Host {
       return e;
     }
     SimWindow.Event e = pendingScript.isEmpty() ? SimWindow.poll() : pendingScript.poll();
+    if (e != null) e = mergeQueued(e);
     if (e == null || e.type() != DRAG) return e;
     drag = drags.poll();
     drag.start = now;
     return new SimWindow.Event(SimWindow.DOWN, drag.x1, drag.y1, 0);
+  }
+
+  /**
+   * `stats` inputMerged: queued moves and wheel events that went out as part of a later one.
+   *
+   * As a device's input dispatcher batches touch input: a MOVE followed in the script queue by more MOVEs is
+   * dispatched as the newest of them, and WHEELs at one point as one with their amounts summed. DOWN, UP and
+   * everything else stay in order and are never merged, so a page sending one move per animation frame stays at most
+   * a frame behind its pointer and its UP is not stuck behind a backlog (issue 450).
+   */
+  private long inputMerged;
+
+  private SimWindow.Event mergeQueued(SimWindow.Event e) {
+    if (e.type() == SimWindow.MOVE) {
+      for (SimWindow.Event n; (n = pendingScript.peek()) != null && n.type() == SimWindow.MOVE; ) {
+        e = pendingScript.poll();
+        inputMerged++;
+      }
+    } else if (e.type() == SimWindow.WHEEL) {
+      float sum = e.value();
+      boolean merged = false;
+      for (SimWindow.Event n; (n = pendingScript.peek()) != null && n.type() == SimWindow.WHEEL
+          && n.x() == e.x() && n.y() == e.y(); ) {
+        sum += n.value();
+        pendingScript.poll();
+        merged = true;
+        inputMerged++;
+      }
+      if (merged && sum == 0) return null;  // they cancelled out: nothing to scroll
+      if (merged) e = new SimWindow.Event(SimWindow.WHEEL, e.x(), e.y(), sum);
+    }
+    return e;
   }
 
   /** Where the simulated clock and real time stood together when the loop started (`stats` reports the drift). */
@@ -2093,9 +2126,9 @@ public class Host {
         long ahead = SystemClock.uptimeMillis() - clockBaseMs - (System.nanoTime() - clockBaseNanos) / 1_000_000L;
         // footprintMb: the process as the system counts it (Footprint), which Java's heap figure is a fraction of.
         long fp = Footprint.bytes();
-        return String.format("frames=%d heapUsedMb=%d footprintMb=%d cpuMs=%d pid=%d data=%s clockAheadMs=%d lastDown=%s", frames,
+        return String.format("frames=%d heapUsedMb=%d footprintMb=%d cpuMs=%d pid=%d data=%s clockAheadMs=%d lastDown=%s inputMerged=%d", frames,
             (rt.totalMemory() - rt.freeMemory()) >> 20, fp < 0 ? -1 : fp >> 20, Footprint.cpuMs(),
-            ProcessHandle.current().pid(), dataDir, ahead, lastDown);
+            ProcessHandle.current().pid(), dataDir, ahead, lastDown, inputMerged);
       }
       case "redraw" -> {
         // Draws a frame now even if nothing changed (a frame stream that just started needs the current screen).
