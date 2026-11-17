@@ -342,6 +342,80 @@ final class Beam {
     }
   }
 
+  /** origin + kind + target -> when a refused target may be asked again (issue 472). */
+  private final java.util.Map<String, Long> deniedAllowUntil = new java.util.concurrent.ConcurrentHashMap<>();
+
+  /**
+   * Whether the Mac's owner lets this origin add a loopback target to its allow-lists now (issue 472: `forward`, `loopback`
+   * or `host`; the caller has checked the target and that the site is trusted): asked on the Mac, each time, with the
+   * site and the exact target in the dialog. One prompt at a time, shared with starts' and deletions', with `asking`
+   * reported meanwhile. No answer, or a refusal, is no; a refusal is not asked again for 10 minutes.
+   */
+  boolean allowedToAllow(String origin, String kind, String target) {
+    String key = origin + "\n" + kind + "\n" + target;
+    synchronized (prompting) {
+      Long until = deniedAllowUntil.get(key);
+      if (until != null && until > System.currentTimeMillis()) return false;
+      boolean ok;
+      askingFor = origin;
+      try {
+        ok = switch (consentMode) {
+          case "allow" -> true;
+          case "deny" -> false;
+          case "allow-after-2s" -> {
+            sleep(2000);
+            yield true;
+          }
+          default -> promptAllow(origin, kind, target);
+        };
+      } finally {
+        askingFor = null;
+      }
+      if (!ok) deniedAllowUntil.put(key, System.currentTimeMillis() + DENIED_MS);
+      System.err.printf("[beam] %s asked to allow %s %s: %s%n", origin, kind, target, ok ? "Allow" : "refused");
+      return ok;
+    }
+  }
+
+  private static boolean promptAllow(String origin, String kind, String target) {
+    notifyOwner(origin, "asks to reach a server on this Mac: see apksim's dialog");
+    String what = switch (kind) {
+      case "forward" -> "send this app's requests to " + target;
+      case "loopback" -> "let this app connect to port " + target + " on this Mac";
+      default -> "point this app's host names at " + target;
+    };
+    String text = "Let " + origin + " " + what + "?\n\nIt is a server on this Mac, outside apksim's sandbox. "
+        + "Choose Allow only for a server you run and trust. You can undo it with apksim beam config.";
+    String script = "tell current application to activate\ndisplay dialog " + appleScriptString(text) + " with title \"apksim\" buttons {\"Don't Allow\", \"Allow\"} "
+        + "default button \"Don't Allow\" cancel button \"Don't Allow\" with icon caution giving up after 120";
+    try {
+      Process p = new ProcessBuilder("osascript", "-e", script).redirectErrorStream(true).start();
+      var output = new java.util.concurrent.CompletableFuture<String>();
+      Thread.ofVirtual().name("apksim-beam-prompt").start(() -> {
+        try {
+          output.complete(new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+        } catch (IOException e) {
+          output.complete("");
+        }
+      });
+      if (!p.waitFor(PROMPT_MS, TimeUnit.MILLISECONDS)) {
+        p.descendants().forEach(ProcessHandle::destroyForcibly);
+        p.destroyForcibly();
+        return false;
+      }
+      String out;
+      try {
+        out = output.get(5, TimeUnit.SECONDS);
+      } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException e) {
+        out = "";
+      }
+      return out.contains("button returned:Allow") && !out.contains("gave up:true");
+    } catch (IOException | InterruptedException e) {
+      System.err.println("[beam] no prompt: " + e);
+      return false;
+    }
+  }
+
   private static boolean promptDelete(String origin, int count) {
     notifyOwner(origin, "asks to delete saved sessions on this Mac: see apksim's dialog");
     String text = origin + " wants to delete " + (count == 1 ? "1 saved session" : count + " saved sessions") + " it kept on this Mac, with the data "

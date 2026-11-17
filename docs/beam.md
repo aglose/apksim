@@ -1293,6 +1293,18 @@ log) and `apksim beam config` prints it. `GET /beam/hello` says `"forward": [PRE
 allows none (and to any other site), so a page can tell before it offers the rule. The session must run the network inspector (`inspect-network
 on|optional`), as for any rule.
 
+- **Asking the owner from the page (issue 472).** `forward-allow`, `allow-loopback` and `allow-host` are each read again at every
+  start (the config file and `hosts.json`, never cached), so a change from the CLI or the route below reaches the next session
+  with the agent still running: no `pkill`, no `apksim beam stop`. A trusted site adds one loopback target without a terminal:
+  `POST /beam/allow` with exactly one of `{"forward": "http://127.0.0.1:8001/api"}`, `{"loopback": 8001}` or `{"host": "127.0.0.1:8001"}`
+  (`127.0.0.1` or `localhost` with a port, never the agent's own; 400 otherwise, before any dialog; 403 for a site that is not trusted).
+  The Mac shows a dialog naming the site and the exact target (Don't Allow / Allow, the start dialog's 2-minute wait, one prompt at a time,
+  `/beam/hello`'s `asking` meanwhile); Allow writes what the CLI would and answers `{"allowed": true, "already": false}`, a target already
+  allowed answers `"already": true` with no dialog, no or no answer is a 403 (a refused target is not asked again for 10 minutes). A host
+  target still needs its port in `allow-loopback`. `/beam/hello` says `"allowRequest": ["forward", "loopback", "host"]` where the route
+  exists. Removing a target stays with `forward-disallow`, `allow-loopback` and `disallow-host` in a terminal.
+  `scripts/beam-check.py x --only allow` checks it (no APK).
+
 - **Who sends it.** The app runs in the beam sandbox, which denies loopback, and that does not change. The agent adds
   `--forward-link` to a session that runs the inspector; the instance's network engine then hands each forward to the
   agent over a control connection of its own (`fwdwatch`, `net/ForwardLink`: one line `q ID {json}` with the method,

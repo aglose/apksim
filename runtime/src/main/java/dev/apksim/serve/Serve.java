@@ -2259,7 +2259,7 @@ public final class Serve {
     if (r.method().equals("GET") && r.path().equals("/beam/hello")) {
       int[] pr = Beam.protocols();
       Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + ",\"trusted\":"
-          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"forward\":" + (o != null && agent.trusted(o) ? forwardJson() : "[]") + ",\"adb\":" + store.allowAdbNow() + ",\"loopback\":" + (o != null && agent.trusted(o) ? store.loopbackNow(port) : List.of()) + ",\"hosts\":" + (o != null && agent.trusted(o) ? hostsJson() : "[]") + ",\"maxBroadcasts\":" + dev.apksim.BroadcastSpec.COUNT_MAX + ",\"options\":" + Catalog.optionsJson() + "}");
+          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"allowRequest\":[\"forward\",\"loopback\",\"host\"],\"forward\":" + (o != null && agent.trusted(o) ? forwardJson() : "[]") + ",\"adb\":" + store.allowAdbNow() + ",\"loopback\":" + (o != null && agent.trusted(o) ? store.loopbackNow(port) : List.of()) + ",\"hosts\":" + (o != null && agent.trusted(o) ? hostsJson() : "[]") + ",\"maxBroadcasts\":" + dev.apksim.BroadcastSpec.COUNT_MAX + ",\"options\":" + Catalog.optionsJson() + "}");
       return;
     }
     // `apksim beam status` (docs/beam.md, phase 6): to a local tool only, never a page (a browser always sends Origin).
@@ -2361,6 +2361,7 @@ public final class Serve {
     }
     switch (r.method() + " " + r.path()) {
       case "POST /beam/start" -> beamStart(r, o, out);
+      case "POST /beam/allow" -> beamAllow(r, o, out);
       case "GET /beam/saved" -> {
         // Issue 181: what this site may start on (its own saved sessions only), so a page can offer "start signed in".
         StringBuilder b = new StringBuilder("[");
@@ -2700,6 +2701,118 @@ public final class Serve {
   private Catalog.App beamFetchSource(String origin, java.net.URI u, String sha, String name, long size, List<String> launch)
       throws IOException {
     return beamDownloadApk(origin, u, agent::downloadAllowed, true, sha, name, size, launch);
+  }
+
+  /**
+   * `POST /beam/allow` (issue 472): a trusted site asks the Mac's owner to allow one loopback target, by a dialog that
+   * names the site and the target. Exactly one of `{"forward": "http://127.0.0.1:8001/api"}`, `{"loopback": 8001}`,
+   * `{"host": "127.0.0.1:8001"}`; loopback targets only (127.0.0.1 or localhost, with a port, never the agent's own).
+   * Allow writes what `apksim beam config forward-allow|allow-loopback|allow-host` would; the next start reads it, no
+   * restart. 403 for a site that is not trusted or when the owner said no; revoking stays with the CLI.
+   */
+  private void beamAllow(Http.Request r, String o, OutputStream out) throws IOException {
+    if (!agent.trusted(o)) {
+      Http.text(out, 403, "only a site this Mac's owner has trusted may ask (a first start asks for that: GET /beam/hello says \"trusted\")");
+      return;
+    }
+    long length = r.chunked() ? -1 : r.contentLength();
+    byte[] raw = r.content().readNBytes((int) Math.min(4097, length < 0 ? Long.MAX_VALUE : length));
+    if (raw.length > 4096) {
+      Http.text(out, 413, "the request body is limited to 4 KB");
+      return;
+    }
+    Map<?, ?> body;
+    try {
+      if (!(Json.parse(new String(raw, StandardCharsets.UTF_8)) instanceof Map<?, ?> m)) throw new IOException("expected a JSON object");
+      body = m;
+    } catch (IOException | RuntimeException e) {
+      Http.text(out, 400, "expected a JSON object with one of \"forward\", \"loopback\" or \"host\"");
+      return;
+    }
+    if (body.size() != 1) {
+      Http.text(out, 400, "name exactly one of \"forward\", \"loopback\" or \"host\"");
+      return;
+    }
+    String kind = String.valueOf(body.keySet().iterator().next());
+    Object v = body.get(kind);
+    String target;
+    boolean already;
+    switch (kind) {
+      case "forward" -> {
+        target = v instanceof String str ? str : null;
+        java.net.URI u = null;
+        try {
+          if (target != null) u = new java.net.URI(target);
+        } catch (java.net.URISyntaxException e) {
+          // refused below
+        }
+        String host = u == null || u.getHost() == null ? "" : u.getHost().toLowerCase(java.util.Locale.ROOT);
+        if (u == null || !"http".equalsIgnoreCase(u.getScheme()) || !(host.equals("127.0.0.1") || host.equals("localhost"))
+            || u.getPort() < 1 || u.getPort() == port) {
+          Http.text(out, 400, "\"forward\" takes an http URL prefix on 127.0.0.1 or localhost with a port (not the agent's own), such as http://127.0.0.1:8001/api");
+          return;
+        }
+        try {
+          new ForwardAllow().add(target);
+        } catch (IllegalArgumentException e) {
+          Http.text(out, 400, e.getMessage());
+          return;
+        }
+        already = store.readConfig().forwardAllow().contains(target);
+      }
+      case "loopback" -> {
+        int n = v instanceof Number num && num.doubleValue() == Math.rint(num.doubleValue()) ? num.intValue()
+            : v instanceof String str && str.matches("[0-9]{1,5}") ? Integer.parseInt(str) : 0;
+        if (n < 1 || n > 65535 || n == port) {
+          Http.text(out, 400, "\"loopback\" takes one port of 1 to 65535 (not the agent's own)");
+          return;
+        }
+        target = String.valueOf(n);
+        List<String> have = new java.util.ArrayList<>(java.util.Arrays.asList(store.readConfig().allowLoopback().split(",")));
+        already = have.contains(target);
+        if (!already && have.stream().filter(x -> !x.isEmpty()).count() >= BeamStore.LOOPBACK_MAX) {
+          Http.text(out, 409, "this Mac already allows " + BeamStore.LOOPBACK_MAX + " loopback ports (apksim beam config allow-loopback)");
+          return;
+        }
+      }
+      case "host" -> {
+        HostAllow.Target t = v instanceof String str ? HostAllow.parse(str) : null;
+        if (t == null || !(t.addr().equals("127.0.0.1") || t.addr().equals("localhost")) || t.port() < 1 || t.port() == port) {
+          Http.text(out, 400, "\"host\" takes 127.0.0.1:PORT or localhost:PORT (not the agent's own port)");
+          return;
+        }
+        target = t.toString();
+        already = new HostAllow(agent.hosts()).allows(target);
+      }
+      default -> {
+        Http.text(out, 400, "name exactly one of \"forward\", \"loopback\" or \"host\"");
+        return;
+      }
+    }
+    if (already) {
+      Http.json(out, 200, "{\"allowed\":true,\"already\":true}");
+      return;
+    }
+    if (!agent.allowedToAllow(o, kind, target)) {
+      Http.text(out, 403, "this Mac's owner did not allow it");
+      return;
+    }
+    synchronized (store) {
+      BeamStore.Config c = store.readConfig();
+      switch (kind) {
+        case "forward" -> {
+          List<String> now = new java.util.ArrayList<>(c.forwardAllow());
+          if (!now.contains(target)) now.add(target);
+          store.writeConfig(c.withForwardAllow(now));
+        }
+        case "loopback" -> {
+          String have = c.allowLoopback();
+          store.writeConfig(c.withLoopback(BeamStore.ports(have.isEmpty() ? target : have + "," + target)));
+        }
+        default -> agent.setHost(target, true);
+      }
+    }
+    Http.json(out, 200, "{\"allowed\":true,\"already\":false}");
   }
 
   /** `/beam/hello`'s `hosts` (issue 441): the targets a start's `--network-host` may name (`apksim beam config allow-host`), `[]` for none and for a site the owner has not trusted. */
