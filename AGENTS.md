@@ -681,6 +681,23 @@ reads. `HealthConnectTest` (18; all but three apksim-only ones pass on an API 36
 (`HealthActivity`, ci-smoke.sh, with the week preset's stability across clocks).
 `camera [pattern|image PATH|off]` (`Cameras`, see "Camera": what the simulated cameras see; alone, their state: source,
 open and streaming devices, frames, images, drops, outputs, then `manager: idLists N availabilityCallbacks N (registered N) announced N opens N open [...]`: what the app asked CameraManager, also logged as `[apksim] camera: ...` lines on stderr outside test runs).
+`touchmode [on|off]` (`TouchMode`, issue 424): the display's touch mode as a device's window manager keeps it. A handheld's
+windows start in touch mode (Robolectric's window session already did), a touch (`tap`, `drag`, `swipe`, `pinch`, the
+window's clicks) enters it, and a navigation key (Tab, D-pad) or a typing key (`key`, `type`, the Mac keyboard: a hardware
+keyboard's keys, as `adb shell input text`) leaves it, through ViewRootImpl's own `checkForLeavingTouchModeAndConsume`,
+which Host's direct dispatch to the views bypassed; every window is told (`ensureTouchModeLocally`), and the window
+session's answer for later windows set (not through IWindowManager.setInTouchMode, which Robolectric's stand-in drops). A
+TV starts out of touch mode (`--device tv`, and a `device` switch to or from one); pasted text (`paste`, Cmd+V) keeps
+touch mode, as text an IME commits does (FLAG_KEEP_TOUCH_MODE). `TouchMode.start` (each launch and test setup, once the Application is up) also clears
+ViewRootImpl's `sCompatibilityDone`: the framework decides once per process, from its first window's app, whether focus is
+always assigned (`sAlwaysAssignFocus`, targetSdk below 28), and in a warm launch that window was the standby's warm-up's,
+so every warm launch gave the first text field focus at launch and whenever a window gained focus with none (a resume,
+a recreation; Compose then scrolled to it), which a cold launch never showed. The command alone reports the mode, "focus
+always assigned" when that flag is set, and per window `touch|keys`, the window focus and the focused view's class; in
+test runs through `executeShellCommand("apksim touchmode")`. Test runs get the starting mode only (Robolectric's
+injection does not leave touch mode on keys). `-Dapksim.touchMode=false` leaves all of it as before (launches cold).
+`TouchModeTest`, `ci-smoke.sh` (the Linux image has no standby, so the warm case is checked by hand: launch twice,
+`restart apksim://composeapp/trips`, `touchmode` must show no `focus=`).
 `thermal [none|light|moderate|severe|critical|emergency|shutdown]` (`Thermal`, issue 149): PowerManager's thermal status,
 NONE at launch; `addThermalStatusListener(Executor, listener)` registers (Robolectric's shadow covered only the one-argument
 overload, and the real one threw "Thermal status listener failed to set"), is called at once with the status and again on
@@ -931,7 +948,7 @@ and `.github/actions/preview` put a pull request's build on a serve (with `ttl`,
 `scripts/compare-check.py` checks them (CI: `ci-smoke.sh`, protocol layer; `--chrome` for the page's own count).
 Report button and network inspector (same doc; `serve --allow-rec --issue-url`, `serve --inspect-network [optional]`: `optional` lets a session ask with `/ws?inspect=1`, the beam agent's `inspect-network optional` a `/beam/start` with `"inspect": true`; where it is on for all, `/ws?inspect=0` or a start's `"inspect": false` declines it, kept as the launcher's no-op `--no-network-inspect` on the agent, and `/beam/hello` says `inspectOptOut`: issue 389; the `i` message says `inspect` and `inspectAllowed`): the page's cards and script are
 `serve/report.html`, put into `serve.html` at its two `apksim:report` markers; the instance side is `net/Inspector.java` (`--network-inspect`:
-capture in memory, `netwatch` event stream, `network rule|detail`, rules answered in `NetEngine.answerRule`, patch rules (issue 373: the real JSON answer merged with an RFC 7386 patch in `recordExchange`, through `ResponsePatch` and `JsonMerge`), forward rules in `answerForward`: a matched request sent to an upstream under one of `serve --inspect-forward-allow`'s prefixes, `serve/ForwardAllow`; the rules are one immutable list
+capture in memory, `netwatch` event stream, `network rule|detail`, rules answered in `NetEngine.answerRule`, patch rules (issue 373: the real JSON answer merged with an RFC 7386 patch in `recordExchange`, through `ResponsePatch` and `JsonMerge`), forward rules in `answerForward` (`rebase`, issue 427: the app's path and query kept on the target, `Inspector.rebaseUrl`): a matched request sent to an upstream under one of `serve --inspect-forward-allow`'s prefixes, `serve/ForwardAllow`; the rules are one immutable list
 swapped whole, so `inspect rule set JSON` replaces them atomically; a rule may carry response headers; `serve --inspect-max-rules N` →
 `--network-inspect-rules N`); in a beam session the list is the owner's `apksim beam config forward-allow URL_PREFIX` (`/beam/hello`'s `forward`), read at each use, and the agent sends the request for the sandboxed instance: `--forward-link`, `net/ForwardLink` over the `fwdwatch` control connection, `net/ForwardSend`, `Session.watchForward`; issue 426, docs/beam.md "Forward rules", `scripts/check-forward-link.sh` in CI and `scripts/beam-check.py APK --only forward`); `scripts/inspector-check.py` (`--forward-port N` for the forward round trip), `scripts/check-inspector-rules.sh` (CI: patterns, set, headers, the limit, a swap under matching threads).
 

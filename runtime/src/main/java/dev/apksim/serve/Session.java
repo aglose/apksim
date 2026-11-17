@@ -851,7 +851,7 @@ final class Session {
       verb = "rule";
     }
     else if (w.length == 9 && w[1].equals("rule") && w[2].equals("add") && w[3].matches("\\*|[A-Za-z]{3,10}") && w[4].matches(URL_CHARS + "{1,300}")
-        && w[5].equals("forward") && w[6].matches("[0-9]{1,5}") && w[7].equals("-") && w[8].matches("[A-Za-z0-9+/]{1,2668}={0,2}")) {
+        && w[5].equals("forward") && w[6].matches("[0-9]{1,5}") && w[7].matches("-|rebase") && w[8].matches("[A-Za-z0-9+/]{1,2668}={0,2}")) {
       String target;
       try {
         target = new String(java.util.Base64.getDecoder().decode(w[8]), java.nio.charset.StandardCharsets.UTF_8);
@@ -909,7 +909,7 @@ final class Session {
       if (!pattern.matches(URL_CHARS + "{1,300}")) throw new IOException(at + "the pattern is 1-300 URL characters");
       if (r.get("patch") instanceof String patch) {
         // A patch rule (issue 373): the server's answer is the one patched, so it has no status, type, body or headers of its own.
-        for (String k : List.of("status", "type", "body", "headers", "forward")) if (r.containsKey(k)) throw new IOException(at + "a patch rule has no " + k);
+        for (String k : List.of("status", "type", "body", "headers", "forward", "rebase")) if (r.containsKey(k)) throw new IOException(at + "a patch rule has no " + k);
         if (latency == null || !latency.matches(RULE_LATENCY)) throw new IOException(at + "latencyMs is 0-60000");
         byte[] bytes = patch.getBytes(StandardCharsets.UTF_8);
         if (bytes.length == 0 || bytes.length > 512 * 1024) throw new IOException(at + "a patch is JSON text of at most 512 KB");
@@ -917,12 +917,16 @@ final class Session {
             .append(java.util.Base64.getEncoder().encodeToString(bytes)).append(" -");
         continue;
       }
+      if (r.containsKey("rebase") && !(r.get("forward") instanceof String)) throw new IOException(at + "rebase belongs to a forward rule");
       if (r.get("forward") instanceof String target) {
         // A forward rule (issue 363): the upstream's answer is the answer, so it has no status, type, body or headers of its own.
         for (String k : List.of("status", "type", "body", "headers")) if (r.containsKey(k)) throw new IOException(at + "a forward rule has no " + k);
         if (latency == null || !latency.matches(RULE_LATENCY)) throw new IOException(at + "latencyMs is 0-60000");
+        if (r.containsKey("rebase") && !(r.get("rebase") instanceof Boolean)) throw new IOException(at + "rebase is true or false");
+        boolean rebase = Boolean.TRUE.equals(r.get("rebase"));
+        if (rebase && target.indexOf('?') >= 0) throw new IOException(at + "a rebase target has no query: the app's query is the request's");
         if (!forwardAllow().allows(target)) throw new IOException(at + forwardRefusal());
-        b.append(' ').append(method).append(' ').append(pattern).append(" forward ").append(latency).append(" - ")
+        b.append(' ').append(method).append(' ').append(pattern).append(" forward ").append(latency).append(rebase ? " rebase " : " - ")
             .append(java.util.Base64.getEncoder().encodeToString(target.getBytes(StandardCharsets.UTF_8))).append(" -");
         continue;
       }
@@ -950,7 +954,7 @@ final class Session {
     return b.toString();
   }
 
-  private static final List<String> RULE_FIELDS = List.of("method", "pattern", "status", "latencyMs", "type", "body", "headers", "forward", "patch");
+  private static final List<String> RULE_FIELDS = List.of("method", "pattern", "status", "latencyMs", "type", "body", "headers", "forward", "rebase", "patch");
 
   /** A rule's whole number (JSON numbers are doubles here), 0 when left out; null when it is anything else. */
   private static String ruleInt(Object v) {

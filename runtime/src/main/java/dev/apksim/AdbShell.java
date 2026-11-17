@@ -1828,6 +1828,9 @@ final class AdbShell {
       case "thermal" -> {
         return Thermal.command(a);
       }
+      case "touchmode" -> {
+        return TouchMode.command(a);  // until the next test's setup
+      }
       case "fold" -> {
         return Fold.testRunCommand(a);  // until the next test's setup
       }

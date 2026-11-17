@@ -1070,7 +1070,12 @@ final class NetEngine {
           // A name that did not resolve, or that stands for a recorded or mapped host, has a placeholder address here
           // (NetResolver): no server is there, and the client would wait out its connect timeout.
           // (Not when the agent sends it, issue 426: it resolves on the Mac, which this process's resolver says nothing of.)
-          String fh = java.net.URI.create(rule.forward).getHost();
+          String dest = rule.forward;
+          if (rule.rebase) {
+            dest = Inspector.rebaseUrl(rule.forward, req.url);
+            if (dest == null) throw new IOException("the app's path cannot be added to a rebase target (dot segments, empty segments, ';', '\\\\' or an encoded '.', '/' or '\\\\')");
+          }
+          String fh = java.net.URI.create(dest).getHost();
           if (fh.startsWith("[") && fh.endsWith("]")) fh = fh.substring(1, fh.length() - 1);
           try {
             if (!ForwardLink.on && NetResolver.hostFor(java.net.InetAddress.getByName(fh).getHostAddress()) != null) throw new java.net.UnknownHostException(fh);
@@ -1086,8 +1091,8 @@ final class NetEngine {
           sent.add(new String[] {"X-Apksim-Original-Url", req.url});
           byte[] sentBody = req.hasBody ? whole.toByteArray() : null;
           // In a beam session (issue 426) the agent sends it: the app's sandbox cannot reach the Mac's loopback.
-          ForwardSend.Result r = ForwardLink.on ? ForwardLink.fetch(req.method, rule.forward, sent, sentBody)
-              : ForwardSend.send(req.method, rule.forward, sent, sentBody, Inspector.FORWARD_BODY_MAX);
+          ForwardSend.Result r = ForwardLink.on ? ForwardLink.fetch(req.method, dest, sent, sentBody)
+              : ForwardSend.send(req.method, dest, sent, sentBody, Inspector.FORWARD_BODY_MAX);
           status = r.status();
           body = r.body();
           boolean head = req.method.equals("HEAD");

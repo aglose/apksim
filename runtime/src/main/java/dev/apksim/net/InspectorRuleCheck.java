@@ -42,6 +42,24 @@ public final class InspectorRuleCheck {
     check(badSet.startsWith("error: rule 1") && Inspector.rule("network rule list".split(" ")).contains("/a"), "a set with a bad forward target changes nothing: " + badSet);
     check(Inspector.rule(("network rule set 1 POST /b forward 5 - " + u64 + " WC1BOiAx").split(" ")).startsWith("error: rule 1"), "a forward rule in a set takes no headers");
     Inspector.rule("network rule clear".split(" "));
+    // Rebase rules (issue 427): the app's path and query go on after the target's path.
+    String r64 = java.util.Base64.getEncoder().encodeToString("http://127.0.0.1:8001/v2".getBytes());
+    String rb = Inspector.rule(("network rule add GET /v1/items* forward 0 rebase " + r64 + " -").split(" "));
+    check(rb.contains("\"rebase\":true") && rb.contains("\"forward\":\"http://127.0.0.1:8001/v2\""), "a rebase rule is added and listed: " + rb);
+    check(Inspector.rule(("network rule add GET /x forward 0 rebase " + java.util.Base64.getEncoder().encodeToString("http://h/b?q=1".getBytes()) + " -").split(" ")).startsWith("error"), "a rebase target has no query");
+    check("http://127.0.0.1:8001/v2/v1/items/42?x=1".equals(Inspector.rebaseUrl("http://127.0.0.1:8001/v2", "https://api.example.com/v1/items/42?x=1")), "rebase onto a path with a query");
+    check("http://127.0.0.1:8001/v1/items/42".equals(Inspector.rebaseUrl("http://127.0.0.1:8001", "https://api.example.com/v1/items/42")), "rebase onto a bare host");
+    check("http://127.0.0.1:8001/v2/".equals(Inspector.rebaseUrl("http://127.0.0.1:8001/v2/", "https://api.example.com")), "an empty app path is /, a base's trailing slash is not doubled");
+    dev.apksim.serve.ForwardAllow rebaseAllow = new dev.apksim.serve.ForwardAllow();
+    rebaseAllow.add("http://127.0.0.1:8001/v2");
+    for (String ok : new String[] {"/v1/items/42?x=1", "/", "", "/a/b/c?q=%20&r=2"}) {
+      String u = Inspector.rebaseUrl("http://127.0.0.1:8001/v2", "https://api.example.com" + ok);
+      check(u != null && rebaseAllow.allows(u), "a rebased URL stays under the allowed prefix: " + u);
+    }
+    check(Inspector.rebaseUrl("http://127.0.0.1:8001/v2", "https://api.example.com/caf\u00e9") == null, "no rebase of a non-ASCII app path");
+    for (String bad : new String[] {"/a/../b", "/a/%2e%2e/b", "/a//b", "/a;x/b", "/a%2Fb"}) {
+      check(Inspector.rebaseUrl("http://127.0.0.1:8001/v2", "https://api.example.com" + bad) == null, "no rebase of the app path " + bad);
+    }
     // Which targets a server lets a tab name (serve --inspect-forward-allow).
     dev.apksim.serve.ForwardAllow none = new dev.apksim.serve.ForwardAllow();
     check(!none.allows("https://mocks.example.test/api"), "no prefix: no target is allowed");
