@@ -294,7 +294,7 @@ final class Catalog {
           throw new IOException("--network-host " + v.replaceAll("[^A-Za-z0-9.:=\\[\\]-]", "?") + ": "
               + (HostAllow.parse(to) == null ? "the target is not ADDR[:PORT]" : allow.isEmpty()
                   ? "no target is allowed here (" + (agent ? "apksim beam config allow-host ADDR[:PORT]" : "serve --network-host-allow ADDR[:PORT]") + ")"
-                  // The list itself is the operator's or the owner's to see (status, config), not a page's.
+                  // The list itself is the operator's or the owner's to see (status, config), not an untrusted page's (a trusted site reads it from /beam/hello).
                   : "not an allowed target (" + (agent ? "apksim beam config allow-host ADDR[:PORT]" : "serve --network-host-allow ADDR[:PORT]") + ")"));
         }
         // Issue 439: the beam sandbox denies loopback but for the ports `allow-loopback` names, so a loopback target

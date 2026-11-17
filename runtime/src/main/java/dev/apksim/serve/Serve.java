@@ -2259,7 +2259,7 @@ public final class Serve {
     if (r.method().equals("GET") && r.path().equals("/beam/hello")) {
       int[] pr = Beam.protocols();
       Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + ",\"trusted\":"
-          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"forward\":" + (o != null && agent.trusted(o) ? forwardJson() : "[]") + ",\"adb\":" + store.allowAdbNow() + ",\"loopback\":" + (o != null && agent.trusted(o) ? store.loopbackNow(port) : List.of()) + ",\"options\":" + Catalog.optionsJson() + "}");
+          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"forward\":" + (o != null && agent.trusted(o) ? forwardJson() : "[]") + ",\"adb\":" + store.allowAdbNow() + ",\"loopback\":" + (o != null && agent.trusted(o) ? store.loopbackNow(port) : List.of()) + ",\"hosts\":" + (o != null && agent.trusted(o) ? hostsJson() : "[]") + ",\"maxBroadcasts\":" + dev.apksim.BroadcastSpec.COUNT_MAX + ",\"options\":" + Catalog.optionsJson() + "}");
       return;
     }
     // `apksim beam status` (docs/beam.md, phase 6): to a local tool only, never a page (a browser always sends Origin).
@@ -2700,6 +2700,11 @@ public final class Serve {
   private Catalog.App beamFetchSource(String origin, java.net.URI u, String sha, String name, long size, List<String> launch)
       throws IOException {
     return beamDownloadApk(origin, u, agent::downloadAllowed, true, sha, name, size, launch);
+  }
+
+  /** `/beam/hello`'s `hosts` (issue 441): the targets a start's `--network-host` may name (`apksim beam config allow-host`), `[]` for none and for a site the owner has not trusted. */
+  private String hostsJson() {
+    return agent.hosts().stream().map(Http::q).collect(java.util.stream.Collectors.joining(",", "[", "]"));
   }
 
   /** `/beam/hello`'s `forward` (issue 426): the target prefixes this Mac's owner allows for forward rules, `[]` for none (a forward rule is then refused), and for a site the owner has not trusted, which is told nothing of this Mac's servers. */

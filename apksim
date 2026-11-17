@@ -481,6 +481,11 @@ if [[ "$OS" == Darwin ]]; then
 fi
 # APKSIM_LOGCAT=1 sends the app's android.util.Log output to stderr from the start (or `logcat on` later).
 [[ -n "${APKSIM_LOGCAT:-}" ]] && EXTRA+=("-Dapksim.logcat=true")
+# A bare word that is no file (`apksim version`, a mistyped subcommand) is not an APK path: say so before a launch, a
+# standby or the background training starts (a path with a slash or a .apk name still goes on to the JVM's own error).
+if [[ -n "${1:-}" && ! -e "$1" && "$1" != */* && "$1" != *.apk ]]; then
+  echo "apksim: '$1' is not a command or a file (apksim --help; --version prints the version)" >&2; exit 2
+fi
 if [[ "$1" == /* ]]; then APK="$1"; else APK="$PWD/${1#./}"; fi
 for i in "${!EXTRA[@]}"; do
   # Relative to this launch's directory, whatever the working directory of the JVM that takes it.

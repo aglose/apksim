@@ -614,14 +614,19 @@ def loopback_checks(apksim, apk):
     want = ",".join(str(x) for x in sorted({p1, p2}))
     check(r.returncode == 0 and f"allow-loopback {want}" in r.stdout, f"loopback: config sorts and dedupes ({r.stdout.strip()[:140]})")
     subprocess.run([apksim, "beam", "trust", "allow", origin], capture_output=True, text=True, env=env, timeout=60)
+    # Issue 441: hello reports the allow-host list to a trusted site.
+    subprocess.run([apksim, "beam", "config", "allow-host", "192.0.2.7:8443"], capture_output=True, text=True, env=env, timeout=60)
     log = open(os.path.join(state, "agent.log"), "w")
     g = subprocess.Popen([apksim, "beam", "--port", str(gp)], stdout=subprocess.DEVNULL, stderr=log, env=env)
     try:
         check(wait_up(gp, "/beam/hello"), "loopback: an agent")
         h = json.loads(req(gp, "GET", "/beam/hello", "http://other.beam-check.test")[2])
         check(h.get("loopback") == [], f"loopback: hello tells a site that is not trusted nothing ({h.get('loopback')})")
+        check(h.get("hosts") == [], f"hello: an untrusted site gets no hosts ({h.get('hosts')})")
         h = json.loads(req(gp, "GET", "/beam/hello", origin)[2])
         check(h.get("loopback") == sorted({p1, p2}), f"loopback: hello reports the ports to a trusted site ({h.get('loopback')})")
+        check(h.get("hosts") == ["192.0.2.7:8443"] and isinstance(h.get("maxBroadcasts"), int) and h["maxBroadcasts"] > 0,
+              f"hello: hosts and maxBroadcasts to a trusted site ({h.get('hosts')}, {h.get('maxBroadcasts')})")
         # The agent's standby carries the ports (its name and its profile), so launches with them are warm.
         deadline, found = time.time() + 30, False
         while time.time() < deadline and not found:
