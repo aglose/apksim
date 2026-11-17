@@ -269,7 +269,7 @@ final class DeviceControls {
     if (!window) return false;
     if (redirect != null) {
       System.err.println("[apksim] sign-in redirect to " + redirect.getScheme() + "://" + (redirect.getAuthority() == null ? "" : redirect.getAuthority())
-          + " needs macOS 14.4 to come back by itself: opening the link; paste the final address into Features > Open URL... when the page ends");
+          + " cannot come back by itself on this Mac (an https redirect needs an Associated Domains entitlement apksim cannot hold): opening the link; paste the final address into Features > Open URL... when the page ends");
     }
     try {
       new ProcessBuilder("/usr/bin/open", uri.toString()).start();
@@ -306,10 +306,15 @@ final class DeviceControls {
   /**
    * Runs a sign-in link in the system browser's authentication session; the URL it ends at goes back to the app as
    * `open URL` would deliver it ({@link #tick}). Cancelled: nothing is delivered. False when this Mac cannot wait for
-   * the redirect (an https one needs macOS 14.4).
+   * the redirect (an https one never can: it needs an Associated Domains entitlement for the app's own domain).
    */
   private static boolean signIn(Uri uri, Uri redirect) {
     boolean https = "https".equalsIgnoreCase(redirect.getScheme());
+    // An https callback needs the calling app to hold an Associated Domains entitlement for the redirect's host
+    // (webcredentials:HOST), which apksim cannot have for an arbitrary app's domain: the session fails at once with
+    // "Application with identifier (null) is not associated with domain" and the app is left waiting (issue 436).
+    // Only a custom scheme can come back by itself; https goes the way of a Mac that cannot wait.
+    if (https) return false;
     String path = redirect.getPath() == null || redirect.getPath().isEmpty() ? "/" : redirect.getPath();
     if (!SimWindow.webAuth(uri.toString(), https ? null : redirect.getScheme().toLowerCase(Locale.ROOT), https ? redirect.getHost() : null, https ? path : null)) {
       return false;
