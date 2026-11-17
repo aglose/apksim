@@ -115,7 +115,7 @@ final class Control {
   static void start(int port) throws IOException {
     // Loopback only, unless told otherwise: inside a container the host reaches it through a published port.
     String bind = System.getProperty("apksim.controlBind");
-    ServerSocket server = new ServerSocket(port, 8, bind == null ? InetAddress.getLoopbackAddress() : InetAddress.getByName(bind));
+    ServerSocket server = LoopbackPorts.listen(port, bind == null ? InetAddress.getLoopbackAddress() : InetAddress.getByName(bind));
     // Port 0 ("--control auto") takes any free port. Either way it is written into this instance's scratch dir,
     // where scripts/ctl.py finds running instances.
     java.nio.file.Files.writeString(java.nio.file.Path.of(System.getProperty("java.io.tmpdir"), "control.port"),

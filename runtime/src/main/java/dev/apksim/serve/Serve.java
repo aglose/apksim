@@ -34,7 +34,7 @@ public final class Serve {
   private static final String USAGE = """
       usage: apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
                           [--max-upload MB] [--max-push MB] [--allow-rec] [--no-shell] [--issue-url TEMPLATE] [--inspect-network [optional]] [--inspect-max-rules N] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
-                          [--inspect-forward-allow URL_PREFIX]... [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--in-flight N]
+                          [--inspect-forward-allow URL_PREFIX]... [--network-host-allow ADDR[:PORT]]... [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--in-flight N]
                           [--allow-share] [--max-viewers N]
                           [--trust-proxy] [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
                           [--skins DIR]... [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N]
@@ -44,7 +44,7 @@ public final class Serve {
              apksim beam saved | run ID [OPTIONS] | to-device ID [OPTIONS] | forget ID | sweep | status
              apksim beam install [--port N] [--agent-idle SECONDS] [--trust ORIGIN]... | uninstall   (launchd starts it when a page asks)
              apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS]
-                               [allow-download URL] [disallow-download URL]""";
+                               [allow-download URL] [disallow-download URL] [allow-host ADDR[:PORT]] [disallow-host ADDR[:PORT]]""";
   private static final SecureRandom RANDOM = new SecureRandom();
 
   final Path root;
@@ -99,6 +99,8 @@ public final class Serve {
    * Empty by default: no forward rules.
    */
   final ForwardAllow inspectForwardAllow = new ForwardAllow();
+  /** `--network-host-allow ADDR[:PORT]` (repeatable): where an app's `--network-host` may point a host (issue 429). Empty: none. */
+  final HostAllow networkHostAllow = new HostAllow();
   /** `--inspect-max-rules N`: the most rules a session's inspector takes (32 by default, 1 to 256); told to the tab as `inspectMaxRules`. */
   int inspectMaxRules = dev.apksim.net.Inspector.MAX_RULES;
   /** `--issue-url TEMPLATE`: the report button also opens this new-issue page, prefilled, in the reviewer's own browser. */
@@ -192,6 +194,7 @@ public final class Serve {
     if (args.length > 1 && args[0].equals("--beam") && List.of("saved", "run", "to-device", "forget", "config", "sweep", "status", "stop").contains(args[1])) {
       // The agent's own commands: its rules for saved options (a server skin's device, a skin it does not have).
       Catalog.agent = true;
+      Catalog.hostAllowance = () -> new HostAllow(new Beam(state).hosts());  // run and to-device check saved options again
       System.exit(BeamStore.command(root, state, s.launcher, args[1], List.of(args).subList(2, args.length)));
     }
     for (int i = 0; i < args.length; i++) {
@@ -264,6 +267,15 @@ public final class Serve {
         case "--inspect-forward-allow" -> {
           try {
             s.inspectForwardAllow.add(need(a, v));
+          } catch (IllegalArgumentException e) {
+            System.err.println("[serve] " + e.getMessage());
+            System.exit(2);
+          }
+        }
+        // Issue 429: where an app's `--network-host` (catalog line, URL add) may point a host; none unless listed.
+        case "--network-host-allow" -> {
+          try {
+            s.networkHostAllow.add(need(a, v));
           } catch (IllegalArgumentException e) {
             System.err.println("[serve] " + e.getMessage());
             System.exit(2);
@@ -477,10 +489,11 @@ public final class Serve {
       if (!maxGiven) max = 2;
       if (!bitrateGiven) bitrateKbps = BEAM_KBPS;
       agent = new Beam(state);
+      Catalog.hostAllowance = () -> new HostAllow(agent.hosts());
       store = new BeamStore(state);
       BeamStore.Config c = store.config;
       store.config = new BeamStore.Config(keepDays != null ? keepDays : c.keepDays(),
-          saveSessions != null ? saveSessions : c.saveSessions(), keepSavedDays != null ? keepSavedDays : c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow());
+          saveSessions != null ? saveSessions : c.saveSessions(), keepSavedDays != null ? keepSavedDays : c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback());
       if (!store.lockAgent(port)) {
         int other = store.agentPort();
         System.err.println("apksim beam: an agent already runs for " + state + (other > 0 ? " (port " + other + ")" : "")
@@ -511,6 +524,7 @@ public final class Serve {
       System.exit(2);
     }
     if (!Files.isExecutable(launcher)) throw new IOException("no launcher at " + launcher);
+    if (!beam) Catalog.hostAllowance = () -> networkHostAllow;
     catalog = new Catalog(apps, state, home, maxUploadMb << 20);
     try (InputStream in = Serve.class.getResourceAsStream("serve.html")) {
       if (in == null) throw new IOException("serve.html is missing from apksim.jar");
@@ -681,13 +695,24 @@ public final class Serve {
       // The standby is the JVM sessions' instances become: it gets the no-core policy too (APKSIM_NO_CORE reaches its flags).
       // The agent's instances run in the beam sandbox (b, the launcher's APKSIM_BEAM_SANDBOX), so their standbys too.
       ProcessBuilder pb = new ProcessBuilder(launcher.toString(), "--spawn-standby",
-          (noNetwork ? "n" : "") + (coreDumps ? "" : "k") + (beam ? "b" : ""))
+          (noNetwork ? "n" : "") + (coreDumps ? "" : "k") + (beam ? "b" : "") + loopbackFlags())
           .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD);
       instanceEnvironment(pb);
       pb.start().waitFor(10, TimeUnit.SECONDS);
     } catch (IOException | InterruptedException e) {
       System.err.println("[serve] no standby: " + e);
     }
+  }
+
+  /**
+   * Issue 428: the opened loopback ports as a beam standby's name carries them (`+3000+8080`, as the launcher names a
+   * launch with them), so the standby the agent boots is the one its next launch asks for.
+   */
+  String loopbackFlags() {
+    if (!beam || store == null) return "";
+    StringBuilder sb = new StringBuilder();
+    for (int p : store.loopbackNow(port)) sb.append('+').append(p);
+    return sb.toString();
   }
 
   /** What every instance serve starts (a session's, a cache warm-up's) runs with: no core dumps unless `--core-dumps`. */
@@ -697,6 +722,13 @@ public final class Serve {
     // The agent's: an APK a web site sent, in a sandbox of its own (docs/beam.md "The beam sandbox").
     if (beam) {
       pb.environment().put("APKSIM_BEAM_SANDBOX", "1");
+      // Issue 428: the loopback ports its owner opened (`apksim beam config allow-loopback`), read now: the launcher puts
+      // them in the sandbox profile and in the standby's name, so a change reaches the instances started after it.
+      pb.environment().remove("APKSIM_BEAM_LOOPBACK");
+      if (store != null) {
+        String ports = store.loopbackNow(port).stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(","));
+        if (!ports.isEmpty()) pb.environment().put("APKSIM_BEAM_LOOPBACK", ports);
+      }
       // Nothing from the agent's own environment that would skip or weaken the sandbox (the launcher refuses then,
       // but the instance should never get them): it runs outside any sandbox, so none of these describe it.
       for (String k : List.of("APKSIM_SANDBOXED", "APKSIM_NOCACHE", "APKSIM_SANDBOX_TEST")) pb.environment().remove(k);
@@ -2223,7 +2255,7 @@ public final class Serve {
     if (r.method().equals("GET") && r.path().equals("/beam/hello")) {
       int[] pr = Beam.protocols();
       Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + ",\"trusted\":"
-          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"forward\":" + (o != null && agent.trusted(o) ? forwardJson() : "[]") + ",\"adb\":" + store.allowAdbNow() + ",\"options\":" + Catalog.optionsJson() + "}");
+          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"forward\":" + (o != null && agent.trusted(o) ? forwardJson() : "[]") + ",\"adb\":" + store.allowAdbNow() + ",\"loopback\":" + (o != null && agent.trusted(o) ? store.loopbackNow(port) : List.of()) + ",\"options\":" + Catalog.optionsJson() + "}");
       return;
     }
     // `apksim beam status` (docs/beam.md, phase 6): to a local tool only, never a page (a browser always sends Origin).

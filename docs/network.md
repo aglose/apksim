@@ -57,6 +57,10 @@ the app is back on its own connections.
 --network-trust FILE         also trust this PEM/DER certificate on the way out (recording against a local HTTPS
                              server with a self-signed certificate): a server the app's own TLS refuses is let
                              through only if its chain holds, or was issued by, one of these, and that is logged
+                             On `apksim serve` and `apksim beam` both are per-app launch options (issue 429): `--network-host`
+                             only to an address the operator listed (`serve --network-host-allow ADDR[:PORT]`) or the
+                             Mac's owner did (`apksim beam config allow-host ADDR[:PORT]`), and `--network-trust
+                             inline:BASE64`, the certificate itself, in place of a file (`inline:` also works on the command line)
 ```
 
 Any of these turns the network layer on; without them nothing changes (one static check per hooked call). Replay

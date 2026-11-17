@@ -176,7 +176,7 @@ keeping a session to use later is the visitor's choice.
     viewer attached only hides it) and the session ends as an ordinary local launch does, when the app exits, saved
     as kept. `GET /beam/status` shows `"detached":true`. It counts against `--max` like any session; the agent's idle
     limit does not apply to it (window input never reaches the agent, so it would end a session in use). `apksim beam stop --force`
-    ends it too, with the agent; the agent's side (the per-request check, its limits) runs only in the Mac check. Not done:
+    ends it too, with the agent. Not done:
     reattaching a later tab to a detached session (`/beam/start` with `attach`).
   A saved session's slot is renamed when its instance has exited, to `k<12 hex>-0` (and `.device`) beside it, a name
   no beam session takes, and recorded in `STATE/beam/saved/<id>.json`: app name, SHA-256, launch options, device,
@@ -201,9 +201,9 @@ keeping a session to use later is the visitor's choice.
     no; a site set to never is 403). The builds get the `keep-days` hold.
   - From the tab, by the site it came from: reopening it, or starting a newer build of the same app on a copy of its
     data (issue 181: "Saved data from the tab").
-- **Settings**: `apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS] [inspect-network on|optional|off] [allow-adb on|off] [forward-allow URL_PREFIX|none] [forward-disallow URL_PREFIX]`, kept in
+- **Settings**: `apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS] [inspect-network on|optional|off] [allow-adb on|off] [forward-allow URL_PREFIX|none] [forward-disallow URL_PREFIX] [allow-loopback PORTS|off]`, kept in
   `STATE/beam/config.json` and read at the agent's start (launchd starts it with no options, so command-line flags
-  are not the place; `rec` is the flight recorder channels a session starts with, `input` by default, so a bug can be saved with `rec save` and replayed (docs/flight-recorder.md); a session's `i` message tells the page `"rec": true` and `"recChannels"` (what the instance records, the owner's choice or the app's own `--rec`), `"rec": false` when it records nothing. `inspect-network` is off by default: with `on` every session runs the network inspector unless its start declines it (`"inspect": false`, issue 389: no network engine then, for an app the inspector gets in the way of; `/beam/hello` says `"inspectOptOut": true` on an agent that honours it, and `i` says what the session got), with `optional` only a start that asks (`/beam/start`'s `"inspect": true`, issue 371; 409 when the setting is `off`, 400 when not a boolean; `/beam/hello` says `"inspect": "off|optional|on"`) and `i` says `"inspect": true`, so the page shows the app's HTTP(S) traffic as it does on a serve with `--inspect-network` (`n` messages, `inspect` commands). Only a site the owner trusted can start a session, so only it can read either. `allow-adb on` (off by default, issue 397; a CLI setting only, not a flag of `apksim beam`) lets every trusted site's start ask for an adb device on loopback with the whole adb shell in its session: "adb commands in a session" below); the same as flags on `apksim beam` for a run in the foreground.
+  are not the place; `rec` is the flight recorder channels a session starts with, `input` by default, so a bug can be saved with `rec save` and replayed (docs/flight-recorder.md); a session's `i` message tells the page `"rec": true` and `"recChannels"` (what the instance records, the owner's choice or the app's own `--rec`), `"rec": false` when it records nothing. `inspect-network` is off by default: with `on` every session runs the network inspector unless its start declines it (`"inspect": false`, issue 389: no network engine then, for an app the inspector gets in the way of; `/beam/hello` says `"inspectOptOut": true` on an agent that honours it, and `i` says what the session got), with `optional` only a start that asks (`/beam/start`'s `"inspect": true`, issue 371; 409 when the setting is `off`, 400 when not a boolean; `/beam/hello` says `"inspect": "off|optional|on"`) and `i` says `"inspect": true`, so the page shows the app's HTTP(S) traffic as it does on a serve with `--inspect-network` (`n` messages, `inspect` commands). Only a site the owner trusted can start a session, so only it can read either. `allow-loopback PORTS|off` (issue 428, "The beam sandbox": named loopback ports the app may reach); `allow-adb on` (off by default, issue 397; a CLI setting only, not a flag of `apksim beam`) lets every trusted site's start ask for an adb device on loopback with the whole adb shell in its session: "adb commands in a session" below); the same as flags on `apksim beam` for a run in the foreground.
 - **When it is swept**: at the agent's start, hourly while it runs, and as each session ends (so `keep-days 0`
   deletes at once). An agent that is not running deletes nothing: the LaunchAgent (phase 1) also runs `apksim beam
   sweep` once a day (`StartInterval`).
@@ -523,11 +523,21 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   its own scratch and `cache/framework/` (the Android framework's inflated resource table, which it maps: public
   data other launches wrote and it cannot).
 - **Network**: what the Mac reaches over IPv4 (the consent prompt says so), but no loopback connection (other
-  instances' control ports, the agent: a non-browser client could forge an `Origin`), no IPv6 (an IPv6 socket reaches
+  instances' control ports, the agent: a non-browser client could forge an `Origin`), unless the owner opened a port (below), no IPv6 (an IPv6 socket reaches
   loopback as `::ffff:127.0.0.1`, which the sandbox's `localhost` rule does not match; the JVM runs with
   `java.net.preferIPv4Stack`, so Java still reaches IPv4 hosts; IPv6-only hosts are out of reach) and no standby's
   socket (it would run an APK in the ordinary sandbox), nor any other local socket but the resolver's
   (`mDNSResponder`) and `syslog`: not an `ssh-agent`'s (signing with the visitor's keys) or a container engine's.
+  `apksim beam config allow-loopback PORT[,PORT...]|off` (issue 428; at most 16 ports, off by default, read by each launch,
+  `/beam/hello` says `"loopback": [PORTS]` to a trusted site, `[]` to any other) opens named loopback ports to the app, for a backend the owner runs on this
+  Mac: one `(allow network-outbound (remote tcp4 "localhost:PORT"))` per port, after the deny rules (before the IPv6 deny
+  it does not hold), so TCP to that port over IPv4 and nothing else on loopback (`::1` on that port and `::ffff:127.0.0.1` stay denied: plain `tcp` would open `::1` too).
+  Never the agent's own port (refused by the CLI while it runs, dropped by the agent's launches), and an instance's own
+  control and adb ports are opened on a free port that is not an allowed one (`LoopbackPorts`). The profile is fixed
+  when a standby boots, so the launcher puts the ports in the standby's name (`b+3000+8080`), and the agent boots its standbys under that name: a change reaches the
+  launches after it, with a cold first one; `--stop-standbys` knows only the names without ports (they quit after an
+  hour unused). Every trusted site's app gets them, as with `allow-adb`; a per-site grant is not done.
+  Checked by `beam-check.py --only loopback` (the profile, a malformed list, IPv6, the config and `/beam/hello`).
   The inspector and `rec` net read the app's own connections (the network tap: no socket of its own, so nothing here for
   the sandbox to deny, and the app keeps HTTP/2 and gRPC). The network engine, which only an inspector rule, a network
   condition or a mapped host brings in, listens on loopback, so a beamed instance reaches it in memory
@@ -1008,6 +1018,11 @@ Mac reaches them directly and anonymously (CI artifacts), and the page knows tha
 
 - **The page names it**: `/beam/start` takes `"source": URL` beside `sha256`. serve.html sends none (its builds are
   its own); an embedding page with an artifact store does.
+- **Network hosts (issue 429).** A start's `options` may carry `--network-host HOST=ADDR[:PORT]` (an app's host sent to
+  another server) only to an address the Mac's owner listed: `apksim beam config allow-host ADDR[:PORT]` (and
+  `disallow-host`), kept in `STATE/beam/hosts.json` and read at every start, none by default. `--network-trust
+  inline:BASE64` carries the server's certificate itself, never a file of the Mac. `GET /beam/hello`'s `options` lists both.
+
 - **The owner allows it**: `apksim beam config allow-download https://artifacts.example.com/builds/` (and
   `disallow-download`), kept in `STATE/beam/downloads.json` and read at every start, so it takes effect without a
   restart; `apksim beam config` and `apksim beam status` list them. A prefix is https (http only on 127.0.0.1,

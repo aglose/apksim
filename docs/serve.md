@@ -56,6 +56,13 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   without it stays without it, and the page starts a new one to switch. With plain `--inspect-network` the inspector is the default and a
   tab may decline it with `/ws?...&inspect=0` (issue 389: no network engine for that session; `i` then says `"inspect": false`). `--inspect-max-rules N` (32; 1 to 256) is how many rules a session takes.
   `--inspect-forward-allow URL_PREFIX` (repeatable) lets a tab's rule forward matched requests to an upstream under that prefix.
+- `--network-host-allow ADDR[:PORT]` (repeatable; issue 429) lets an app's launch options (a catalog line's ` -- `, a URL add's
+  `options`) carry `--network-host HOST=ADDR[:PORT]`, pointing one of the app's hosts at another server (a preview
+  deployment, a machine of the developer's), and only to an address listed here: none by default, so a page cannot aim an
+  instance at the server's own network. An entry without a port covers every port (and keeping the app's own); a name is
+  matched as written, not resolved; IPv6 goes in brackets. At most 8 mappings an app. `--network-trust inline:BASE64`
+  (the certificate's PEM or DER, one to four certificates, 12,000 characters at most; never a file path) is the
+  server's certificate for such a host. Both are described in docs/network.md; `scripts/check-host-allow.sh` checks the rules.
 - `--keep-max N` (default 0: none) and `--keep-days N` (default 14): kept sessions (below). At most N apps' data kept
   in all, the least recently used dropped first, and any not used for `--keep-days` deleted (checked hourly and at start).
   Off by default: kept data outlives the session it came from. One server per state folder keeps sessions (a lock on

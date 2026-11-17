@@ -16,6 +16,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -51,38 +52,71 @@ final class BeamStore {
    * (`off` by default): the network inspector shows the page that started a session the app's traffic. `on`: every session
    * runs it; `optional` (issue 371): a start that asks (`/beam/start`'s `"inspect": true`) gets it, the others do not.
    */
-  record Config(double keepDays, boolean saveSessions, double keepSavedDays, String rec, String inspectNetwork, boolean allowAdb, List<String> forwardAllow) {
-    static final Config DEFAULT = new Config(2, false, DEFAULT_KEEP_SAVED_DAYS, "input", "off", false, List.of());
+  record Config(double keepDays, boolean saveSessions, double keepSavedDays, String rec, String inspectNetwork, boolean allowAdb, List<String> forwardAllow, String allowLoopback) {
+    static final Config DEFAULT = new Config(2, false, DEFAULT_KEEP_SAVED_DAYS, "input", "off", false, List.of(), "");
 
     Config(double keepDays, boolean saveSessions, double keepSavedDays) {
-      this(keepDays, saveSessions, keepSavedDays, DEFAULT_REC, "off", false, List.of());
+      this(keepDays, saveSessions, keepSavedDays, DEFAULT_REC, "off", false, List.of(), "");
     }
 
     Config withRec(String r) {
-      return new Config(keepDays, saveSessions, keepSavedDays, r, inspectNetwork, allowAdb, forwardAllow);
+      return new Config(keepDays, saveSessions, keepSavedDays, r, inspectNetwork, allowAdb, forwardAllow, allowLoopback);
     }
 
     Config withInspect(String mode) {
-      return new Config(keepDays, saveSessions, keepSavedDays, rec, mode, allowAdb, forwardAllow);
+      return new Config(keepDays, saveSessions, keepSavedDays, rec, mode, allowAdb, forwardAllow, allowLoopback);
     }
 
     Config withAdb(boolean on) {
-      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, on, forwardAllow);
+      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, on, forwardAllow, allowLoopback);
+    }
+
+    Config withLoopback(String ports) {
+      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, allowAdb, forwardAllow, ports);
     }
 
     Config withForwardAllow(List<String> prefixes) {
-      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, allowAdb, List.copyOf(prefixes));
+      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, allowAdb, List.copyOf(prefixes), allowLoopback);
     }
 
     String describe() {
       return "keep-days " + num(keepDays) + ", save-sessions " + (saveSessions ? "on" : "off") + ", keep-saved-days "
           + (keepSavedDays < 0 ? "never" : num(keepSavedDays)) + ", rec " + rec
           + ", inspect-network " + inspectNetwork + ", allow-adb " + (allowAdb ? "on" : "off")
-          + ", forward-allow " + (forwardAllow.isEmpty() ? "none" : String.join(" ", forwardAllow));
+          + ", allow-loopback " + (allowLoopback.isEmpty() ? "off" : allowLoopback);
     }
   }
 
   static final String DEFAULT_REC = "input";
+
+  /** At most this many loopback ports may be opened (each is a rule of every beamed instance's sandbox profile). */
+  static final int LOOPBACK_MAX = 16;
+
+  /**
+   * An `allow-loopback` value as the config keeps it: ports 1-65535, sorted, without repeats, comma separated, at most
+   * {@link #LOOPBACK_MAX}; `off` or an empty value is "" (none). Null when it is not that.
+   */
+  static String ports(String v) {
+    if (v == null) return null;
+    if (v.isEmpty() || v.equals("off")) return "";
+    java.util.TreeSet<Integer> out = new java.util.TreeSet<>();
+    for (String p : v.split(",", -1)) {
+      if (!p.matches("[0-9]{1,5}")) return null;
+      int n = Integer.parseInt(p);
+      if (n < 1 || n > 65535) return null;
+      out.add(n);
+    }
+    if (out.size() > LOOPBACK_MAX) return null;
+    return out.stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(","));
+  }
+
+  /** The loopback ports a beamed instance may reach now, read from the config at each use (the agent's own port never). */
+  List<Integer> loopbackNow(int agentPort) {
+    String v = readConfig().allowLoopback();
+    List<Integer> out = new ArrayList<>();
+    if (!v.isEmpty()) for (String p : v.split(",")) if (Integer.parseInt(p) != agentPort) out.add(Integer.parseInt(p));
+    return out;
+  }
 
   /** A `rec` setting: `off`, `all`, or flight recorder channels (`input,logcat`), normalised; null if it is none of those. */
   static String recSetting(String v) {
@@ -144,7 +178,8 @@ final class BeamStore {
         double saved = !m.containsKey("keep-saved-days") ? c.keepSavedDays()
             : m.get("keep-saved-days") instanceof Number n && n.doubleValue() >= 0 ? n.doubleValue() : -1;
         String rec = m.get("rec") instanceof String r && recSetting(r) != null ? recSetting(r) : c.rec();
-        c = new Config(keep, save, saved, rec, inspectMode(m.get("inspect-network"), c.inspectNetwork()), Boolean.TRUE.equals(m.get("allow-adb")), forwardList(m.get("forward-allow")));
+        c = new Config(keep, save, saved, rec, inspectMode(m.get("inspect-network"), c.inspectNetwork()), Boolean.TRUE.equals(m.get("allow-adb")), forwardList(m.get("forward-allow")),
+            m.get("allow-loopback") instanceof String l && ports(l) != null ? ports(l) : "");
       }
     } catch (IOException | RuntimeException e) {
       System.err.println("[beam] cannot read " + configFile + " (using the defaults): " + e.getMessage());
@@ -155,7 +190,8 @@ final class BeamStore {
   void writeConfig(Config c) throws IOException {
     String json = "{\n  \"keep-days\": " + num(c.keepDays()) + ",\n  \"save-sessions\": " + c.saveSessions()
         + ",\n  \"keep-saved-days\": " + (c.keepSavedDays() < 0 ? "\"never\"" : num(c.keepSavedDays())) + ",\n  \"rec\": \"" + c.rec() + "\",\n  \"inspect-network\": \"" + c.inspectNetwork() + "\",\n  \"allow-adb\": " + c.allowAdb()
-        + ",\n  \"forward-allow\": [" + c.forwardAllow().stream().map(Http::q).collect(java.util.stream.Collectors.joining(", ")) + "]\n}\n";
+        + ",\n  \"forward-allow\": [" + c.forwardAllow().stream().map(Http::q).collect(java.util.stream.Collectors.joining(", ")) + "]"
+        + ",\n  \"allow-loopback\": \"" + c.allowLoopback() + "\"\n}\n";
     writeAtomically(configFile, json);
     config = c;
   }
@@ -172,7 +208,6 @@ final class BeamStore {
     }
   }
 
-  /** A config file's `forward-allow`: the prefixes that are still valid ones (a hand-edited bad entry is dropped, not trusted). */
   private static final Set<String> FORWARD_WARNED = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
   static List<String> forwardList(Object v) {
@@ -997,22 +1032,31 @@ final class BeamStore {
               beam.setDownload(p, k.equals("allow-download"));
               System.out.println((k.equals("allow-download") ? "downloads allowed from " : "downloads no longer allowed from ") + p);
             }
+            // Issue 429: the addresses a start's --network-host may point a host at (read at every start).
+            case "allow-host", "disallow-host" -> {
+              if (HostAllow.parse(v) == null) {
+                System.err.println("apksim beam config " + k + ": takes ADDR[:PORT] (a host name, an IPv4 address or [IPV6], and a port of 1 to 65535)");
+                return 2;
+              }
+              beam.setHost(v, k.equals("allow-host"));
+              System.out.println((k.equals("allow-host") ? "apps may be pointed at " : "apps may no longer be pointed at ") + HostAllow.parse(v));
+            }
             case "keep-days" -> {
               Double d = days(v, false);
               if (d == null) return usage();
-              c = new Config(d, c.saveSessions(), c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow());
+              c = new Config(d, c.saveSessions(), c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback());
               changed = true;
             }
             case "save-sessions" -> {
               Boolean b = onOff(v);
               if (b == null) return usage();
-              c = new Config(c.keepDays(), b, c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow());
+              c = new Config(c.keepDays(), b, c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback());
               changed = true;
             }
             case "keep-saved-days" -> {
               Double d = days(v, true);
               if (d == null) return usage();
-              c = new Config(c.keepDays(), c.saveSessions(), d, c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow());
+              c = new Config(c.keepDays(), c.saveSessions(), d, c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback());
               changed = true;
             }
             case "inspect-network" -> {
@@ -1058,6 +1102,22 @@ final class BeamStore {
               c = c.withForwardAllow(now);
               changed = true;
             }
+            // Issue 428: named loopback ports a beamed app may connect to (a backend run on this Mac), `off` for none.
+            // Opened in the sandbox profile of each instance started after this; never the agent's port.
+            case "allow-loopback" -> {
+              String ps = ports(v);
+              if (ps == null) {
+                System.err.println("apksim beam config allow-loopback: takes ports 1-65535 separated by commas (at most " + LOOPBACK_MAX + ") or off");
+                return 2;
+              }
+              int ap = store.agentPort();
+              if (ap > 0 && Arrays.asList(ps.split(",")).contains(String.valueOf(ap))) {
+                System.err.println("apksim beam config allow-loopback: " + ap + " is the running agent's own port, which no app may reach");
+                return 2;
+              }
+              c = c.withLoopback(ps);
+              changed = true;
+            }
             case "rec" -> {
               String r = recSetting(v);
               if (r == null) return usage();
@@ -1072,6 +1132,8 @@ final class BeamStore {
         if (changed) store.writeConfig(c);
         System.out.println(c.describe() + (changed && store.agentPort() >= 0 ? "  (the running agent reads it at its next start)" : ""));
         List<String> dl = beam.downloads();
+        List<String> hosts = beam.hosts();
+        System.out.println("network hosts: " + (hosts.isEmpty() ? "none (a start's --network-host is refused)" : String.join(", ", hosts)));
         System.out.println("downloads from: " + (dl.isEmpty() ? "none (the agent fetches builds only from the page's own server)" : String.join(", ", dl)));
         return 0;
       }
@@ -1107,6 +1169,8 @@ final class BeamStore {
             + (never.isEmpty() ? "" : "; refused: " + String.join(", ", never)));
         List<String> dl = new Beam(state).downloads();
         if (!dl.isEmpty()) System.out.println("downloads from: " + String.join(", ", dl));
+        List<String> nh = new Beam(state).hosts();
+        if (!nh.isEmpty()) System.out.println("network hosts: " + String.join(", ", nh));
         long bytes = 0;
         int builds = 0;
         Path uploads = state.resolve("beam/uploads");
@@ -1223,7 +1287,9 @@ final class BeamStore {
                                 [inspect-network on|optional|off]   (a trusted page sees the app's HTTP(S) traffic: of every session, or only of a start that asks)
                                 [allow-adb on|off]   (every trusted site's page may ask for an adb device on this Mac's loopback and run any adb shell command in its session)
                                 [forward-allow URL_PREFIX|none] [forward-disallow URL_PREFIX]   (where a page's forward rules may send the app's requests: http://127.0.0.1:PORT/api for a backend on this Mac)
+                                [allow-loopback PORT[,PORT...]|off]   (every trusted site's app may connect to these ports on this Mac's loopback, e.g. a backend run here; never the agent's or an instance's own)
                                 [allow-download URL] [disallow-download URL]   (where it may fetch a build a page names)
+                                [allow-host ADDR[:PORT]] [disallow-host ADDR[:PORT]]   (where a start's --network-host may point a host)
              apksim beam stop [--force]         ends the running agent (not while sessions run, unless --force); launchd starts it again
              apksim beam sweep                  deletes what is past its time now (the agent does it by itself)
              apksim beam status                 what the agent runs, the sites it lets in, what it keeps
