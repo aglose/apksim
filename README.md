@@ -354,6 +354,8 @@ state folder.
 | Performance | `frames` (frame-interval percentiles), `fps` (cost per stage), `shaders` (GPU or CPU), `video [blank\|on]` (decode counts; sets the mode for the next codec), `maxfps [N]` (the frame rate cap, 1-120), `stats` |
 | Other | `logcat on\|off`, `selftest [FILE]`, `ping`, `quit` |
 
+Captures written by the sandboxed app (`shot`, `record`) may go anywhere outside your home folder, or into apksim's state folder; any other folder under your home folder is denied, and `shot` and `record` answer `error:` for it.
+
 A command that fails answers `error: ...`, and the app keeps running.
 
 Many instances at once: `scripts/fleet.py N APP.apk -- CMD...` starts N headless instances and drives each through

@@ -549,7 +549,20 @@ final class DeviceControls {
             // On a Mac window: H.264 QuickTime through AVFoundation. Headless or on Linux: Motion-JPEG AVI.
             boolean avi = SimWindow.isHeadless() || (a.length > 2 && a[2].endsWith(".avi"));
             String path = a.length > 2 ? Storage.absolute(a[2]).toString() : newMediaFile(avi ? "avi" : "mov").toString();
+            if (recording != null) return "already recording";
+            // The sandbox may deny the folder (AVFoundation then fails silently): open the file here, where it says so.
+            boolean made = false;
+            if (!avi) {
+              try {
+                java.nio.file.Path pp = java.nio.file.Path.of(path);
+                made = !java.nio.file.Files.exists(pp);
+                java.nio.file.Files.newOutputStream(pp, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE).close();
+              } catch (java.io.IOException e) {
+                return "error: cannot write the recording: " + e + " (the sandbox denies writes under your home folder except its state folder)";
+              }
+            }
             String err = avi ? MjpegRecorder.start(path, w, h) : SimWindow.recordStart(path);
+            if (err != null && made) java.nio.file.Files.deleteIfExists(java.nio.file.Path.of(path));
             // Frames reach the AVI only as they are drawn: draw one now, so a still screen is recorded too.
             if (avi && err == null) for (android.view.View root : rootViews()) root.invalidate();
             if (err != null) return err;
@@ -561,7 +574,12 @@ final class DeviceControls {
           String path = recording;
           recording = null;
           SimWindow.setMenuState(TAG_RECORD, false);
-          return ms < 0 ? "not recording" : "saved " + path + " (" + ms / 1000.0 + " s)";
+          if (ms < 0) return "not recording";
+          java.nio.file.Path pp = path == null ? null : java.nio.file.Path.of(path);
+          if (pp != null && (!java.nio.file.Files.isRegularFile(pp) || java.nio.file.Files.size(pp) == 0)) {
+            return "error: the recording was not written to " + path;
+          }
+          return "saved " + path + " (" + ms / 1000.0 + " s)";
         } catch (java.io.IOException e) {
           return e.toString();
         }
