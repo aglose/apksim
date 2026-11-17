@@ -975,6 +975,75 @@ def data_checks(apksim, apk, sha, size):
         shutil.rmtree(state, ignore_errors=True)
 
 
+def allow_checks(apksim):
+    """Issue 472: `POST /beam/allow`, a trusted site asking the owner (by the consent dialog; stand-ins here) to allow a
+    loopback forward target, port or host target. Refused for an untrusted site, for anything but a loopback target
+    with a port, and when the owner says no; allowed ones are written as the CLI would and read by the next start
+    without restarting the agent. A state folder and agents of its own, no APK."""
+    import threading
+    state = tempfile.mkdtemp(prefix="beam-check-allow-")
+    site, other = "http://allow.beam-check.test", "http://other.beam-check.test"
+    gp = free_port()
+
+    def cfg(*args):
+        return subprocess.run([apksim, "beam", "config", *args], capture_output=True, text=True,
+                              env=dict(os.environ, APKSIM_HOME=state), timeout=60)
+
+    def run_agent(consent):
+        log = open(os.path.join(state, f"agent-{time.time():.0f}.log"), "w")
+        g = subprocess.Popen([apksim, "beam", "--port", str(gp)], stdout=subprocess.DEVNULL, stderr=log,
+                             env=dict(os.environ, APKSIM_HOME=state, APKSIM_BEAM_CONSENT=consent))
+        check(wait_up(gp, "/beam/hello"), f"allow: an agent ({consent})")
+        return g
+
+    def post(origin, body):
+        st, _, b = req(gp, "POST", "/beam/allow", origin, body)
+        return st, b
+
+    r = subprocess.run([apksim, "beam", "trust", "allow", site], capture_output=True, text=True, env=dict(os.environ, APKSIM_HOME=state), timeout=60)
+    check(r.returncode == 0, f"allow: trust the site ({r.stderr.strip()[:100]})")
+    try:
+        g = run_agent("deny")
+        h = json.loads(req(gp, "GET", "/beam/hello", site)[2])
+        check(h.get("allowRequest") == ["forward", "loopback", "host"], f"allow: hello lists what a page may ask ({h.get('allowRequest')})")
+        check(post(other, {"loopback": 8001})[0] == 403, "allow: a site the owner has not trusted is refused")
+        for bad in ({}, {"loopback": 8001, "host": "127.0.0.1:8001"}, {"loopback": 0}, {"loopback": 70000}, {"loopback": gp},
+                    {"forward": "http://example.com:80/api"}, {"forward": "https://127.0.0.1:8001"}, {"forward": "http://127.0.0.1/api"},
+                    {"forward": "http://u@127.0.0.1:8001/api"}, {"host": "example.com:80"}, {"host": "127.0.0.1"},
+                    {"host": "[::1]:8001"}, {"nothing": 1}):
+            check(post(site, bad)[0] == 400, f"allow: {bad} is refused before any dialog")
+        check(post(site, {"loopback": 8001})[0] == 403, "allow: the owner saying no is a 403")
+        check("allow-loopback off" in cfg().stdout, "allow: and nothing was written")
+        stop(g)
+
+        g = run_agent("allow")
+        for body, field in (({"loopback": 8001}, "allow-loopback"), ({"forward": "http://127.0.0.1:8001/api"}, "forward-allow"),
+                            ({"host": "localhost:8002"}, "allow-host")):
+            st, b = post(site, body)
+            check(st == 200 and json.loads(b).get("already") is False, f"allow: {body} is allowed ({st} {b[:80]})")
+        h = json.loads(req(gp, "GET", "/beam/hello", site)[2])
+        check(h.get("loopback") == [8001] and h.get("forward") == ["http://127.0.0.1:8001/api"] and h.get("hosts") == ["localhost:8002"],
+              f"allow: the running agent reports them at once, no restart ({h.get('loopback')} {h.get('forward')} {h.get('hosts')})")
+        st, b = post(site, {"loopback": 8001})
+        check(st == 200 and json.loads(b).get("already") is True, "allow: asking again for an allowed one is answered without a dialog")
+        st, b = post(site, {"loopback": 8003})
+        out = cfg().stdout
+        check(st == 200 and "allow-loopback 8001,8003" in out, f"allow: a second port is added to the first ({out.strip()[:200]})")
+        stop(g)
+
+        g = run_agent("allow-after-2s")
+        res = []
+        t = threading.Thread(target=lambda: res.append(post(site, {"loopback": 8004})))
+        t.start()
+        seen_a = until(lambda: json.loads(req(gp, "GET", "/beam/hello", site)[2]).get("asking") is True, 1.8)
+        seen_b = json.loads(req(gp, "GET", "/beam/hello", other)[2]).get("asking")
+        t.join(30)
+        check(seen_a and seen_b is False and res and res[0][0] == 200, f"allow: hello says asking while the dialog is up, to that page only ({seen_a}, {seen_b}, {res})")
+        stop(g)
+    finally:
+        shutil.rmtree(state, ignore_errors=True)
+
+
 def forward_checks(apksim, apk, sha, size):
     """Issue 426: forward rules in a beamed session. Refused until the owner lists a target prefix
     (`apksim beam config forward-allow`), then accepted for targets under it only, and the request the app makes is
@@ -1443,9 +1512,16 @@ def main():
     ap.add_argument("--apksim", default=os.path.join(os.path.dirname(HERE), "apksim"))
     ap.add_argument("--server-port", type=int, default=47480)
     ap.add_argument("--agent-port", type=int, default=47481)
-    ap.add_argument("--only", choices=["adb", "forward", "loopback"], help="run only this part")
+    ap.add_argument("--only", choices=["adb", "forward", "loopback", "allow"], help="run only this part")
     a = ap.parse_args()
     sp, gp, apksim = a.server_port, a.agent_port, a.apksim
+    if a.only == "allow":
+        allow_checks(apksim)
+        if sc.FAILED:
+            print(f"{len(sc.FAILED)} check(s) failed")
+            sys.exit(1)
+        print("beam check passed (allow)")
+        return
     if a.only == "loopback":
         loopback_checks(apksim, a.apk)
         if sc.FAILED:
