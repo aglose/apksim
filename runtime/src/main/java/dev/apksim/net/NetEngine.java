@@ -530,15 +530,62 @@ final class NetEngine {
       long t0 = System.nanoTime();
       try {
         if (closed) throw new java.net.SocketException("connection closed");
-        Socket s = new Socket();
-        s.setTcpNoDelay(true);
-        s.connect(target(host, address, port), timeout);
+        Socket s = connectAny();
         adopt(s);
         watch(s);
         connectMs = (System.nanoTime() - t0) / 1_000_000;
         return null;
       } catch (IOException e) {
         return Net.errorReply(e);
+      }
+    }
+
+    /**
+     * Connects to the address the client chose; when that one cannot be reached, to the host's other addresses, as the
+     * client would have gone on to them itself (OkHttp's fast fallback, a browser's Happy Eyeballs). The client's own
+     * connect was to this engine, so it never saw the failure: an address the machine has no route to (a host's AAAA
+     * on a network without IPv6, which a client lists first) failed the whole request though the host's IPv4 address
+     * works (issue 447). A mapped host or a name that has no other address fails as before.
+     */
+    private Socket connectAny() throws IOException {
+      InetSocketAddress first = target(host, address, port);
+      try {
+        return connectTo(first);
+      } catch (IOException e) {
+        if (address == null || Net.hostMap.containsKey(host.toLowerCase(Locale.ROOT)) || closed) throw e;
+        InetAddress[] all;
+        try {
+          all = InetAddress.getAllByName(host);
+        } catch (IOException lookup) {
+          throw e;
+        }
+        InetAddress chosen = first.getAddress();
+        // The other family's addresses first: the chosen one failed for a route, not for a host that is down.
+        boolean v6 = chosen instanceof java.net.Inet6Address;
+        java.util.List<InetAddress> others = new java.util.ArrayList<>();
+        for (InetAddress a : all) if (!a.equals(chosen) && (a instanceof java.net.Inet6Address) != v6) others.add(a);
+        for (InetAddress a : all) if (!a.equals(chosen) && (a instanceof java.net.Inet6Address) == v6) others.add(a);
+        for (InetAddress a : others) {
+          try {
+            return connectTo(new InetSocketAddress(a, port));
+          } catch (IOException next) {
+            e.addSuppressed(next);
+          }
+        }
+        throw e;
+      }
+    }
+
+    private Socket connectTo(InetSocketAddress to) throws IOException {
+      if (closed) throw new java.net.SocketException("connection closed");
+      Socket s = new Socket();
+      try {
+        s.setTcpNoDelay(true);
+        s.connect(to, timeout);
+        return s;
+      } catch (IOException e) {
+        try { s.close(); } catch (IOException ignored) { }
+        throw e;
       }
     }
 
