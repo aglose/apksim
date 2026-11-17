@@ -21,6 +21,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -522,6 +523,17 @@ final class Session {
     // First what the link asked for (its deep link, its orientation), then what the tab sent meanwhile, in order: a
     // rotation or deep link chosen during startup comes after the link's and stays.
     List<Map.Entry<String, Consumer<String>>> first = new ArrayList<>();
+    // Inspector rules the tab sent meanwhile go first (issue 445): the instance answers them on the connection's thread,
+    // but reads one line at a time, and `stats` waits for Host's loop, which runs after the app's first activity starts.
+    synchronized (replies) {
+      for (Iterator<Map.Entry<String, Consumer<String>>> it = early.iterator(); it.hasNext(); ) {
+        Map.Entry<String, Consumer<String>> e = it.next();
+        if (e.getKey().startsWith("network rule ") || e.getKey().startsWith("network detail ")) {
+          first.add(e);
+          it.remove();
+        }
+      }
+    }
     first.add(Map.entry("stats", this::onStats));
     String open = options.get("open");
     if (open != null && check("open " + open) != null) first.add(Map.entry("open " + open, r -> ws.sendText("r open: " + r)));

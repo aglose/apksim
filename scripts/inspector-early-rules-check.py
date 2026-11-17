@@ -8,7 +8,7 @@ is announced, and checks that every answer arrived within half a second (the lau
 the answers waited for Host's loop, after the first activity), and that `network rule list` then holds all four, in order.
 Run by hand (about 5 s); the instance is quit at the end.
 """
-import re, socket, subprocess, sys, time
+import re, socket, subprocess, sys, threading, time
 
 apk = sys.argv[1]
 apksim = sys.argv[2] if len(sys.argv) > 2 else "./apksim"
@@ -30,17 +30,29 @@ for i in range(4):
     f.flush()
     f.readline()
 took = time.time() - t0
-ready = False
-for line in p.stderr:
-    if "framework-ready" in line:
-        ready = True
-        break
+f.write("stats\n")  # as Session sends it, after the rules: it waits for Host's loop, so nothing may queue behind it
+f.flush()
+f.readline()
+ready_evt = threading.Event()
+
+
+def drain():
+    for line in p.stderr:
+        if "framework-ready" in line:
+            ready_evt.set()
+
+
+threading.Thread(target=drain, daemon=True).start()
+ready = ready_evt.wait(30)
 f.write("network rule list\n")
 f.flush()
 listed = f.readline()
 f.write("quit\n")
 f.flush()
-p.wait(30)
+try:
+    p.wait(30)
+except subprocess.TimeoutExpired:
+    p.kill()
 patterns = re.findall(r'"pattern":"([^"]+)"', listed)
 ok = patterns == ["/early%d" % i for i in range(4)]
 print("rules held:", patterns)
