@@ -557,7 +557,6 @@ final class Session {
     // H.264 when the tab can decode it (it says so with codec=h264) and serve allows it; the instance answers which.
     String ask = serve.allowH264 && "h264".equals(options.get("codec")) ? " h264 " + serve.bitrateKbps : "";
     stream.getOutputStream().write(("stream " + serve.quality + ask + "\n").getBytes(StandardCharsets.US_ASCII));
-    if (viewport != null) sendStreamLine(viewport + "\n");
     if (inspecting()) watchNetwork(p);
     if (serve.beam && app.launch().contains("--tab-relay")) watchRelay(p);
     if (serve.beam && inspecting()) watchForward(p);
@@ -1341,6 +1340,11 @@ final class Session {
         line.append((char) c);
       }
       h264 = line.toString().trim().equals("ok stream h264");
+      // Only now may the tab's lines reach the stream: before its answer, Control still reads the connection as a
+      // command line, and a `viewport` there would be taken for a command (or swallowed by its reader's buffer).
+      streamReady = true;
+      String v = viewport;
+      if (v != null) sendStreamLine(v + "\n");
       if (viewers != null) viewers.codec(h264);
       if (options.containsKey("codec")) ws.sendText("c " + (h264 ? "h264" : "jpeg"));
       while (!ended) {
@@ -1525,8 +1529,9 @@ final class Session {
     sendStream("key\n");
   }
 
-  /** The tab's last `viewport W H`, sent to the instance's stream (and again when it is opened). */
+  /** The tab's last `viewport W H`, sent to the instance's stream (and again once it has answered `ok stream`). */
   private volatile String viewport;
+  private volatile boolean streamReady;
 
   private void sendStream(String line) {
     if (h264) sendStreamLine(line);
@@ -1534,7 +1539,7 @@ final class Session {
 
   private void sendStreamLine(String line) {
     Socket s = stream;
-    if (s == null) return;
+    if (s == null || !streamReady) return;
     try {
       synchronized (s) {
         s.getOutputStream().write(line.getBytes(StandardCharsets.US_ASCII));
