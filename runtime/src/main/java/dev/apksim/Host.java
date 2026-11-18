@@ -371,7 +371,7 @@ public class Host {
         if (settle != null && settle.check(firstFrame ? "no first frame yet" : busy(looper, roots))) settle = null;
         // Nothing to do until a message is due or something arrives: sleep (idleWait) rather than poll every 2 ms.
         boolean still = !firstFrame && settle == null && drag == null && pendingScript.isEmpty()
-            && System.nanoTime() - lastInput > IDLE_AFTER_INPUT_NANOS && Control.QUEUE.isEmpty() && !needsFrame(roots);
+            && System.nanoTime() - lastInput > IDLE_AFTER_INPUT_NANOS && Control.QUEUE.isEmpty() && (controls.hidden() || !needsFrame(roots));
         // A replay's journal has its next event due at a time of its own, which idleWait does not know: no idle sleep
         // until it is done (a sleep of up to 40 ms would delay events recorded closer together than that).
         boolean quiet = idleSleep && still && (replay == null || replay.done());  // -Dapksim.idleSleep=false: the 2 ms poll, but Host.Memory still sees stillness
