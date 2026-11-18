@@ -171,6 +171,8 @@ public final class Serve {
   final Map<String, Long> reopenedChanged = new ConcurrentHashMap<>();
   /** Reopened copies whose start named a `--device` in its options (issue 519): the page's device beats the saved one. */
   final Set<String> reopenedNamedDevice = ConcurrentHashMap.newKeySet();
+  /** Upload grants of such starts (the copy is made once the build has arrived); one is a token, gone at its upload. */
+  final Set<String> namedDeviceUploads = ConcurrentHashMap.newKeySet();
   /** `--allow-beam`: the tickets that let a visitor's agent download an app's APK from here itself (phase 2). */
   final BeamTicket tickets = new BeamTicket();
   /** The agent's port the page reaches (`--beam-port`, default {@link Beam#DEFAULT_PORT}). */
@@ -2416,6 +2418,7 @@ public final class Serve {
       case "DELETE /beam/saved" -> deleteSaved(o, null, out);
       case "POST /beam/upload" -> {
         Beam.Grant g = agent.take(r.param("upload"), Beam.Kind.UPLOAD, o);
+        boolean namesDevice = g != null && namedDeviceUploads.remove(r.param("upload"));  // issue 519
         if (g == null) {
           Http.text(out, 403, "no such upload (each start's lasts two minutes and is used once): start again");
           return;
@@ -2439,6 +2442,7 @@ public final class Serve {
         if (g.extra() != null && g.extra().startsWith("@")) {
           try {
             seed = savedSeed(o, g.extra(), a.path());
+            if (seed != null && namesDevice) reopenedNamedDevice.add(seed);
           } catch (IOException e) {
             Http.text(out, 409, e.getMessage());
             return;
@@ -2684,7 +2688,7 @@ public final class Serve {
       if (local != null) {
         try {
           seed = savedSeed(o, local, a.path());
-          if (seed != null && namesDevice) reopenedNamedDevice.add(seed);
+          if (seed != null && namesDevice && local.startsWith("@saved ")) reopenedNamedDevice.add(seed);
         } catch (IOException e) {
           Http.text(out, 409, e.getMessage());
           sweepBeam();
@@ -2704,7 +2708,14 @@ public final class Serve {
       sweepBeam();  // after the answer, with this start's grant holding its build
       return;
     }
-    Http.json(out, 200, "{\"need\":\"upload\",\"upload\":" + Http.q(agent.grant(Beam.Kind.UPLOAD, o, null, sha, name, launch, local != null ? local : data, protocol, pageLabel))
+    String uploadGrant = agent.grant(Beam.Kind.UPLOAD, o, null, sha, name, launch, local != null ? local : data, protocol, pageLabel);
+    // Issue 519: the upload makes the reopened copy, and must know the start named a device. Bounded: a grant never
+    // used leaves its token here, so the set is emptied when it has grown (those starts then run on the saved device).
+    if (namesDevice && local != null && local.startsWith("@saved ")) {
+      if (namedDeviceUploads.size() >= 4096) namedDeviceUploads.clear();
+      namedDeviceUploads.add(uploadGrant);
+    }
+    Http.json(out, 200, "{\"need\":\"upload\",\"upload\":" + Http.q(uploadGrant)
         + (why == null ? "" : ",\"why\":" + Http.q(why)) + "}");
   }
 
