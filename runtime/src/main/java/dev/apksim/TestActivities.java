@@ -1047,7 +1047,11 @@ public final class TestActivities {
       // (apps catch it and say so) instead of being dropped with a log line later (issue 504). Running instances only:
       // Robolectric-style suites check the recorded start.
       String act = intent.getAction();
-      if (!testRun() && intent.getComponent() == null && act != null && act.startsWith("android.settings.")
+      // Only the two actions the issue names, and not for a result: other Settings actions (app details, overlay or
+      // exact-alarm requests) resolve on a device, so an app seldom catches them, and keep being dropped (or
+      // answered RESULT_CANCELED for a result) rather than ending the app. Only this overload is hooked.
+      if (!testRun() && requestCode < 0 && intent.getComponent() == null
+          && ("android.settings.SETTINGS".equals(act) || "android.settings.WIFI_SETTINGS".equals(act))
           && RuntimeEnvironment.getApplication().getPackageManager().resolveActivity(intent, 0) == null) {
         throw new android.content.ActivityNotFoundException("No Activity found to handle " + intent);
       }
