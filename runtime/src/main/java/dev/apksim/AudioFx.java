@@ -8,8 +8,9 @@ import org.robolectric.annotation.Implements;
  * android.media.audiofx.Visualizer (issue 514). Robolectric leaves its native methods unshadowed, so the constructor
  * succeeded but {@code getCaptureSizeRange()} answered null and {@code getMaxCaptureRate()} 0: an app that sizes its
  * capture from them (a waveform view on a Media3 player's audio session) died with a NullPointerException on the first
- * play. They answer as AOSP's: sizes 128..1024, a maximum rate of 20000 mHz, a 44.1 kHz sampling rate. The visualizer
- * is enabled and configured with SUCCESS and delivers no data (the audio never reaches a capture here).
+ * play. They answer as AOSP's: sizes 128..1024, a maximum rate of 20000 mHz, a 44.1 kHz sampling rate. The setters
+ * return SUCCESS, only the capture size reads back (getEnabled and the modes read as defaults), and no data is
+ * delivered (the audio never reaches a capture here).
  */
 @Implements(value = Visualizer.class, isInAndroidSdk = false)
 public class AudioFx {
