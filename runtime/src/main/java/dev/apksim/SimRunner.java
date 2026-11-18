@@ -245,7 +245,10 @@ public class SimRunner extends RobolectricTestRunner {
       RunnerApplication.noteManifest(manifest);  // before Robolectric puts the configured Application in its place
       // --network-profile offline: no network from the start, so Application.onCreate sees none (Host's and tests').
       NetConnectivity.beforeApplication();
-      if (System.getProperty("apksim.instrument") == null) untracedDevice();
+      if (System.getProperty("apksim.instrument") == null) {
+        untracedDevice();
+        realViewAnimations();
+      }
       try {
         super.setUpApplicationState(testName, withRunnerApplication(config), manifest);
       } catch (Throwable crash) {
@@ -328,6 +331,19 @@ public class SimRunner extends RobolectricTestRunner {
       org.robolectric.shadows.ShadowTrace.doNotUseSetCrashOnIncorrectUsage(false);
       org.robolectric.shadows.ShadowTrace.setEnabled(false);
       ReflectionHelpers.setStaticField(org.robolectric.shadows.ShadowTrace.class, "tags", 0L);
+    }
+
+    /**
+     * View animations (AndroidX Fragment's enter/exit, AlphaAnimation...) play as on a device in running instances:
+     * the framework steps them at each frame's drawing time. Robolectric's AnimationRunner steps by the Choreographer's
+     * frame delay, which Host sets to 1 ms, so a 300 ms animation took hundreds of frames after its screen was done
+     * and kept `settle` busy for ~7 s. Test runs keep Robolectric's runner (a suite may assert on
+     * ShadowView.getAnimations()). The flag survives ShadowView.reset(), so this runs before every setup.
+     * `-Dapksim.realViewAnimations=false` turns it off.
+     */
+    private static void realViewAnimations() {
+      if (!Boolean.parseBoolean(System.getProperty("apksim.realViewAnimations", "true"))) return;
+      org.robolectric.shadows.ShadowView.setUseRealViewAnimations(true);
     }
 
     private static android.content.res.AssetManager testAssets;

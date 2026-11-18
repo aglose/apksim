@@ -300,6 +300,17 @@ drive 'back' 'open apksim://sensors?redraw=0' 'wait 1500' 'settle 5000 300' | ta
 drive 'open apksim://edittext' 'wait 1500' 'settle 5000 300' | tail -1 | grep -q 'settled in' \
   || { echo "a screen with a focused EditText never settled" >&2; exit 1; }
 drive 'back' >/dev/null  # leave the screen: the checks below expect the one under it
+# View animations play as on a device (issue 475): an animated fragment replace settles in about its 300 ms, not in the
+# ~3-7 s Robolectric's 1 ms-per-frame AnimationRunner kept it busy, and an AlphaAnimation still ends after its 300 ms.
+drive 'back' 'open apksim://view-animations' 'wait 1500' >/dev/null
+out=$(drive 'tap-text Replace' 'settle 15000 150' 'nodes')
+ms=$(grep -o 'settled in [0-9]*' <<<"$out" | head -1 | grep -o '[0-9]*$')
+echo "Fragment replace with animations settled in ${ms:-?} ms"
+[[ -n "$ms" ]] && (( ms < 2000 )) && grep -q 'fragment: 2' <<<"$out" \
+  || { echo "an animated fragment replace did not settle in time: $out" >&2; exit 1; }
+out=$(drive 'tap-text Fade' 'settle 15000 150' 'nodes')
+grep -q 'fade: ended after [3-6][0-9][0-9] ms' <<<"$out" \
+  || { echo "an AlphaAnimation of 300 ms did not end after about 300 ms: $out" >&2; exit 1; }
 # Device kinds: what an emulator of each lists (a TV none, a watch adds heart rate, a desktop has no proximity or steps).
 kinds=""
 drive 'sensor light on' >/dev/null
