@@ -701,6 +701,7 @@ Pass these with `--jvm`, for example `--jvm -Dapksim.vsync=grid`.
 | `-Dapksim.classCache=false` | Don't reuse translated classes from earlier launches |
 | `-Dapksim.cpuLayerEffects=true` | Run layer shader effects on the CPU, as HWUI does (for comparisons) |
 | `-Dapksim.gpuBitmaps=false` | Resample scaled bitmaps on the CPU |
+| `-Dapksim.gpuBitmapsSnap=false` | Leave big scaled bitmap draws that land off whole pixels to the CPU, not snapped |
 | `-Dapksim.videoAtViewSize=false` | Keep decoded video at the picture's size when the view is bigger, instead of scaling it on VideoToolbox |
 | `-Dapksim.mute=true` | Keep audio timing, but play silence |
 | `-Dapksim.audio=false` | Turn off sound and the audio decoders |

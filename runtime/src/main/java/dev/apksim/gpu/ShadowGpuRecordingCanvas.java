@@ -30,21 +30,24 @@ public class ShadowGpuRecordingCanvas extends ShadowNativeBaseRecordingCanvas {
   private static final Matrix MATRIX = new Matrix();
   private static final float[] M = new float[9];
   private static final RectF DST = new RectF();
+  /** Draws of at least this many device pixels are snapped to whole pixels when off them (see scaledFor). */
+  private static final int SNAP_MIN_PIXELS = 256 * 1024;
+  private static final boolean SNAP = !"false".equals(System.getProperty("apksim.gpuBitmapsSnap"));
 
   @RealObject private BaseRecordingCanvas real;
 
   @Implementation
   protected void drawBitmap(Bitmap b, Rect src, Rect dst, Paint p) {
-    Bitmap scaled = dst == null ? null : scaledFor(b, src, dst.left, dst.top, dst.right, dst.bottom, null, p);
+    Bitmap scaled = dst == null ? null : scaledFor(b, src, dst.left, dst.top, dst.right, dst.bottom, DST, p);
     if (scaled == null) direct().drawBitmap(b, src, dst, p);
-    else drawCopy(scaled, dst.left, dst.top, dst.right, dst.bottom, p);
+    else drawCopy(scaled, DST.left, DST.top, DST.right, DST.bottom, p);
   }
 
   @Implementation
   protected void drawBitmap(Bitmap b, Rect src, RectF dst, Paint p) {
-    Bitmap scaled = dst == null ? null : scaledFor(b, src, dst.left, dst.top, dst.right, dst.bottom, null, p);
+    Bitmap scaled = dst == null ? null : scaledFor(b, src, dst.left, dst.top, dst.right, dst.bottom, DST, p);
     if (scaled == null) direct().drawBitmap(b, src, dst, p);
-    else drawCopy(scaled, dst.left, dst.top, dst.right, dst.bottom, p);
+    else drawCopy(scaled, DST.left, DST.top, DST.right, DST.bottom, p);
   }
 
   /**
@@ -57,9 +60,9 @@ public class ShadowGpuRecordingCanvas extends ShadowNativeBaseRecordingCanvas {
     int bitmapDensity = b == null ? Bitmap.DENSITY_NONE : b.getDensity();
     boolean densityScaled = canvasDensity != Bitmap.DENSITY_NONE && bitmapDensity != Bitmap.DENSITY_NONE
         && canvasDensity != bitmapDensity;
-    Bitmap scaled = densityScaled ? null : scaledFor(b, null, left, top, left + b.getWidth(), top + b.getHeight(), null, p);
+    Bitmap scaled = densityScaled ? null : scaledFor(b, null, left, top, left + b.getWidth(), top + b.getHeight(), DST, p);
     if (scaled == null) direct().drawBitmap(b, left, top, p);
-    else drawCopy(scaled, left, top, left + b.getWidth(), top + b.getHeight(), p);
+    else drawCopy(scaled, DST.left, DST.top, DST.right, DST.bottom, p);
   }
 
   /** A matrix that only scales (positively) and translates is a draw into the rectangle it maps the bitmap to. */
@@ -125,13 +128,25 @@ public class ShadowGpuRecordingCanvas extends ShadowNativeBaseRecordingCanvas {
     int sw = src == null ? b.getWidth() : src.width();
     int sh = src == null ? b.getHeight() : src.height();
     if (ir - il == sw && ib - it == sh) return null;
-    // Off whole pixels the copy would be sampled again, half a pixel off; leave those to HWUI.
-    if (Math.abs(dl - il) > 1e-3f || Math.abs(dt - it) > 1e-3f || Math.abs(dr - ir) > 1e-3f || Math.abs(db - ib) > 1e-3f) {
-      GpuBitmaps.passed[3]++;
-      return null;
-    }
     // An empty or inverted destination draws nothing: HWUI's to skip.
     if (ir <= il || ib <= it) return null;
+    boolean aligned = Math.abs(dl - il) <= 1e-3f && Math.abs(dt - it) <= 1e-3f && Math.abs(dr - ir) <= 1e-3f
+        && Math.abs(db - ib) <= 1e-3f;
+    if (!aligned) {
+      // Off whole pixels the copy would be sampled again, half a pixel off, which is left to HWUI for a draw whose
+      // CPU cost is small. A big one (a full-width CENTER_CROP header, 1782 x 1002.4 pixels: issue 491) is snapped
+      // to the pixel grid instead: its edges move by at most half a pixel and its scale by less than 0.1%, and HWUI's
+      // CPU sampling of it was ~15 ms a frame.
+      if (!SNAP || (long) (ir - il) * (ib - it) < SNAP_MIN_PIXELS || Math.abs((ir - il) - (dr - dl)) > 1f
+          || Math.abs((ib - it) - (db - dt)) > 1f) {
+        GpuBitmaps.passed[3]++;
+        return null;
+      }
+      l = (il - M[2]) / M[0];
+      t = (it - M[5]) / M[4];
+      r = (ir - M[2]) / M[0];
+      bottom = (ib - M[5]) / M[4];
+    }
     if (keep != null) keep.set(l, t, r, bottom);
     return GpuBitmaps.scaled(b, src, ir - il, ib - it);
   }

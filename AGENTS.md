@@ -308,7 +308,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     by Skia's process-wide generation ID), so an app drawing a new bitmap every frame keeps nothing alive. They are made for every size asked for in the frame a bitmap is first drawn (a View records its
     background once and HWUI redraws that recording every frame, so it is never asked for twice), then only for a
     size asked for again within 8 frames, so zooms and per-frame content (video) stay on the CPU after their first
-    frame. sRGB ARGB_8888 only (other colour spaces and configs stay HWUI's, counted under `config`). A copy dropped from the
+    frame. sRGB ARGB_8888 only (other colour spaces and configs stay HWUI's, counted under `config`). A draw off whole pixels is left to HWUI, except a big one (256K device pixels or more: a full-width
+    CENTER_CROP header, 1782 x 1002.4) which is snapped to the pixel grid, edges moving half a pixel at most (maxDelta 4 of 255
+    against HWUI's own sampling; raster 8.3 → 2.2 ms on `apksim://bitmaps?header=1` in landscape, issue 491;
+    `-Dapksim.gpuBitmapsSnap=false` keeps them HWUI's). A copy dropped from the
     cache stays alive in display lists still drawing it. `-Dapksim.gpuBitmaps=false` turns it off; `shaders` shows
     hits and why draws went to HWUI (`small`, `config` by Bitmap.Config, `new`, `budget`, `unaligned`). Metal targets
     are linear (buffer-backed, pooled): reading back a tiled texture made the CPU untile it, ~3 ms per full screen.

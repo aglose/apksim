@@ -46,6 +46,10 @@ class ViewBitmapsActivity : Activity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     val animate = intent?.data?.getQueryParameter("animate") != "0"
+    if (intent?.data?.getQueryParameter("header") == "1") {
+      setContentView(headerScreen())
+      return
+    }
     val density = resources.displayMetrics.density
     val root = FrameLayout(this)
     root.background = BitmapDrawable(resources, photo(1280, 800))
@@ -108,6 +112,32 @@ class ViewBitmapsActivity : Activity() {
         start()
       }
     }
+  }
+
+  /**
+   * A scrolling screen whose first item is a full-width 16:9 hero: a photo (CENTER_CROP) with a full-size gradient
+   * ImageView over it, then rows of text (issue 491: in landscape the hero is larger than the viewport and its
+   * raster took ~15 ms). `?header=1`; drag it to scroll.
+   */
+  private fun headerScreen(): View {
+    val hero = FrameLayout(this)
+    hero.addView(ImageView(this).apply {
+      scaleType = ImageView.ScaleType.CENTER_CROP
+      setImageBitmap(photo(1920, 1080, hue = 20f))
+    }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+    hero.addView(ImageView(this).apply {
+      scaleType = ImageView.ScaleType.FIT_XY
+      setImageDrawable(android.graphics.drawable.GradientDrawable(
+        android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(Color.TRANSPARENT, Color.BLACK)))
+      alpha = 0.8f
+    }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+    val column = android.widget.LinearLayout(this).apply { orientation = android.widget.LinearLayout.VERTICAL }
+    val width = resources.displayMetrics.widthPixels
+    column.addView(hero, android.widget.LinearLayout.LayoutParams(width, width * 9 / 16))
+    for (i in 0 until 30) {
+      column.addView(TextView(this).apply { text = "Row $i"; textSize = 20f; setPadding(40, 40, 40, 40) })
+    }
+    return android.widget.ScrollView(this).apply { addView(column) }
   }
 
   private fun px(dpPixels: Int, density: Float) = (dpPixels * density / 2f).toInt()
