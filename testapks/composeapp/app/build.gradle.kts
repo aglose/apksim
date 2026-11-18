@@ -106,6 +106,7 @@ dependencies {
   // apksim://media?hls=URL: an HLS stream from the fixture server through Media3
   implementation(libs.androidx.media3.exoplayer.hls)
   implementation(libs.androidx.media3.datasource.okhttp)
+  implementation(libs.androidx.media3.ui)
   // Time zones: Joda-Time up to 2.10 reads user.timezone before the JDK's default (apksim://timezone, WallClockTest;
   // issue 91). 2.12 reads a property of its own instead, so this stays on 2.10.
   implementation(libs.joda.time)

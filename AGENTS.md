@@ -979,6 +979,12 @@ muted; `video` twice a few seconds apart should show `rendered` going up ~60 a s
 (822x462 on the phone, 1462x822 turned), `?ballast=MB` keeps that many MB of small live objects (a large app's heap: a
 full collection then takes ~200 ms at 500). The activity handles its own configuration changes, so a rotation resizes
 the view under the same codec; the activity below it in the stack is still recreated.
+`apksim://player` opens `PlayerViewActivity`: Media3's real `PlayerView` (media3-ui, Views, no controller) playing the
+same clip looping and muted; label "player: surface|texture, keep|new, instances N". The default SurfaceView or, with
+`?surface=texture`, a TextureView (two layout files: the type is an XML attribute); FIT, so `video` shows 822x462
+portrait and 1461x822 landscape. No configChanges: a rotation recreates the activity. By default a new ExoPlayer and
+codec per instance; `?keep=1` hands the ExoPlayer to the next instance (`onRetainNonConfigurationInstance`, the
+ViewModel-held-player pattern), so `codecsConfigured` stays 1 across rotations (issue 492's player shape).
 `apksim://crash?kind=coroutine|post|worker|bare|resume|config|destroy|handled|chained` opens `CrashActivity`, which throws 300 ms later: in
 viewModelScope.launch, a posted Runnable, a worker thread, a worker thread with an exception made without a stack trace
 (`bare`); `resume`, `config`, `destroy` throw from the second onResume (`recreate`, `restart URL`), onConfigurationChanged
