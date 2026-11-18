@@ -29,10 +29,16 @@ class ViewAnimationsActivity : FragmentActivity() {
 
   private fun page(n: Int) = Page().apply { arguments = Bundle().apply { putInt("n", n) } }
 
+  override fun onSaveInstanceState(outState: Bundle) {
+    super.onSaveInstanceState(outState)
+    outState.putInt("replaced", replaced)
+  }
+
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    replaced = savedInstanceState?.getInt("replaced", 1) ?: 1
     val host = FrameLayout(this).apply { id = android.R.id.custom }
-    val status = TextView(this).apply { text = "fragment: 1"; textSize = 20f }
+    val status = TextView(this).apply { text = "fragment: $replaced"; textSize = 20f }
     fade = TextView(this).apply { text = "fade: idle"; textSize = 20f }
     val replace = Button(this).apply {
       text = "Replace"
