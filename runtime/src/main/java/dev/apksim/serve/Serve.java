@@ -1771,7 +1771,17 @@ public final class Serve {
     // as `apksim beam run` does, unless the page names them.
     Map<String, Object> reopenedRec = beam && seed != null && reopened.containsKey(seed) ? store.saved(reopened.get(seed)) : null;
     if (reopenedRec != null) {
+      // Issue 519: a `--device` the start's options name that differs from the one the session was saved with is the page
+      // naming a device: the recorded one does not replace it.
+      String savedLaunchDevice = null;
+      if (reopenedRec.get("launch") instanceof List<?> sl) {
+        int sd = sl.lastIndexOf("--device");
+        if (sd >= 0 && sd + 1 < sl.size()) savedLaunchDevice = String.valueOf(sl.get(sd + 1));
+      }
+      String startDevice = Session.appDevice(app);
+      boolean pageNamedDevice = startDevice != null && !startDevice.equals(savedLaunchDevice);
       for (String k : List.of("device", "appearance", "locale", "fontscale", "permissions")) {
+        if (k.equals("device") && pageNamedDevice) continue;
         if (reopenedRec.get(k) instanceof String v && !v.isEmpty()) options.putIfAbsent(k, v);
       }
     }
