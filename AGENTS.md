@@ -1190,7 +1190,7 @@ carry 16-bit PCM. `ShadowSimAudioTrack` plays AudioTrack PCM (16-bit, 8-bit, flo
 through a CoreAudio AudioUnit, and its playback head moves only as frames are played: Robolectric's counts everything
 written as played at once, which would let ExoPlayer's audio clock race. `--jvm -Dapksim.mute=true` keeps the timing
 and plays silence; `--audio off` turns sound and the audio decoders off (`--audio mute`, `--jvm -Dapksim.mute=true` and
-`-Dapksim.audio=false` still work). `--video blank|off` and `video on|blank`: see "Per-instance costs". Bitmaps here are BGRA in memory (Skia's macOS order),
+`-Dapksim.audio=false` still work). `--video blank|off` and `video on|blank`: see "Per-instance costs". The framework `MediaPlayer` in running instances (`ShadowSimMediaPlayer`, issue 488): a data source nobody registered with Robolectric's addMediaInfo() (fd, fd+offset+length, AssetFileDescriptor, path, Uri, MediaDataSource) gets the duration its container gives (`MediaProbe`: WAV, MP3 with Xing/LAME delay and padding or a CBR estimate, MP4/M4A mvhd, Ogg Vorbis/Opus, FLAC; else 1 s) and plays silently, so onPrepared and onCompletion come on time; Robolectric threw "Don't know what to do with dataSource" and the app died. No sound yet; test runs keep Robolectric's strict shadow; `apksim://mediaplayer?src=NAME` (`ci-smoke.sh`). SoundPool is still Robolectric's. Bitmaps here are BGRA in memory (Skia's macOS order),
 not Android's RGBA: write pixels in `VtH264Decoder.BITMAP_BGRA` order.
 On Linux (issue 229) the video decoder is libavcodec (FFmpeg 7.1.5, only the decoders in the Dockerfile's
 `VIDEO_DECODERS` and swscale: H.264 alone by default, so the published image lists no HEVC decoder and logs one line
