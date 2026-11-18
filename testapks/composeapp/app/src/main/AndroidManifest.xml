@@ -293,6 +293,15 @@
                 <data android:scheme="apksim" android:host="exit" />
             </intent-filter>
         </activity>
+        <!-- apksim://settings-intent: startActivity(ACTION_WIFI_SETTINGS) and ACTION_SETTINGS; no Settings app, so ActivityNotFoundException (issue 504). -->
+        <activity android:name=".SettingsIntentActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="settings-intent" />
+            </intent-filter>
+        </activity>
         <!-- apksim://mediaplayer?src=NAME: the framework MediaPlayer over an asset's descriptor, as an app plays a sound effect (issue 488). -->
         <activity android:name=".MediaPlayerActivity" android:exported="true">
             <intent-filter>
