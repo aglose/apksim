@@ -1192,6 +1192,17 @@ written as played at once, which would let ExoPlayer's audio clock race. `--jvm 
 and plays silence; `--audio off` turns sound and the audio decoders off (`--audio mute`, `--jvm -Dapksim.mute=true` and
 `-Dapksim.audio=false` still work). `--video blank|off` and `video on|blank`: see "Per-instance costs". Bitmaps here are BGRA in memory (Skia's macOS order),
 not Android's RGBA: write pixels in `VtH264Decoder.BITMAP_BGRA` order.
+The framework `MediaPlayer` in running instances (`ShadowSimMediaPlayer`, issue 488): a data source nobody registered
+with Robolectric's addMediaInfo() (path, Uri, fd + offset + length, AssetFileDescriptor, MediaDataSource) gets the
+duration its container gives (`MediaProbe`: WAV, MP3 by Xing/Info less the LAME delay and padding or by CBR, ADTS
+frames, MP4/M4A mvhd, Ogg Vorbis/Opus, FLAC; else 1 s, as for http(s) and a MediaDataSource, whose reader is never
+called) and plays silently, so onPrepared and onCompletion come on time; Robolectric threw "Don't know what to do
+with dataSource" and the app died. A local file that cannot be opened throws FileNotFoundException, as on a device.
+Sources this class registered are probed again at each call (Robolectric's keys are coarse), one registered by anyone
+else is left alone. The probe reads the app's descriptor in place, never closes it, and clears an interrupt flag for
+the read (an interrupted channel read would close the app's descriptor). No sound yet; test runs keep Robolectric's
+strict shadow; SoundPool is still Robolectric's. `apksim://mediaplayer?src=NAME` (`ci-smoke.sh`),
+`scripts/check-media-probe.sh` (CI, `MediaProbeCheck`).
 On Linux (issue 229) the video decoder is libavcodec (FFmpeg 7.1.5, only the decoders in the Dockerfile's
 `VIDEO_DECODERS` and swscale: H.264 alone by default, so the published image lists no HEVC decoder and logs one line
 saying so; `--build-arg VIDEO_DECODERS=h264,hevc` adds it, and `VideoToolbox.hevcAvailable()` finds it by opening one;

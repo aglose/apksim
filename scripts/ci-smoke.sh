@@ -315,6 +315,13 @@ echo "Fragment replace with animations settled in ${ms:-?} ms"
 out=$(drive 'tap-text Fade' 'settle 15000 150' 'nodes')
 grep -q 'fade: ended after [3-6][0-9][0-9] ms' <<<"$out" \
   || { echo "an AlphaAnimation of 300 ms did not end after about 300 ms: $out" >&2; exit 1; }
+# The framework MediaPlayer over an asset's descriptor, as an app plays a sound effect (issue 488): a source nobody
+# registered plays silently for its file's own duration (MediaProbe) rather than ending the app.
+out=$(drive 'open apksim://mediaplayer?src=mp3.mp3' 'wait 3000' 'nodes')
+done_ms=$(grep -oE 'mp3.mp3 duration 1000 ms, completed after [0-9]+' <<<"$out" | grep -oE '[0-9]+$')
+echo "MediaPlayer: mp3.mp3 completed after ${done_ms:-?} ms"
+[[ -n "$done_ms" ]] && (( done_ms >= 1000 )) || { echo "MediaPlayer did not play a 1 s mp3 to its end: $out" >&2; exit 1; }
+drive 'back' 'wait 800' >/dev/null
 # Device kinds: what an emulator of each lists (a TV none, a watch adds heart rate, a desktop has no proximity or steps).
 kinds=""
 drive 'sensor light on' >/dev/null
