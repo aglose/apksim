@@ -309,7 +309,15 @@ def inspector_socket_checks(url, token, t, sid):
     got = read(w, 3, until=lambda g: any(x.startswith("r refused") for x in texts(g)))
     check(any(x.startswith("r refused") for x in texts(got)), "anything but inspect commands is refused")
     check(not any(x[0] == 2 for x in backlog + live + got), "no frame was ever sent to it")
-    check(not any(x.startswith("d {\"viewers\"") for x in t.texts), "and it did not count as a viewer for pacing")
+    k = len(t.texts)
+    t.pump(5, until=lambda: any(x.startswith("s ") for x in t.texts[k:]))
+    st = next((json.loads(x[2:]) for x in reversed(t.texts) if x.startswith("s ")), {})
+    check(st.get("viewers", {}).get("count", 0) == 0, f"and it does not count as a viewer ({st.get('viewers')})")
+    extra = [sc.WS(url, f"/ws?inspect={sid}", hdr) for _ in range(4)]
+    over = [texts(read(x, 3, until=lambda g: any(y.startswith("x ") for y in texts(g)))) for x in extra]
+    check(sum(any(y.startswith("x too many") for y in o) for o in over) == 1, "a fifth inspector socket on a session is refused")
+    for x in extra:
+        x.s.close()
     w.s.close()
     time.sleep(1)
     k = len(t.replies("rule"))

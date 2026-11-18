@@ -60,7 +60,10 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   WebSocket for the running session's inspector alone, so a page can put the inspector in a window of its own (its own renderer
   process) and a burst of exchanges no longer queues in front of the stream's acks. It gets the exchanges the instance remembers on
   connect, then `n e {json}` live, and may send `inspect rule ...` and `inspect detail ID`, answered to it as `n r ...`; anything else
-  is `r refused`, no frame is ever sent to it and it counts as no viewer (4 at most a session). Closing it leaves the session; the
+  is `r refused`, no frame is ever sent to it and it counts as no viewer (4 at most a session). Its messages go out on a thread
+  of its own, so a stalled inspector window never holds up the tab's replies or pings; one 2,000 messages behind is dropped. The tab's own
+  socket still gets the `n` messages too (a page that moves the inspector out simply ignores them there). On serve the token is the only
+  boundary, as for `/api/sessions/ID/log`: whoever has it may open the inspector of any running session. Closing it leaves the session; the
   session ending sends it `e {...}` and `x TEXT` as the tab gets them, and closes it. On `apksim beam` the same route is
   `/ws?inspect=SESSION&key=KEY` on the agent (the key is the `f` message of the session's own socket, and the page's origin must be
   the session's), as for its files and log. Checked by `scripts/inspector-check.py` on serve; the agent's route is not run yet.

@@ -826,7 +826,7 @@ final class Session {
   private volatile int controlPort;
 
   /** Inspector-only sockets (`/ws?inspect=ID`): no frames, so none of them is a viewer or the tab. */
-  private final java.util.Set<WebSocket> inspectors = java.util.concurrent.ConcurrentHashMap.newKeySet();
+  private final java.util.Set<Outbox> inspectors = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
   /** At most this many inspector-only sockets a session (a page opens one; a second window or a reload may briefly add one). */
   static final int MAX_INSPECTORS = 4;
@@ -839,62 +839,69 @@ final class Session {
    * from it and no frame is ever sent to it. Closing it never ends the session; the session ending sends it `e` and `x`
    * as the tab, and closes it. An embedding page puts the inspector in a window of its own and so keeps its list's work
    * off the thread that acks the stream's frames.
+   * Everything written to it goes through its own outbox thread: a stalled inspector window never holds up the reply
+   * reader or the ping thread the tab shares, and one more than {@link #OUTBOX_MAX} messages behind is dropped.
    */
   void inspectorSocket(WebSocket sock) {
-    if (ending()) {
-      sock.sendText("x the session has ended");
-      sock.close("ended");
+    Outbox box = new Outbox(sock);
+    String refusal = null;
+    synchronized (this) {  // with stop()'s `ended`: a socket is either told by endInspectors or refused here
+      if (ended) refusal = "x the session has ended";
+      else if (!inspecting()) refusal = "r refused: inspect (this session runs without the network inspector)";
+      else if (inspectors.size() >= MAX_INSPECTORS) refusal = "x too many inspector sockets on this session (" + MAX_INSPECTORS + ")";
+      else inspectors.add(box);
+    }
+    if (refusal != null) {
+      sock.sendText(refusal);
+      sock.close("refused");
       return;
     }
-    if (!inspecting()) {
-      sock.sendText("r refused: inspect (this session runs without the network inspector)");
-      sock.close("no inspector");
-      return;
-    }
-    if (inspectors.size() >= MAX_INSPECTORS) {
-      sock.sendText("x too many inspector sockets on this session (" + MAX_INSPECTORS + ")");
-      sock.close("too many");
-      return;
-    }
-    inspectors.add(sock);
-    Socket nw = null;
-    try {
-      // The instance may still be starting (the APK downloading, the app launching): the socket waits, up to the launch's limit.
-      long until = System.currentTimeMillis() + serve.launchTimeoutSeconds * 1000L;
-      while (controlPort == 0 && !ending() && !sock.closed() && System.currentTimeMillis() < until) Thread.sleep(50);
-      if (ending()) return;  // endInspectors told it
-      if (controlPort == 0) {
-        sock.sendText("x the session did not start in time");
-        return;
-      }
-      Socket s = nw = connect(controlPort);
-      s.getOutputStream().write("netwatch\n".getBytes(StandardCharsets.US_ASCII));
-      Thread.ofVirtual().name("serve-inspector-" + id).start(() -> {
+    java.util.concurrent.atomic.AtomicReference<Socket> nw = new java.util.concurrent.atomic.AtomicReference<>();
+    // The instance may still be starting (the APK downloading, the app launching): waited for on a thread of its own, so
+    // this one reads the socket meanwhile and sees a client that leaves.
+    Thread.ofVirtual().name("serve-inspector-" + id).start(() -> {
+      try {
+        long until = System.currentTimeMillis() + serve.launchTimeoutSeconds * 1000L;
+        while (controlPort == 0 && !ending() && !sock.closed() && System.currentTimeMillis() < until) Thread.sleep(50);
+        if (ending() || sock.closed()) return;  // endInspectors tells an ending session's sockets
+        if (controlPort == 0) {
+          box.send("x the session did not start in time");
+          box.closeAfter("not started");
+          return;
+        }
+        Socket s = connect(controlPort);
+        nw.set(s);
+        if (sock.closed()) {  // it left while this connected: the finally may have run before nw was set
+          closeQuietly(s);
+          return;
+        }
+        s.getOutputStream().write("netwatch\n".getBytes(StandardCharsets.US_ASCII));
         try (BufferedReader r = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8))) {
           String first = r.readLine();
           if (first == null || !first.equals("ok netwatch")) {
-            sock.sendText("n x " + Http.q(String.valueOf(first)));
+            box.send("n x " + Http.q(String.valueOf(first)));
             return;
           }
           for (String line; (line = r.readLine()) != null && !sock.closed(); ) {
-            if (line.length() < 40_000 && line.startsWith("{")) sock.sendText("n e " + line);
+            if (line.length() < 40_000 && line.startsWith("{")) box.send("n e " + line);
           }
-        } catch (IOException e) {
-          // the instance went away, or this socket closed
         }
-      });
-      sock.onPong = null;
+        // The instance dropped this watcher (it fell behind) or went away: said, rather than a socket that goes quiet.
+        if (!ending() && !sock.closed()) box.send("n x \"the inspector's event stream ended\"");
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      } catch (IOException e) {
+        if (!ending() && !sock.closed()) box.send("x could not reach the session's inspector: " + e.getMessage());
+      }
+    });
+    try {
       sock.readLoop(t -> {
-        if (t.startsWith("inspect ")) inspectCommand(t, sock);
-        else if (!t.equals("t") && !t.startsWith("t ")) sock.sendText("r refused: " + (t.length() > 40 ? t.substring(0, 40) + "..." : t));
+        if (t.startsWith("inspect ")) inspectCommand(t, box::send);
+        else if (!t.equals("t") && !t.startsWith("t ")) box.send("r refused: " + (t.length() > 40 ? t.substring(0, 40) + "..." : t));
       });
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-    } catch (IOException e) {
-      sock.sendText("x could not reach the session's inspector: " + e.getMessage());
     } finally {
       // An ending session's endInspectors says why and closes it: leave that its time before this closes it first.
-      for (int i = 0; ending() && !sock.closed() && i < 60; i++) {
+      for (int i = 0; ending() && !box.done() && i < 60; i++) {
         try {
           Thread.sleep(50);
         } catch (InterruptedException e) {
@@ -902,21 +909,83 @@ final class Session {
           break;
         }
       }
-      inspectors.remove(sock);
-      closeQuietly(nw);
-      sock.close("closed");
+      inspectors.remove(box);
+      closeQuietly(nw.get());
+      box.closeAfter("closed");
+    }
+  }
+
+  /** The most messages an inspector socket's outbox holds; past that the client is not reading and is dropped. */
+  static final int OUTBOX_MAX = 2000;
+
+  /** One inspector socket's writes, in order, on a thread of its own. */
+  private static final class Outbox {
+    final WebSocket sock;
+    private final java.util.concurrent.LinkedBlockingQueue<Runnable> queue = new java.util.concurrent.LinkedBlockingQueue<>(OUTBOX_MAX);
+    private volatile boolean done;
+
+    Outbox(WebSocket sock) {
+      this.sock = sock;
+      Thread.ofVirtual().name("serve-inspector-out").start(() -> {
+        try {
+          while (!done) {
+            Runnable r = queue.poll(500, TimeUnit.MILLISECONDS);
+            if (r != null) r.run();
+            else if (sock.closed()) done = true;
+          }
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      });
+    }
+
+    boolean done() {
+      return done || sock.closed();
+    }
+
+    private void put(Runnable r) {
+      if (done) return;
+      if (!queue.offer(r)) {  // not reading: dropped, as a viewer that falls behind is
+        done = true;
+        sock.abort();
+      }
+    }
+
+    void send(String text) {
+      put(() -> sock.sendText(text));
+    }
+
+    void ping() {
+      put(sock::ping);
+    }
+
+    /** Closes it once what is queued is written, and drops the connection if that has not happened in two seconds. */
+    void closeAfter(String why) {
+      put(() -> {
+        sock.close(why.length() > 60 ? why.substring(0, 60) : why);
+        done = true;
+      });
+      Thread.ofVirtual().start(() -> {
+        try {
+          Thread.sleep(2000);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+        if (!done) {
+          done = true;
+          sock.abort();
+        }
+      });
     }
   }
 
   /** The session is ending: every inspector-only socket hears why, as the tab does, and is closed. Never waits on a socket. */
   private void endInspectors(String reason, String why) {
     String text = why == null ? "the session has ended" : why;
-    for (WebSocket w : inspectors) {
-      Thread.ofVirtual().name("serve-inspector-end-" + id).start(() -> {
-        w.sendText("e " + Crash.endJson(reason == null ? "other" : reason, text, null));
-        w.sendText("x " + text);
-        w.close(text.length() > 60 ? text.substring(0, 60) : text);
-      });
+    for (Outbox w : inspectors) {
+      w.send("e " + Crash.endJson(reason == null ? "other" : reason, text, null));
+      w.send("x " + text);
+      w.closeAfter(text);
     }
   }
 
@@ -938,9 +1007,9 @@ final class Session {
    * `"patch": "JSON text"` field) merges the real server's JSON answer with that patch; it reaches only the app's own server,
    * so it needs no allow-list.
    */
-  private void inspectCommand(String t, WebSocket to) {
+  private void inspectCommand(String t, Consumer<String> to) {
     if (!inspecting()) {
-      to.sendText("r refused: inspect (" + (serve.beam ? "this session runs without the network inspector (/beam/start \"inspect\": true asks for it, false declines it; this Mac's owner allows it with apksim beam config inspect-network optional)"
+      to.accept("r refused: inspect (" + (serve.beam ? "this session runs without the network inspector (/beam/start \"inspect\": true asks for it, false declines it; this Mac's owner allows it with apksim beam config inspect-network optional)"
           : "this session runs without the network inspector (/ws?inspect=1 asks for it, inspect=0 declines it; the server allows it with --inspect-network optional)") + ")");
       return;
     }
@@ -959,7 +1028,7 @@ final class Session {
         cmd = ruleSet(t.strip().substring("inspect rule set ".length()));
       } catch (IOException | RuntimeException e) {
         // What is wrong with the set, as the instance would say it of one rule: the tab shows it, and no rule changed.
-        to.sendText("n r rule error: " + e.getMessage());
+        to.accept("n r rule error: " + e.getMessage());
         return;
       }
       verb = "rule";
@@ -973,19 +1042,19 @@ final class Session {
         target = "";
       }
       if (!forwardAllow().allows(target)) {
-        to.sendText("n r rule error: " + forwardRefusal());
+        to.accept("n r rule error: " + forwardRefusal());
         return;
       }
       cmd = "network " + t.strip().substring(8);
       verb = "rule";
     }
     if (cmd == null) {
-      to.sendText("r refused: " + (t.length() > 40 ? t.substring(0, 40) + "..." : t));
+      to.accept("r refused: " + (t.length() > 40 ? t.substring(0, 40) + "..." : t));
       return;
     }
     lastInput = System.currentTimeMillis();
     String kind = verb.equals("detail") ? "detail" : "rule";
-    send(cmd, r -> to.sendText("n r " + kind + " " + r));
+    send(cmd, r -> to.accept("n r " + kind + " " + r));
   }
 
   /** The targets a forward rule may name now: the server's list, or on the agent the owner's, read from the config at each use. */
@@ -1691,7 +1760,7 @@ final class Session {
       return;
     }
     if (text.startsWith("inspect ")) {
-      inspectCommand(text, ws);
+      inspectCommand(text, ws::sendText);
       return;
     }
     if (text.startsWith("shell ")) {
@@ -2284,7 +2353,7 @@ final class Session {
       Thread.ofVirtual().name("serve-ping-" + id).start(() -> {
         try {
           ws.ping();
-          for (WebSocket w : inspectors) w.ping();
+          for (Outbox w : inspectors) w.ping();
         } finally {
           pinging.set(false);
         }
