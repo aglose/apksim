@@ -39,6 +39,63 @@ class NativeLoaderTest {
   // The library imports zlib from libz.so: on Linux the JVM keeps its zlib private, so the loader must find the host's (issue 148).
   @Test fun zlibRoundTripsThroughTheHostsLibz() = assertEquals("ok", LoaderFixture.check("zlib"))
 
+  // timerfd: counts added up for a late reader, EAGAIN, disarm, EINVAL, 200 create/close cycles (issue 477).
+  @Test fun timerfdCountsLikeLinux() = assertEquals("ok", LoaderFixture.check("timerfd"))
+
+  // The NDK's ALooper on a native thread, run with pollOnce: a periodic timerfd, idents, a wake (issue 477).
+  @Test fun aNativeThreadsLooperRunsATimerfdAndPipes() = assertEquals("ok", LoaderFixture.check("looperThread"))
+
+  // A pipe added to the main thread's ALooper (forThread, no prepare: its Java Looper's) has its callback run on the
+  // main thread while that Looper loops, once per write. The test body waits off the main looper's queue on a device
+  // (the instrumentation thread) and here runs the main queue while it sleeps.
+  @Test fun theMainThreadsLooperRunsFdCallbacksThere() {
+    val instrumentation = InstrumentationRegistry.getInstrumentation()
+    var added = ""
+    instrumentation.runOnMainSync { added = LoaderFixture.check("looperJavaAdd") }
+    assertEquals("ok", added)
+    try {
+      assertEquals("ok", LoaderFixture.check("looperJavaWrite"))
+      awaitHits("1")
+      assertEquals("ok", LoaderFixture.check("looperJavaWrite"))
+      awaitHits("2")
+    } finally {
+      var removed = ""
+      instrumentation.runOnMainSync { removed = LoaderFixture.check("looperJavaRemove") }
+      assertEquals("ok", removed)
+    }
+  }
+
+  // The same on a HandlerThread's looper.
+  @Test fun aHandlerThreadsLooperRunsFdCallbacksThere() {
+    val thread = android.os.HandlerThread("looper-fixture").apply { start() }
+    val handler = android.os.Handler(thread.looper)
+    fun onThread(name: String): String {
+      val latch = java.util.concurrent.CountDownLatch(1)
+      var r = ""
+      handler.post { r = LoaderFixture.check(name); latch.countDown() }
+      assertTrue("$name never ran on the HandlerThread", latch.await(5, java.util.concurrent.TimeUnit.SECONDS))
+      return r
+    }
+    try {
+      assertEquals("ok", onThread("looperJavaAdd"))
+      assertEquals("ok", LoaderFixture.check("looperJavaWrite"))
+      awaitHits("1")
+      assertEquals("ok", onThread("looperJavaRemove"))
+    } finally {
+      thread.quitSafely()
+    }
+  }
+
+  private fun awaitHits(want: String) {
+    val end = System.nanoTime() + 5_000_000_000L
+    var hits = LoaderFixture.check("looperJavaHits")
+    while (hits != want && System.nanoTime() < end) {
+      Thread.sleep(10)
+      hits = LoaderFixture.check("looperJavaHits")
+    }
+    assertEquals(want, hits)
+  }
+
   // A library linked for 4 KB pages (an NDK before r27) whose code shares a page with RELRO: on macOS (16 KB pages,
   // never writable and executable at once) the page is read+execute once relocated, with or without
   // --move-shared-data. Relocated pointers in RELRO,

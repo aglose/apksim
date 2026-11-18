@@ -74,3 +74,6 @@ void *missing_stub(const char *name);
 // jnigraphics.c: libjnigraphics (AndroidBitmap_*), through dev.apksim.NativeBitmaps. Init takes a JNIEnv *.
 void jnigraphics_init(void *env);
 void *jnigraphics_lookup(const char *name);
+// alooper.c: the NDK's ALooper_*, backed by a thread's Java Looper when it has one (dev.apksim.NativeLoopers).
+void alooper_init(void *env);
+void *alooper_lookup(const char *name);

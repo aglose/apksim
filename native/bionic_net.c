@@ -27,6 +27,7 @@
 #include <unistd.h>
 
 int bionic_errno_to_android(int host);
+void timerfd_closing(int fd);  // bionic.c: a timer fd being closed releases its thread
 
 // ---------------------------------------------------------------- numbers
 
@@ -277,6 +278,7 @@ static int net_close(int fd) {
     nl[s].fd = 0;
   }
   pthread_mutex_unlock(&nl_lock);
+  timerfd_closing(fd);
   return close(fd);
 }
 
