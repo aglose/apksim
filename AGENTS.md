@@ -296,7 +296,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     instruction only with debug info), DEX references sit in arrays by index shared across threads' views. That
     halved translation time and allocation; a translator change must leave `translate-all.java`'s output identical
     unless it means to change the bytecode.
-  - `HwRenderer`: Android's real HWUI pipeline (CPU Skia). `syncAndDraw` runs on its own thread; the main thread
+  - `HwRenderer`: Android's real HWUI pipeline (CPU Skia). Dimming is one layer, drawn just under the top-most drawn window with `FLAG_DIM_BEHIND` at its `dimAmount`, as the window manager's Dimmer keeps it (issue 507). `syncAndDraw` runs on its own thread; the main thread
     waits only for HWUI's sync (the `FrameDrawingCallback`), so recording overlaps raster.
   - `gpu/`: AGSL → Metal. `AgslTranslator` puts uniforms and functions in one MSL struct. `TrackedRuntimeShader`
     renders on the GPU one frame ahead (`submit`/`collect`) and is drawn as a BitmapShader; a shader not drawn for a
