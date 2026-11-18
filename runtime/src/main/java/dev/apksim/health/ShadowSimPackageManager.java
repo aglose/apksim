@@ -53,8 +53,7 @@ public class ShadowSimPackageManager extends ShadowApplicationPackageManager {
     android.app.Application app = RuntimeEnvironment.getApplication();
     if (app == null || packageName == null || !packageName.equals(app.getPackageName())) return;
     PackageInfo info = getInternalMutablePackageInfo(packageName);
-    if (info == null) return;
-    if (info.requestedPermissions == null) return;
+    if (info == null || info.requestedPermissions == null) return;
     if (info.requestedPermissionsFlags == null || info.requestedPermissionsFlags.length != info.requestedPermissions.length) {
       int[] f = new int[info.requestedPermissions.length];
       if (info.requestedPermissionsFlags != null) {
