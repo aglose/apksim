@@ -31,7 +31,7 @@ class ViewAnimationsActivity : FragmentActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    val host = FrameLayout(this).apply { id = View.generateViewId() }
+    val host = FrameLayout(this).apply { id = android.R.id.custom }
     val status = TextView(this).apply { text = "fragment: 1"; textSize = 20f }
     fade = TextView(this).apply { text = "fade: idle"; textSize = 20f }
     val replace = Button(this).apply {
