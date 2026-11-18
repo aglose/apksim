@@ -339,6 +339,12 @@ static int *s_errno(void) {
   t_errno = t_last = d2a_errno(errno);
   return &t_errno;
 }
+// For shims that fail with an errno: also the Android-side copy, which code compiled against bionic reads through
+// a pointer it got from __errno earlier (the function is const, so the compiler keeps the pointer).
+static void set_errno(int e) {
+  errno = e;
+  t_errno = t_last = d2a_errno(e);
+}
 
 // ---------------------------------------------------------------- pthread
 
@@ -984,15 +990,17 @@ static pthread_once_t abort_once = PTHREAD_ONCE_INIT;
 static void install_abort_handler(void) { signal(SIGABRT, abort_handler); }
 
 // ---------------------------------------------------------------- timerfd (Linux's; macOS has none)
-// A pipe the reader sees 8-byte expiration counts on, fed by a thread per timer. Keyed by the read end.
+// A datagram socket pair the reader sees one 8-byte expiration count on, fed by a thread per timer. At each expiry
+// the thread takes back a count not yet read (MSG_DONTWAIT, so it never blocks whatever the app's flags) and sends the
+// sum, so a late reader gets every expiration in one read, as from Linux's counter. Keyed by the read end; freed when
+// ELF code closes it (timerfd_closing).
 typedef struct {
   int rd, wr, clock;
   pthread_mutex_t mu;
   pthread_cond_t cv;
-  struct timespec deadline;  // monotonic/realtime of the clock's own kind; tv_sec 0 = disarmed
+  struct timespec deadline;  // on the timer's clock (realtime, or monotonic for the others)
   struct timespec interval;
   int armed, gen, dead;
-  uint64_t pending;
 } TimerFd;
 #define TFDS 64
 static TimerFd *tfds[TFDS];
@@ -1039,31 +1047,28 @@ static void *tfd_thread(void *arg) {
       struct timespec d = {add / 1000000000LL, add % 1000000000LL};
       t->deadline = ts_add(t->deadline, d);
     } else t->armed = 0;
-    t->pending += n;
-    int queued = 0;
-    if (ioctl(t->wr, FIONREAD, &queued) == 0 && queued == 0) {
-      uint64_t out = t->pending;
-      if (write(t->wr, &out, sizeof out) == sizeof out) t->pending = 0;
-    }
+    uint64_t unread = 0;
+    if (recv(t->rd, &unread, sizeof unread, MSG_DONTWAIT) == sizeof unread) n += unread;
+    ssize_t w = send(t->wr, &n, sizeof n, MSG_DONTWAIT);
+    (void)w;
   }
   return NULL;
 }
 static int s_timerfd_create(int clock, int flags) {
   int fds[2];
-  if (pipe(fds)) return -1;
+  if (socketpair(AF_UNIX, SOCK_DGRAM, 0, fds)) { set_errno(errno); return -1; }
   if (flags & 0x800) { fcntl(fds[0], F_SETFL, O_NONBLOCK); }
-  fcntl(fds[1], F_SETFL, O_NONBLOCK);
   fcntl(fds[0], F_SETFD, FD_CLOEXEC);
   fcntl(fds[1], F_SETFD, FD_CLOEXEC);
   TimerFd *t = calloc(1, sizeof *t);
-  if (!t) { close(fds[0]); close(fds[1]); errno = ENOMEM; return -1; }
+  if (!t) { close(fds[0]); close(fds[1]); set_errno(ENOMEM); return -1; }
   t->rd = fds[0]; t->wr = fds[1]; t->clock = clock;
   pthread_mutex_init(&t->mu, NULL);
   pthread_cond_init(&t->cv, NULL);
   pthread_mutex_lock(&tfd_mu);
   int slot = -1;
   for (int i = 0; i < TFDS; i++) if (!tfds[i]) { slot = i; break; }
-  if (slot < 0) { pthread_mutex_unlock(&tfd_mu); close(fds[0]); close(fds[1]); free(t); errno = EMFILE; return -1; }
+  if (slot < 0) { pthread_mutex_unlock(&tfd_mu); close(fds[0]); close(fds[1]); free(t); set_errno(EMFILE); return -1; }
   tfds[slot] = t;
   pthread_mutex_unlock(&tfd_mu);
   pthread_t th;
@@ -1075,13 +1080,13 @@ static int s_timerfd_create(int clock, int flags) {
     tfds[slot] = NULL;
     pthread_mutex_unlock(&tfd_mu);
     close(fds[0]); close(fds[1]); free(t);
-    errno = EAGAIN;
+    set_errno(EAGAIN);
     return -1;
   }
   return t->rd;
 }
-// new_value is Linux's struct itimerspec: it_interval then it_value, two 16-byte timespecs.
-static int s_close(int fd) {
+// From the close shim (bionic_net.c's net_close, which every close of ELF code goes through).
+void timerfd_closing(int fd) {
   TimerFd *t = NULL;
   pthread_mutex_lock(&tfd_mu);
   for (int i = 0; i < TFDS; i++) if (tfds[i] && tfds[i]->rd == fd) { t = tfds[i]; tfds[i] = NULL; }
@@ -1092,21 +1097,22 @@ static int s_close(int fd) {
     pthread_cond_broadcast(&t->cv);
     pthread_mutex_unlock(&t->mu);
   }
-  return close(fd);
 }
+// new_value is Linux's struct itimerspec: it_interval then it_value, two 16-byte timespecs.
 static int s_timerfd_settime(int fd, int flags, const struct timespec *nv, struct timespec *old) {
   TimerFd *t = NULL;
   pthread_mutex_lock(&tfd_mu);
   for (int i = 0; i < TFDS; i++) if (tfds[i] && tfds[i]->rd == fd) t = tfds[i];
   pthread_mutex_unlock(&tfd_mu);
-  if (!t || !nv || (flags & ~1)) { errno = EINVAL; return -1; }
+  if (!t || !nv || (flags & ~1)) { set_errno(EINVAL); return -1; }
   for (int i = 0; i < 2; i++)
-    if (nv[i].tv_sec < 0 || nv[i].tv_nsec < 0 || nv[i].tv_nsec >= 1000000000L) { errno = EINVAL; return -1; }
+    if (nv[i].tv_sec < 0 || nv[i].tv_nsec < 0 || nv[i].tv_nsec >= 1000000000L) { set_errno(EINVAL); return -1; }
   if (old) memset(old, 0, 2 * sizeof *old);
   pthread_mutex_lock(&t->mu);
   t->interval = nv[0];
-  t->pending = 0;
-  { uint64_t junk[16]; int q = 0; while (ioctl(t->rd, FIONREAD, &q) == 0 && q > 0) { if (read(t->rd, junk, sizeof junk) <= 0) break; q = 0; } }
+  uint64_t unread;  // Linux zeroes the count
+  while (recv(t->rd, &unread, sizeof unread, MSG_DONTWAIT) > 0) {
+  }
   if (nv[1].tv_sec == 0 && nv[1].tv_nsec == 0) t->armed = 0;
   else {
     struct timespec v = nv[1];
@@ -1273,7 +1279,7 @@ typedef struct { const char *name; void *fn; } Entry;
 static const Entry table[] = {
     E("sincos", s_sincos), E("sincosf", s_sincosf), E("tgkill", s_tgkill), E("eglGetCurrentContext", s_egl_current), E("_ctype_", a_ctype),
     E("__cmsg_nxthdr", s_cmsg_nxthdr), E("epoll_create", s_enosys), E("epoll_create1", s_enosys), E("epoll_ctl", s_enosys), E("epoll_wait", s_enosys),
-    E("eventfd", s_enosys), E("close", s_close), E("timerfd_create", s_timerfd_create), E("timerfd_settime", s_timerfd_settime), E("memfd_create", s_enosys),
+    E("eventfd", s_enosys), E("timerfd_create", s_timerfd_create), E("timerfd_settime", s_timerfd_settime), E("memfd_create", s_enosys),
     E("__errno", s_errno), E("__stack_chk_fail", s_stack_chk_fail), E("__sF", sF),
     E("stdin", &a_stdin), E("stdout", &a_stdout), E("stderr", &a_stderr),
     E("snprintf", snprintf_thunk), E("sprintf", sprintf_thunk), E("fprintf", fprintf_thunk), E("printf", printf_thunk),
@@ -1339,6 +1345,8 @@ void *bionic_lookup(const char *name) {
   if (net) return net;
   void *graphics = jnigraphics_lookup(name);
   if (graphics) return graphics;
+  void *looper = alooper_lookup(name);
+  if (looper) return looper;
   for (size_t i = 0; i < sizeof table / sizeof table[0]; i++) {
     if (!strcmp(table[i].name, name)) return table[i].fn;
   }

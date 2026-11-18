@@ -7,7 +7,9 @@
 // returns "ok" or what went wrong. A device's bionic passes them all, so they test the device's behaviour, not
 // apksim's. The test app's NativeLoaderTest calls them through LoaderFixture. Built by build.sh into the test app's
 // jniLibs.
+#include <android/looper.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <jni.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -16,7 +18,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/timerfd.h>
 #include <time.h>
+#include <unistd.h>
 #include <zlib.h>
 
 static char err[256];
@@ -745,6 +749,162 @@ static const char *check_zlib(void) {
   return "ok";
 }
 
+
+// ---------------------------------------------------------------- ALooper and timerfd (issue 477)
+// A native thread's own looper: a periodic timerfd and a pipe watched with ALooper_addFd, run with ALooper_pollOnce,
+// as native SDKs run their event loops; ALooper_wake from another thread; a callback returning 0 unregisters itself.
+static int ticks;
+static int on_timer(int fd, int events, void *data) {
+  uint64_t n = 0;
+  if (read(fd, &n, sizeof n) != sizeof n) return 1;
+  ticks += (int)n;
+  return ticks < 3;
+}
+static int pipe_hits;
+static int on_pipe(int fd, int events, void *data) {
+  char c;
+  while (read(fd, &c, 1) == 1) pipe_hits++;
+  return 1;
+}
+static void *wake_later(void *l) {
+  struct timespec d = {0, 50 * 1000000};
+  nanosleep(&d, NULL);
+  ALooper_wake(l);
+  return NULL;
+}
+static void *looper_thread(void *arg) {
+  char *e = arg;
+  ALooper *l = ALooper_prepare(ALOOPER_PREPARE_ALLOW_NON_CALLBACKS);
+  if (!l || ALooper_forThread() != l) { strcpy(e, "ALooper_prepare gave no looper, or not the thread's"); return NULL; }
+  if (ALooper_pollOnce(0, NULL, NULL, NULL) != ALOOPER_POLL_TIMEOUT) { strcpy(e, "an empty pollOnce(0) did not time out"); return NULL; }
+  int t = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+  if (t < 0) { snprintf(e, 256, "timerfd_create: errno %d", errno); return NULL; }
+  struct itimerspec spec = {{0, 20 * 1000000}, {0, 20 * 1000000}};
+  if (timerfd_settime(t, 0, &spec, NULL)) { snprintf(e, 256, "timerfd_settime: errno %d", errno); return NULL; }
+  if (ALooper_addFd(l, t, ALOOPER_POLL_CALLBACK, ALOOPER_EVENT_INPUT, on_timer, NULL) != 1) { strcpy(e, "addFd(timer) failed"); return NULL; }
+  struct timespec start, now;
+  clock_gettime(CLOCK_MONOTONIC, &start);
+  while (ticks < 3) {
+    int r = ALooper_pollOnce(1000, NULL, NULL, NULL);
+    if (r != ALOOPER_POLL_CALLBACK) { snprintf(e, 256, "pollOnce gave %d while the timer ran (%d ticks)", r, ticks); return NULL; }
+  }
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  long ms = (now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1000000;
+  if (ms < 40 || ms > 2000) { snprintf(e, 256, "3 ticks of a 20 ms timer took %ld ms", ms); return NULL; }
+  if (ALooper_removeFd(l, t) != 0) { strcpy(e, "a callback returning 0 left its fd registered"); return NULL; }
+  close(t);
+  // An fd without a callback: pollOnce returns its ident, fd, events and data.
+  int p[2];
+  if (pipe(p)) { strcpy(e, "pipe"); return NULL; }
+  fcntl(p[0], F_SETFL, O_NONBLOCK);  // on_pipe reads until the pipe is empty
+  ALooper_addFd(l, p[0], 7, ALOOPER_EVENT_INPUT, NULL, (void *)0x42);
+  if (write(p[1], "x", 1) != 1) { strcpy(e, "write"); return NULL; }
+  int fd = -1, events = 0;
+  void *data = NULL;
+  int r = ALooper_pollOnce(1000, &fd, &events, &data);
+  if (r != 7 || fd != p[0] || !(events & ALOOPER_EVENT_INPUT) || data != (void *)0x42) {
+    snprintf(e, 256, "ident fd: pollOnce gave %d fd %d events %d", r, fd, events);
+    return NULL;
+  }
+  ALooper_removeFd(l, p[0]);
+  // A callback, then a wake from another thread.
+  ALooper_addFd(l, p[0], 0, ALOOPER_EVENT_INPUT, on_pipe, NULL);
+  if ((r = ALooper_pollOnce(1000, NULL, NULL, NULL)) != ALOOPER_POLL_CALLBACK || pipe_hits != 1) {
+    snprintf(e, 256, "pipe callback: pollOnce gave %d, %d hits", r, pipe_hits);
+    return NULL;
+  }
+  pthread_t w;
+  pthread_create(&w, NULL, wake_later, l);
+  r = ALooper_pollOnce(2000, NULL, NULL, NULL);
+  pthread_join(w, NULL);
+  if (r != ALOOPER_POLL_WAKE) { snprintf(e, 256, "a wake from another thread: pollOnce gave %d", r); return NULL; }
+  ALooper_removeFd(l, p[0]);
+  close(p[0]);
+  close(p[1]);
+  strcpy(e, "ok");
+  return NULL;
+}
+static const char *check_looper_thread(void) {
+  pthread_t t;
+  ticks = pipe_hits = 0;
+  strcpy(err, "the looper thread did not finish");
+  if (pthread_create(&t, NULL, looper_thread, err)) FAIL("pthread_create");
+  pthread_join(t, NULL);
+  return err;
+}
+
+// A Java thread's looper (the main thread, a HandlerThread): ALooper_forThread finds it without prepare, and a pipe
+// added there has its callback run on that thread while its Java Looper loops.
+static int java_pipe[2] = {-1, -1};
+static atomic_int java_hits;
+static pthread_t java_owner;
+static atomic_int java_wrong_thread;
+static int on_java_pipe(int fd, int events, void *data) {
+  char c;
+  while (read(fd, &c, 1) == 1) java_hits++;
+  if (!pthread_equal(pthread_self(), java_owner)) java_wrong_thread = 1;
+  return 1;
+}
+static const char *looper_java_add(void) {
+  ALooper *l = ALooper_forThread();
+  if (!l) FAIL("no ALooper for a thread with a Java Looper");
+  if (pipe(java_pipe)) FAIL("pipe");
+  fcntl(java_pipe[0], F_SETFL, O_NONBLOCK);
+  java_hits = 0;
+  java_wrong_thread = 0;
+  java_owner = pthread_self();
+  if (ALooper_addFd(l, java_pipe[0], ALOOPER_POLL_CALLBACK, ALOOPER_EVENT_INPUT, on_java_pipe, NULL) != 1) FAIL("addFd failed");
+  return "ok";
+}
+static const char *looper_java_write(void) {
+  if (write(java_pipe[1], "x", 1) != 1) FAIL("write");
+  return "ok";
+}
+static const char *looper_java_remove(void) {
+  ALooper *l = ALooper_forThread();
+  if (!l) FAIL("no ALooper");
+  if (ALooper_removeFd(l, java_pipe[0]) != 1) FAIL("removeFd found nothing");
+  close(java_pipe[0]);
+  close(java_pipe[1]);
+  return "ok";
+}
+static char hits_text[64];
+static const char *looper_java_hits(void) {
+  snprintf(hits_text, sizeof hits_text, "%d%s", (int)java_hits, java_wrong_thread ? " (on another thread)" : "");
+  return hits_text;
+}
+
+
+// timerfd as Linux has it (emulated on macOS): a late read gets every expiration in one count, a non-blocking read
+// with none is EAGAIN, disarming clears the count, bad times are EINVAL, and closing a timer frees it (many cycles).
+static const char *check_timerfd(void) {
+  int t = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+  if (t < 0) FAIL("timerfd_create: errno %d", errno);
+  struct itimerspec spec = {{0, 10 * 1000000}, {0, 10 * 1000000}};
+  if (timerfd_settime(t, 0, &spec, NULL)) FAIL("timerfd_settime: errno %d", errno);
+  struct timespec d = {0, 105 * 1000000};
+  nanosleep(&d, NULL);
+  uint64_t n = 0;
+  ssize_t r = read(t, &n, sizeof n);
+  if (r != sizeof n || n < 5 || n > 12) FAIL("a read 105 ms into a 10 ms timer gave %zd bytes, count %llu", r, (unsigned long long)n);
+  r = read(t, &n, sizeof n);
+  if (r != -1 || errno != EAGAIN) FAIL("a second read at once gave %zd (errno %d), not EAGAIN", r, errno);
+  nanosleep(&d, NULL);
+  struct itimerspec off = {{0, 0}, {0, 0}};
+  if (timerfd_settime(t, 0, &off, NULL)) FAIL("disarming: errno %d", errno);
+  if (read(t, &n, sizeof n) != -1) FAIL("disarming left a count of %llu to read", (unsigned long long)n);
+  struct itimerspec bad = {{0, 0}, {0, 2000000000L}};
+  int bad_r = timerfd_settime(t, 0, &bad, NULL);
+  if (bad_r != -1 || errno != EINVAL) FAIL("tv_nsec 2e9 gave %d (errno %d), not EINVAL", bad_r, errno);
+  close(t);
+  for (int i = 0; i < 200; i++) {
+    int f = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
+    if (f < 0) FAIL("timerfd_create failed after %d create/close cycles: errno %d", i, errno);
+    close(f);
+  }
+  return "ok";
+}
+
 // ---------------------------------------------------------------- JNI
 JNIEXPORT jstring JNICALL Java_dev_apksim_composeapp_LoaderFixture_check(JNIEnv *env, jobject self, jstring jname) {
   (void)self;
@@ -757,6 +917,12 @@ JNIEXPORT jstring JNICALL Java_dev_apksim_composeapp_LoaderFixture_check(JNIEnv 
                   : !strcmp(name, "barrier")  ? check_barrier()
                   : !strcmp(name, "setjmp")   ? check_setjmp()
                   : !strcmp(name, "zlib")     ? check_zlib()
+                  : !strcmp(name, "timerfd")  ? check_timerfd()
+                  : !strcmp(name, "looperThread") ? check_looper_thread()
+                  : !strcmp(name, "looperJavaAdd") ? looper_java_add()
+                  : !strcmp(name, "looperJavaWrite") ? looper_java_write()
+                  : !strcmp(name, "looperJavaHits") ? looper_java_hits()
+                  : !strcmp(name, "looperJavaRemove") ? looper_java_remove()
                                               : "no such check";
   (*env)->ReleaseStringUTFChars(env, jname, name);
   return (*env)->NewStringUTF(env, r);

@@ -9,6 +9,6 @@ object LoaderFixture {
     System.loadLibrary("loaderfixture")
   }
 
-  /** One of stackGuard, tls, mutex, cond, threadAttr, barrier, setjmp. */
+  /** One of stackGuard, tls, mutex, cond, threadAttr, barrier, setjmp, zlib, looperThread, looperJava*. */
   external fun check(name: String): String
 }
