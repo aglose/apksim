@@ -1013,7 +1013,9 @@ public final class Serve {
       case "POST /api/upload" -> upload(r, out);
       case "POST /api/apps" -> addApp(r, out);
       case "GET /ws" -> {
+        String ins = r.param("inspect");
         if (joining) joinSocket(r, s, in, out);
+        else if (!beam && ins != null && ins.matches("[0-9a-f]{12}")) inspectorSocket(r, s, in, out, sessions.get(ins));
         else websocket(r, s, in, out);
       }
       default -> Http.text(out, 404, "not found");
@@ -1613,6 +1615,30 @@ public final class Serve {
     connections.release();
     permitFreed.set(true);
     x.viewers.run(new WebSocket(s, in, out), r.param("key"));
+  }
+
+  /**
+   * `/ws?inspect=SESSION` (issue 497): a second socket for a running session's network inspector alone (Session#inspectorSocket).
+   * Authorized as the session's own socket is (the server's token and origin rules; on the agent, in the route, the
+   * session's key and its page's origin). Like a viewer's it gives its place among {@link #connections} back once joined.
+   */
+  private void inspectorSocket(Http.Request r, Socket s, InputStream in, OutputStream out, Session x) throws IOException {
+    String key = r.header("sec-websocket-key");
+    if (key == null || !"websocket".equalsIgnoreCase(r.header("upgrade"))) {
+      Http.text(out, 400, "expected a WebSocket upgrade");
+      return;
+    }
+    if (x == null || x.ending()) {
+      Http.text(out, 404, "no such session (or it has ended)");
+      return;
+    }
+    out.write(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
+        + WebSocket.acceptKey(key) + "\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
+    out.flush();
+    s.setSoTimeout(0);
+    connections.release();
+    permitFreed.set(true);
+    x.inspectorSocket(new WebSocket(s, in, out));
   }
 
   /** `site`: the agent's session's page origin (beam), else null; `seed`: its moved data's slot (phase 5), else null. */
@@ -2450,6 +2476,20 @@ public final class Serve {
             + ",\"data\":true}");
       }
       case "GET /ws" -> {
+        // Issue 497: a running session's inspector-only socket, for the page that started it: its origin and the key
+        // its own socket was sent (`f KEY`), as for its files and log.
+        String ins = r.param("inspect");
+        if (ins != null && ins.matches("[0-9a-f]{12}")) {
+          Session x = sessions.get(ins);
+          String key = r.param("key");
+          if (x == null || x.fileKey == null || key == null || !java.security.MessageDigest.isEqual(key.getBytes(StandardCharsets.UTF_8),
+              x.fileKey.getBytes(StandardCharsets.UTF_8)) || !o.equals(x.site)) {
+            Http.text(out, 404, "no such session (or it has ended)");
+            return;
+          }
+          inspectorSocket(r, s, in, out, x);
+          return;
+        }
         String why = Beam.protocolProblem(r.param("protocol"));
         if (why != null) {
           Http.text(out, 409, why);  // the grant stays for a page that asks again in one this agent speaks

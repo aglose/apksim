@@ -557,6 +557,7 @@ final class Session {
     // H.264 when the tab can decode it (it says so with codec=h264) and serve allows it; the instance answers which.
     String ask = serve.allowH264 && "h264".equals(options.get("codec")) ? " h264 " + serve.bitrateKbps : "";
     stream.getOutputStream().write(("stream " + serve.quality + ask + "\n").getBytes(StandardCharsets.US_ASCII));
+    controlPort = p;
     if (inspecting()) watchNetwork(p);
     if (serve.beam && app.launch().contains("--tab-relay")) watchRelay(p);
     if (serve.beam && inspecting()) watchForward(p);
@@ -819,6 +820,106 @@ final class Session {
     });
   }
 
+  // ---------------------------------------------------------------- the inspector-only socket (issue 497)
+
+  /** The control port of the running instance, 0 until it is up. */
+  private volatile int controlPort;
+
+  /** Inspector-only sockets (`/ws?inspect=ID`): no frames, so none of them is a viewer or the tab. */
+  private final java.util.Set<WebSocket> inspectors = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+  /** At most this many inspector-only sockets a session (a page opens one; a second window or a reload may briefly add one). */
+  static final int MAX_INSPECTORS = 4;
+
+  /**
+   * A second WebSocket for this session's network inspector alone, on the caller's thread (its connection's) until it
+   * closes or the session ends. The socket gets what the inspector sends, as the tab does (`n e {json}`, the remembered
+   * events first: it is its own `netwatch` connection to the instance, which replays them to each watcher) and may send
+   * `inspect rule ...` and `inspect detail ID`, answered to it (`n r ...`) as on the tab's socket; nothing else is read
+   * from it and no frame is ever sent to it. Closing it never ends the session; the session ending sends it `e` and `x`
+   * as the tab, and closes it. An embedding page puts the inspector in a window of its own and so keeps its list's work
+   * off the thread that acks the stream's frames.
+   */
+  void inspectorSocket(WebSocket sock) {
+    if (ending()) {
+      sock.sendText("x the session has ended");
+      sock.close("ended");
+      return;
+    }
+    if (!inspecting()) {
+      sock.sendText("r refused: inspect (this session runs without the network inspector)");
+      sock.close("no inspector");
+      return;
+    }
+    if (inspectors.size() >= MAX_INSPECTORS) {
+      sock.sendText("x too many inspector sockets on this session (" + MAX_INSPECTORS + ")");
+      sock.close("too many");
+      return;
+    }
+    inspectors.add(sock);
+    Socket nw = null;
+    try {
+      // The instance may still be starting (the APK downloading, the app launching): the socket waits, up to the launch's limit.
+      long until = System.currentTimeMillis() + serve.launchTimeoutSeconds * 1000L;
+      while (controlPort == 0 && !ending() && !sock.closed() && System.currentTimeMillis() < until) Thread.sleep(50);
+      if (ending()) return;  // endInspectors told it
+      if (controlPort == 0) {
+        sock.sendText("x the session did not start in time");
+        return;
+      }
+      Socket s = nw = connect(controlPort);
+      s.getOutputStream().write("netwatch\n".getBytes(StandardCharsets.US_ASCII));
+      Thread.ofVirtual().name("serve-inspector-" + id).start(() -> {
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8))) {
+          String first = r.readLine();
+          if (first == null || !first.equals("ok netwatch")) {
+            sock.sendText("n x " + Http.q(String.valueOf(first)));
+            return;
+          }
+          for (String line; (line = r.readLine()) != null && !sock.closed(); ) {
+            if (line.length() < 40_000 && line.startsWith("{")) sock.sendText("n e " + line);
+          }
+        } catch (IOException e) {
+          // the instance went away, or this socket closed
+        }
+      });
+      sock.onPong = null;
+      sock.readLoop(t -> {
+        if (t.startsWith("inspect ")) inspectCommand(t, sock);
+        else if (!t.equals("t") && !t.startsWith("t ")) sock.sendText("r refused: " + (t.length() > 40 ? t.substring(0, 40) + "..." : t));
+      });
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    } catch (IOException e) {
+      sock.sendText("x could not reach the session's inspector: " + e.getMessage());
+    } finally {
+      // An ending session's endInspectors says why and closes it: leave that its time before this closes it first.
+      for (int i = 0; ending() && !sock.closed() && i < 60; i++) {
+        try {
+          Thread.sleep(50);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          break;
+        }
+      }
+      inspectors.remove(sock);
+      closeQuietly(nw);
+      sock.close("closed");
+    }
+  }
+
+  /** The session is ending: every inspector-only socket hears why, as the tab does, and is closed. Never waits on a socket. */
+  private void endInspectors(String reason, String why) {
+    String text = why == null ? "the session has ended" : why;
+    for (WebSocket w : inspectors) {
+      Thread.ofVirtual().name("serve-inspector-end-" + id).start(() -> {
+        w.sendText("e " + Crash.endJson(reason == null ? "other" : reason, text, null));
+        w.sendText("x " + text);
+        w.close(text.length() > 60 ? text.substring(0, 60) : text);
+      });
+    }
+  }
+
   private static final String URL_CHARS = "[A-Za-z0-9._~:/?#\\[\\]@!$&'()*+,;=%-]";
 
   private static final String RULE_METHOD = "\\*|[A-Za-z]{3,10}", RULE_STATUS = "0|[2-5][0-9]{2}|patch", RULE_LATENCY = "[0-9]{1,5}",
@@ -837,9 +938,9 @@ final class Session {
    * `"patch": "JSON text"` field) merges the real server's JSON answer with that patch; it reaches only the app's own server,
    * so it needs no allow-list.
    */
-  private void inspectCommand(String t) {
+  private void inspectCommand(String t, WebSocket to) {
     if (!inspecting()) {
-      ws.sendText("r refused: inspect (" + (serve.beam ? "this session runs without the network inspector (/beam/start \"inspect\": true asks for it, false declines it; this Mac's owner allows it with apksim beam config inspect-network optional)"
+      to.sendText("r refused: inspect (" + (serve.beam ? "this session runs without the network inspector (/beam/start \"inspect\": true asks for it, false declines it; this Mac's owner allows it with apksim beam config inspect-network optional)"
           : "this session runs without the network inspector (/ws?inspect=1 asks for it, inspect=0 declines it; the server allows it with --inspect-network optional)") + ")");
       return;
     }
@@ -858,7 +959,7 @@ final class Session {
         cmd = ruleSet(t.strip().substring("inspect rule set ".length()));
       } catch (IOException | RuntimeException e) {
         // What is wrong with the set, as the instance would say it of one rule: the tab shows it, and no rule changed.
-        ws.sendText("n r rule error: " + e.getMessage());
+        to.sendText("n r rule error: " + e.getMessage());
         return;
       }
       verb = "rule";
@@ -872,19 +973,19 @@ final class Session {
         target = "";
       }
       if (!forwardAllow().allows(target)) {
-        ws.sendText("n r rule error: " + forwardRefusal());
+        to.sendText("n r rule error: " + forwardRefusal());
         return;
       }
       cmd = "network " + t.strip().substring(8);
       verb = "rule";
     }
     if (cmd == null) {
-      ws.sendText("r refused: " + (t.length() > 40 ? t.substring(0, 40) + "..." : t));
+      to.sendText("r refused: " + (t.length() > 40 ? t.substring(0, 40) + "..." : t));
       return;
     }
     lastInput = System.currentTimeMillis();
     String kind = verb.equals("detail") ? "detail" : "rule";
-    send(cmd, r -> ws.sendText("n r " + kind + " " + r));
+    send(cmd, r -> to.sendText("n r " + kind + " " + r));
   }
 
   /** The targets a forward rule may name now: the server's list, or on the agent the owner's, read from the config at each use. */
@@ -1590,7 +1691,7 @@ final class Session {
       return;
     }
     if (text.startsWith("inspect ")) {
-      inspectCommand(text);
+      inspectCommand(text, ws);
       return;
     }
     if (text.startsWith("shell ")) {
@@ -2183,6 +2284,7 @@ final class Session {
       Thread.ofVirtual().name("serve-ping-" + id).start(() -> {
         try {
           ws.ping();
+          for (WebSocket w : inspectors) w.ping();
         } finally {
           pinging.set(false);
         }
@@ -2225,6 +2327,7 @@ final class Session {
       notifyAll();
     }
     if (viewers != null) viewers.end(why == null ? "the session has ended" : "the session has ended: " + why);
+    endInspectors(reason, why);
     try {
       endInstance();
     } finally {

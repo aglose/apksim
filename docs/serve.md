@@ -56,6 +56,14 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   without it stays without it, and the page starts a new one to switch. With plain `--inspect-network` the inspector is the default and a
   tab may decline it with `/ws?...&inspect=0` (issue 389: no network engine for that session; `i` then says `"inspect": false`). `--inspect-max-rules N` (32; 1 to 256) is how many rules a session takes.
   `--inspect-forward-allow URL_PREFIX` (repeatable) lets a tab's rule forward matched requests to an upstream under that prefix.
+  An inspector-only socket (issue 497): `/ws?inspect=SESSION` (same token and origin rules as the session's own socket) is a second
+  WebSocket for the running session's inspector alone, so a page can put the inspector in a window of its own (its own renderer
+  process) and a burst of exchanges no longer queues in front of the stream's acks. It gets the exchanges the instance remembers on
+  connect, then `n e {json}` live, and may send `inspect rule ...` and `inspect detail ID`, answered to it as `n r ...`; anything else
+  is `r refused`, no frame is ever sent to it and it counts as no viewer (4 at most a session). Closing it leaves the session; the
+  session ending sends it `e {...}` and `x TEXT` as the tab gets them, and closes it. On `apksim beam` the same route is
+  `/ws?inspect=SESSION&key=KEY` on the agent (the key is the `f` message of the session's own socket, and the page's origin must be
+  the session's), as for its files and log. Checked by `scripts/inspector-check.py` on serve; the agent's route is not run yet.
 - `--network-host-allow ADDR[:PORT]` (repeatable; issue 429) lets an app's launch options (a catalog line's ` -- `, a URL add's
   `options`) carry `--network-host HOST=ADDR[:PORT]`, pointing one of the app's hosts at another server (a preview
   deployment, a machine of the developer's), and only to an address listed here: none by default, so a page cannot aim an
