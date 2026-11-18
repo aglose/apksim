@@ -439,6 +439,12 @@ final class Session {
     if (serve.beam && serve.store != null && !own.contains("--rec") && !"off".equals(serve.store.config.rec())) {
       cmd.addAll(List.of("--rec", serve.store.config.rec()));
     }
+    // A crash's bundle goes where `rec save` ones do, under an id of its own, so the tab can download it (issue 516).
+    // Only where recordings are allowed: the bundle holds the app's network calls and logs.
+    if (serve.beam || serve.allowRec) {
+      cmd.addAll(List.of("--rec-crash-id", crashRid));
+      if (!serve.beam) cmd.addAll(List.of("--rec-crash-dir", recDir().toString()));
+    }
     // The session's skin on its own device decides the kind (its own, or what the size gives), as the device chosen
     // decides the size: this server's skin (the agent's on a Mac), or the page's skin this endpoint lacks (`kind`).
     Skin chosen = skin != null ? Serve.skin(skin) : null;
@@ -1950,6 +1956,14 @@ final class Session {
   private long pushedBytes;
   /** Recording ids this session asked for (a file exists once the instance has moved it into place, complete). */
   private final java.util.Set<String> recordings = java.util.concurrent.ConcurrentHashMap.newKeySet();
+  /** The id the instance saves its crash bundle under (`--rec-crash-id`); in {@link #recordings} once the file is there. */
+  private final String crashRid = newRid();
+  /** Set once the instance has ended with its crash bundle written: the tab's `e` message names it. */
+  private volatile String crashRec;
+
+  private static String newRid() {
+    return Long.toHexString(new java.security.SecureRandom().nextLong() & 0xffffffffffffL | 0x100000000000L).substring(0, 12);
+  }
 
   private static byte[] secureBytes() {
     byte[] b = new byte[16];
@@ -2166,9 +2180,31 @@ final class Session {
 
   /** After a beam instance exits: its recordings from the sandbox's out folder to the logs folder (copied, links refused). */
   private void keepRecordings() {
+    claimCrashBundle();
     Path d = serve.beam ? recDir() : null;
-    if (d == null || Files.isSymbolicLink(d) || !Files.isDirectory(d, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return;
-    for (String rid : recordings) copyOut(d, rid + ".apkrec");
+    if (d != null && !Files.isSymbolicLink(d) && Files.isDirectory(d, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+      for (String rid : recordings) copyOut(d, rid + ".apkrec");
+    }
+    // A bundle the agent could not copy out is not offered: the folder it is in goes with the instance.
+    if (serve.beam && crashRec != null && !Files.isRegularFile(keptRecDir().resolve(crashRec + ".apkrec"), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+      recordings.remove(crashRec);
+      crashRec = null;
+    }
+  }
+
+  /**
+   * The instance has gone: if it saved its crash bundle (it only does for a crash, with a channel on), it is one of this
+   * session's recordings now, named in the tab's end message and downloaded like a `rec save` one (issue 516). Only a
+   * regular file of that name in the session's own recordings folder counts; a beam app can write there, but only a
+   * file it could have made anyway.
+   */
+  private void claimCrashBundle() {
+    Path d = recDir();
+    if (d == null || !(serve.beam || serve.allowRec)) return;
+    Path f = d.resolve(crashRid + ".apkrec");
+    if (!Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return;
+    recordings.add(crashRid);
+    crashRec = crashRid;
   }
 
   /** What a download needs after the session ends: the key and origin (beam), the ids, and where they are. */
@@ -2287,7 +2323,7 @@ final class Session {
         ws.sendText("r rec: error: the state folder's path has white space, which a control command cannot carry");
         return;
       }
-      id2 = Long.toHexString(new java.security.SecureRandom().nextLong() & 0xffffffffffffL | 0x100000000000L).substring(0, 12);
+      id2 = newRid();
       try {
         Files.createDirectories(dir);
       } catch (IOException e) {
@@ -2546,7 +2582,7 @@ final class Session {
           }
           for (String l : lines) ws.sendText("r log: " + l);
         }
-        ws.sendText("e " + Crash.endJson(reason, why, reason.equals("crash") ? crash.exception() : null));
+        ws.sendText("e " + Crash.endJson(reason, why, reason.equals("crash") ? crash.exception() : null, crashRec));
         ws.sendText("x " + why);
         ws.close(why.length() > 60 ? why.substring(0, 60) : why);
       });

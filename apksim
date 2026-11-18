@@ -181,6 +181,9 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --rec) EXTRA+=("-Dapksim.rec=$2"); shift 2 ;;
     --rec-window) EXTRA+=("-Dapksim.rec.window=$2"); shift 2 ;;
     --rec-checkpoint) EXTRA+=("-Dapksim.rec.checkpoint=$2"); shift 2 ;;
+    # Where a crash's bundle goes, for serve and beam (issue 516): RID names it, DIR is serve's folder (a beam sandbox uses its own).
+    --rec-crash-id) EXTRA+=("-Dapksim.rec.crashId=$2"); shift 2 ;;
+    --rec-crash-dir) EXTRA+=("-Dapksim.rec.crashDir=$2"); shift 2 ;;
     # Screenshot tests (docs/snapshots.md): CPU-only drawing and carets that do not blink, for the same pixels each run.
     --snapshot) EXTRA+=("-Dapksim.snapshot=true"); shift ;;
     # Made here, as --bundles is: under the sandbox only the folder itself is writable, not a missing parent.

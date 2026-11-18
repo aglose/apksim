@@ -148,7 +148,9 @@ checkpoint at all, the bundle can be read but not replayed.
 before the scratch folder that holds the checkpoints is deleted (`Crashes.terminate`), after up to 2 s for network
 answers the app already has and the network layer is still writing down. A crash before the first activity (in the
 Application's constructor or onCreate) saves what the launch's `net` and `db` channels have, with no checkpoint,
-input or screen.
+input or screen. Under `apksim serve --allow-rec` and `apksim beam` the bundle goes to the session's recordings folder
+as `RID.apkrec` instead (`-Dapksim.rec.crashId`, `--rec-crash-id`, `--rec-crash-dir`), and the tab's end message names
+RID (docs/serve.md, issue 516).
 
 ## Privacy
 
