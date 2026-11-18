@@ -458,9 +458,9 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `simwindow.m`: Cocoa window and IOSurface present, input queue, Cmd+V paste, `wshot` self-capture, thread QoS.
   - `elfloader.c`, `bionic.c`, `jnibridge.c`: the Android ELF loader, bionic→libSystem shim, and a JNI table wrapper
     for the AAPCS-vs-Apple varargs difference (chosen by caller address).
-  - `bionic.c` also has `timerfd_create`/`timerfd_settime` (a pipe fed by a thread per timer; 8-byte counts; epoll and ALooper are not
+  - `bionic.c` also has `timerfd_create`/`timerfd_settime` (Mac only; a pipe fed by a thread per timer, freed by the `close` shim; 8-byte counts; epoll and ALooper are not
     emulated, so a library polling the fd through ALooper still fails: issue 477) and a SIGABRT handler that logs
-    `[apksim] exit 134: native abort in app code: MESSAGE` (the message from `android_set_abort_message`).
+    `[apksim] exit 134: native abort: MESSAGE` (the message from `android_set_abort_message`).
   - `jnigraphics.c` (Mac and Linux): libjnigraphics' `AndroidBitmap_*` for ELF code, through `NativeBitmaps` (see "Video").
   - `gpushader.m`: Metal pipelines for translated AGSL.
   - `standby.c` (JNI) and `apksim-client.c` (the launcher's client): the warm-launch hand-off.

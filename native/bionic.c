@@ -964,13 +964,13 @@ static void s_stack_chk_fail(void) {
 }
 static char abort_msg[512];
 static void s_set_abort_message(const char *m) {
-  fprintf(stderr, "F/libc: %s\n", m);
-  strlcpy(abort_msg, m, sizeof abort_msg);
+  fprintf(stderr, "F/libc: %s\n", m ? m : "(null)");
+  if (m) strlcpy(abort_msg, m, sizeof abort_msg);
 }
 // A native abort (std::terminate from an uncaught C++ exception, abort(), a failed assert) ends the process with
 // nothing in the log after the library's own line: say why, as Exits does for every other way (issue 477).
 static void abort_handler(int sig) {
-  static const char a[] = "[apksim] exit 134: native abort in app code";
+  static const char a[] = "[apksim] exit 134: native abort";
   write(2, a, sizeof a - 1);
   if (abort_msg[0]) {
     write(2, ": ", 2);
@@ -991,7 +991,8 @@ typedef struct {
   pthread_cond_t cv;
   struct timespec deadline;  // monotonic/realtime of the clock's own kind; tv_sec 0 = disarmed
   struct timespec interval;
-  int armed, gen;
+  int armed, gen, dead;
+  uint64_t pending;
 } TimerFd;
 #define TFDS 64
 static TimerFd *tfds[TFDS];
@@ -1009,7 +1010,8 @@ static void *tfd_thread(void *arg) {
   TimerFd *t = arg;
   pthread_mutex_lock(&t->mu);
   for (;;) {
-    while (!t->armed) pthread_cond_wait(&t->cv, &t->mu);
+    while (!t->armed && !t->dead) pthread_cond_wait(&t->cv, &t->mu);
+    if (t->dead) { pthread_mutex_unlock(&t->mu); close(t->wr); free(t); return NULL; }
     int gen = t->gen;
     struct timespec now;
     clock_gettime(tfd_clock(t->clock), &now);
@@ -1023,19 +1025,26 @@ static void *tfd_thread(void *arg) {
         d = ts_add(abs, rem);
       }
       pthread_cond_timedwait(&t->cv, &t->mu, &d);
-      if (gen != t->gen) continue;
+      if (gen != t->gen || t->dead) continue;
       clock_gettime(tfd_clock(t->clock), &now);
       if (ts_cmp(now, t->deadline) < 0) continue;
     }
     uint64_t n = 1;
     if (t->interval.tv_sec || t->interval.tv_nsec) {
-      while (ts_cmp(t->deadline, now) <= 0) { t->deadline = ts_add(t->deadline, t->interval); if (t->deadline.tv_sec == 0) break; n++; }
-      n--;
+      int64_t iv = (int64_t)t->interval.tv_sec * 1000000000LL + t->interval.tv_nsec;
+      int64_t late = (int64_t)(now.tv_sec - t->deadline.tv_sec) * 1000000000LL + (now.tv_nsec - t->deadline.tv_nsec);
+      int64_t k = 1 + (late > 0 ? late / iv : 0);
+      n = (uint64_t)k;
+      int64_t add = k * iv;
+      struct timespec d = {add / 1000000000LL, add % 1000000000LL};
+      t->deadline = ts_add(t->deadline, d);
     } else t->armed = 0;
-    pthread_mutex_unlock(&t->mu);
-    ssize_t w = write(t->wr, &n, sizeof n);
-    (void)w;
-    pthread_mutex_lock(&t->mu);
+    t->pending += n;
+    int queued = 0;
+    if (ioctl(t->wr, FIONREAD, &queued) == 0 && queued == 0) {
+      uint64_t out = t->pending;
+      if (write(t->wr, &out, sizeof out) == sizeof out) t->pending = 0;
+    }
   }
   return NULL;
 }
@@ -1047,6 +1056,7 @@ static int s_timerfd_create(int clock, int flags) {
   fcntl(fds[0], F_SETFD, FD_CLOEXEC);
   fcntl(fds[1], F_SETFD, FD_CLOEXEC);
   TimerFd *t = calloc(1, sizeof *t);
+  if (!t) { close(fds[0]); close(fds[1]); errno = ENOMEM; return -1; }
   t->rd = fds[0]; t->wr = fds[1]; t->clock = clock;
   pthread_mutex_init(&t->mu, NULL);
   pthread_cond_init(&t->cv, NULL);
@@ -1060,19 +1070,43 @@ static int s_timerfd_create(int clock, int flags) {
   pthread_attr_t at;
   pthread_attr_init(&at);
   pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
-  pthread_create(&th, &at, tfd_thread, t);
+  if (pthread_create(&th, &at, tfd_thread, t)) {
+    pthread_mutex_lock(&tfd_mu);
+    tfds[slot] = NULL;
+    pthread_mutex_unlock(&tfd_mu);
+    close(fds[0]); close(fds[1]); free(t);
+    errno = EAGAIN;
+    return -1;
+  }
   return t->rd;
 }
 // new_value is Linux's struct itimerspec: it_interval then it_value, two 16-byte timespecs.
+static int s_close(int fd) {
+  TimerFd *t = NULL;
+  pthread_mutex_lock(&tfd_mu);
+  for (int i = 0; i < TFDS; i++) if (tfds[i] && tfds[i]->rd == fd) { t = tfds[i]; tfds[i] = NULL; }
+  pthread_mutex_unlock(&tfd_mu);
+  if (t) {
+    pthread_mutex_lock(&t->mu);
+    t->dead = 1;
+    pthread_cond_broadcast(&t->cv);
+    pthread_mutex_unlock(&t->mu);
+  }
+  return close(fd);
+}
 static int s_timerfd_settime(int fd, int flags, const struct timespec *nv, struct timespec *old) {
   TimerFd *t = NULL;
   pthread_mutex_lock(&tfd_mu);
   for (int i = 0; i < TFDS; i++) if (tfds[i] && tfds[i]->rd == fd) t = tfds[i];
   pthread_mutex_unlock(&tfd_mu);
-  if (!t || !nv) { errno = EINVAL; return -1; }
+  if (!t || !nv || (flags & ~1)) { errno = EINVAL; return -1; }
+  for (int i = 0; i < 2; i++)
+    if (nv[i].tv_sec < 0 || nv[i].tv_nsec < 0 || nv[i].tv_nsec >= 1000000000L) { errno = EINVAL; return -1; }
   if (old) memset(old, 0, 2 * sizeof *old);
   pthread_mutex_lock(&t->mu);
   t->interval = nv[0];
+  t->pending = 0;
+  { uint64_t junk[16]; int q = 0; while (ioctl(t->rd, FIONREAD, &q) == 0 && q > 0) { if (read(t->rd, junk, sizeof junk) <= 0) break; q = 0; } }
   if (nv[1].tv_sec == 0 && nv[1].tv_nsec == 0) t->armed = 0;
   else {
     struct timespec v = nv[1];
@@ -1239,7 +1273,7 @@ typedef struct { const char *name; void *fn; } Entry;
 static const Entry table[] = {
     E("sincos", s_sincos), E("sincosf", s_sincosf), E("tgkill", s_tgkill), E("eglGetCurrentContext", s_egl_current), E("_ctype_", a_ctype),
     E("__cmsg_nxthdr", s_cmsg_nxthdr), E("epoll_create", s_enosys), E("epoll_create1", s_enosys), E("epoll_ctl", s_enosys), E("epoll_wait", s_enosys),
-    E("eventfd", s_enosys), E("timerfd_create", s_timerfd_create), E("timerfd_settime", s_timerfd_settime), E("memfd_create", s_enosys),
+    E("eventfd", s_enosys), E("close", s_close), E("timerfd_create", s_timerfd_create), E("timerfd_settime", s_timerfd_settime), E("memfd_create", s_enosys),
     E("__errno", s_errno), E("__stack_chk_fail", s_stack_chk_fail), E("__sF", sF),
     E("stdin", &a_stdin), E("stdout", &a_stdout), E("stderr", &a_stderr),
     E("snprintf", snprintf_thunk), E("sprintf", sprintf_thunk), E("fprintf", fprintf_thunk), E("printf", printf_thunk),
