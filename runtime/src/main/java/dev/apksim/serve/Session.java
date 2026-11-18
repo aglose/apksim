@@ -824,7 +824,17 @@ final class Session {
   private boolean watchOpted, watchOn = true, watchTicker;
   private final ArrayDeque<String> watchRing = new ArrayDeque<>();  // the last 300 events, for `watch on`
   private final ArrayList<String> watchPending = new ArrayList<>();
-  private long watchTotal, watchErrors, watchCountSent = -1, watchCountAt;
+  private long watchTotal, watchErrors, watchCountSent = -1, watchCountAt, watchLastId = -1;
+
+  /** The `id` an inspector event line starts with (`{"id":N,`), or -1. */
+  private static long eventId(String line) {
+    int e = line.indexOf(',');
+    try {
+      return line.startsWith("{\"id\":") && e > 6 ? Long.parseLong(line.substring(6, e)) : -1;
+    } catch (NumberFormatException x) {
+      return -1;
+    }
+  }
 
   private static final int WATCH_KEEP = 300, WATCH_BATCH_MS = 250, WATCH_COUNT_MS = 1000, WATCH_BATCH_CHARS = 200_000;
   private static final Pattern WATCH_FAILED = Pattern.compile(",\"error\":|,\"status\":(0|[45][0-9]{2}),");
@@ -836,8 +846,13 @@ final class Session {
       if (WATCH_FAILED.matcher(line).find()) watchErrors++;
       watchRing.addLast(line);
       if (watchRing.size() > WATCH_KEEP) watchRing.removeFirst();
-      if (!watchOpted) ws.sendText("n e " + line);
-      else if (watchOn) watchPending.add(line);
+      if (!watchOpted) {
+        watchLastId = Math.max(watchLastId, eventId(line));
+        ws.sendText("n e " + line);
+      } else if (watchOn && !tabGone && !ended) {
+        watchPending.add(line);
+        if (watchPending.size() > WATCH_KEEP) watchPending.remove(0);
+      }
     }
   }
 
@@ -853,7 +868,9 @@ final class Session {
       watchOpted = true;
       watchOn = on;
       watchPending.clear();
-      if (on) watchPending.addAll(watchRing);  // the backlog, once; then each batch carries what arrived since
+      if (on) {  // the backlog, once (what the tab already has is not sent again); then each batch carries what arrived since
+        for (String e : watchRing) if (eventId(e) > watchLastId) watchPending.add(e);
+      }
       else watchCountSent = -1;
       if (!watchTicker) {
         watchTicker = true;
@@ -874,6 +891,7 @@ final class Session {
             if (!watchPending.isEmpty()) {
               out = new ArrayList<>(watchPending);
               watchPending.clear();
+              watchLastId = Math.max(watchLastId, eventId(out.get(out.size() - 1)));
             }
           } else if (watchTotal != watchCountSent && now - watchCountAt >= WATCH_COUNT_MS) {
             watchCountSent = watchTotal;
