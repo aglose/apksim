@@ -115,20 +115,26 @@ echo "Floating window: $floating"
 [[ "$floating" == 'DecorView@91,48 640x1686 .FloatingTallActivity' ]] \
   || { echo "a floating wrap_content window is not the emulator's size" >&2; exit 1; }
 # A BOTTOM-gravity dialog (a hand-made bottom sheet) sits on the navigation bar, not over it, and a PopupWindow is
-# placed in the activity window it is attached to (issue 506; both as the API 36 emulator places them). Only the
-# sheet's bottom edge is checked: its height follows the fonts.
+# placed in the window it is attached to, here a floating activity's at 91,733, and kept on the display unless its
+# clipping is off (FLAG_LAYOUT_NO_LIMITS) (issue 506; all as the API 36 emulator places them). Only the sheet's bottom
+# edge is checked: its height follows the fonts.
 drive 'open apksim://bottomsheet?kind=plain' 'wait 2500' >/dev/null
-sheet="$(drive windows | grep -oE 'DecorView@0,[0-9]+ 822x[0-9]+ \.BottomSheetActivity\{resumed\}' | tail -1)"
+sheet="$(drive windows | grep -oE 'DecorView@0,[0-9]+ 822x[0-9]+( focused)? \.BottomSheetActivity\{resumed\}' | sed 's/ focused//' | tail -1)"
 drive back 'wait 500' back 'wait 500' >/dev/null
 sheet_y="$(sed -E 's/DecorView@0,([0-9]+) .*/\1/' <<<"$sheet")" sheet_h="$(sed -E 's/.* 822x([0-9]+) .*/\1/' <<<"$sheet")"
 echo "Bottom sheet: $sheet"
 [[ -n "$sheet" && $((sheet_y + sheet_h)) -eq 1734 ]] \
   || { echo "a BOTTOM-gravity dialog does not end at the navigation bar (1734)" >&2; exit 1; }
-drive 'open apksim://dialogs?open=popupfull' 'wait 2500' >/dev/null
-popupat="$(drive windows | grep -oE 'PopupDecorView@[0-9,]+' | head -1)"
-drive back 'wait 500' back 'wait 500' >/dev/null
-echo "PopupWindow: $popupat"
-[[ "$popupat" == 'PopupDecorView@48,1200' ]] || { echo "a PopupWindow is not where showAtLocation put it" >&2; exit 1; }
+for kind in 1 offscreen; do
+  drive "open apksim://floating?popup=$kind" 'wait 2500' >/dev/null
+  popupat="$(drive windows | grep -oE 'PopupDecorView@-?[0-9]+,[0-9]+ [0-9x]+( focused)? \.FloatingActivity\{resumed\}' | sed -E 's/ [0-9x]+( focused)? .*//')"
+  # Back until the floating activity is gone: apksim's first Back dismisses the popup (non-focusable, so on a device
+  # it never gets Back and one Back finishes the activity).
+  for _ in 1 2 3; do [[ "$(drive activity)" == *FloatingActivity ]] || break; drive back 'wait 500' >/dev/null; done
+  want='PopupDecorView@139,833'; [[ $kind == offscreen ]] && want='PopupDecorView@-9,833'
+  echo "PopupWindow ($kind): $popupat"
+  [[ "$popupat" == "$want" ]] || { echo "a PopupWindow on a floating window is not at ${want#*@}" >&2; exit 1; }
+done
 # A browser sign-in's way back (issue 336): the redirect activity hands the callback to the waiting singleTask activity
 # with CLEAR_TOP | SINGLE_TOP, which gets it in onNewIntent; stacked as a second copy, it showed "not started".
 drive 'open apksim://signin' 'wait 1500' 'tap-text Sign in' 'wait 500' 'open apksim://signin-callback?code=smoke42' 'wait 1500' >/dev/null

@@ -103,8 +103,12 @@ Read README.md for results and limits; this file covers how to work on the code.
     display less the insets of the bars the window fits and that show (`getFitInsetsTypes`/`Sides`, bar sizes from
     Robolectric's `SystemUi` through `SystemBars.fitInsets`: a dialog stays off the bars, an edge-to-edge activity
     window does not), the parent frame that, or for a sub-window (a PopupWindow) without FLAG_LAYOUT_IN_SCREEN the
-    window it is attached to; issue 506: a BOTTOM-gravity dialog sat over the navigation bar; not done: the cutout's
-    safe area, an IME-inset parent, multi-window. An axis with no gravity (NO_GRAVITY, a window's default) is centred; Robolectric's window session
+    window it is attached to; FLAG_LAYOUT_NO_LIMITS (a popup with clipping off) is not kept on the display; the
+    attributes are ViewRootImpl's `mWindowAttributes`, adjusted for compatibility (FLAG_LAYOUT_IN_SCREEN and the
+    translucent and legacy layout flags drop bars from the fitted types), as Robolectric sizes the frame from them;
+    issue 506: a BOTTOM-gravity dialog sat over the navigation bar; not done: the cutout's safe area, an IME-inset
+    parent, multi-window. Test app: `apksim://floating?popup=1|offscreen` (a PopupWindow on a window at 91,733:
+    139,833, or -9,833 with clipping off) and `apksim://dialogs?open=inscreen` (0,0 822x1734). An axis with no gravity (NO_GRAVITY, a window's default) is centred; Robolectric's window session
     gives a window that is not full-screen its measured size placed inside the bars' insets, not where the window
     manager would; before issue 506 the display's size at lp.x/lp.y), and tells their views: `ShadowSimViewRootImpl`
     moves the frame a relayout gives to that place, and `syncWindowPositions` each loop turn, so AttachInfo's window

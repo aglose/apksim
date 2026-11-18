@@ -1586,7 +1586,11 @@ public class Host {
   private int[] position(View root, int rw, int rh) {
     int x = 0;
     int y = 0;
-    if (root.getLayoutParams() instanceof WindowManager.LayoutParams lp) {
+    if (root.getLayoutParams() instanceof WindowManager.LayoutParams appLp) {
+      // The window's attributes as ViewRootImpl sends them (mWindowAttributes: adjustLayoutParamsForCompatibility
+      // drops the status bar from the fitted types for FLAG_LAYOUT_IN_SCREEN, FLAG_TRANSLUCENT_STATUS and the like),
+      // which Robolectric sized the frame from; the app's own params otherwise.
+      WindowManager.LayoutParams lp = windowAttributes(root, appLp);
       // As the window manager places it (WindowLayout.computeFrames): in the parent frame, the display less the
       // insets of the types and sides the window fits (a dialog's system bars, unless hidden; none for an
       // edge-to-edge activity window), by its gravity, offsets and margins, then kept on that frame
@@ -1594,7 +1598,8 @@ public class Host {
       // display, a dialog with BOTTOM gravity sat over the navigation bar (issue 506). Not done: the display cutout's
       // safe area, an IME-inset parent frame and multi-window modes.
       // A sub-window (a PopupWindow: a panel attached to its activity's window) is placed in the window it is attached
-      // to, unless FLAG_LAYOUT_IN_SCREEN, and kept on the display frame all the same.
+      // to, unless FLAG_LAYOUT_IN_SCREEN, and kept on the display frame all the same, except with FLAG_LAYOUT_NO_LIMITS
+      // (a popup with clipping off), whose display frame has no bounds.
       android.graphics.Rect display = displayFrame(lp);
       android.graphics.Rect attached = attachedFrame(root, lp);
       boolean inScreen = (lp.flags & WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN) != 0;
@@ -1603,11 +1608,36 @@ public class Host {
       int gravity = Gravity.getAbsoluteGravity(lp.gravity, root.getLayoutDirection());
       Gravity.apply(gravity, rw, rh, parent, (int) (lp.x + lp.horizontalMargin * parent.width()),
           (int) (lp.y + lp.verticalMargin * parent.height()), out);
-      Gravity.applyDisplay(gravity, display, out);
+      boolean noLimits = (lp.flags & WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS) != 0
+          && lp.type != WindowManager.LayoutParams.TYPE_SYSTEM_ERROR;
+      if (!noLimits) Gravity.applyDisplay(gravity, display, out);
       x = out.left;
       y = out.top;
     }
     return new int[] {x, y};
+  }
+
+  /** ViewRootImpl's copy of a window's attributes, or the params given when it has none. */
+  private static WindowManager.LayoutParams windowAttributes(View root, WindowManager.LayoutParams lp) {
+    ViewRootImpl vri = root.getViewRootImpl();
+    if (vri == null) return lp;
+    try {
+      Object attrs = WINDOW_ATTRIBUTES.get(vri);
+      return attrs instanceof WindowManager.LayoutParams a ? a : lp;
+    } catch (IllegalAccessException e) {
+      return lp;
+    }
+  }
+
+  private static final java.lang.reflect.Field WINDOW_ATTRIBUTES;
+
+  static {
+    try {
+      WINDOW_ATTRIBUTES = ViewRootImpl.class.getDeclaredField("mWindowAttributes");
+      WINDOW_ATTRIBUTES.setAccessible(true);
+    } catch (NoSuchFieldException e) {
+      throw new ExceptionInInitializerError(e);
+    }
   }
 
   /**
