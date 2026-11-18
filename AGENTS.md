@@ -591,7 +591,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   navigation rail and a grid; the top bar shows the class and window size in dp ("compact 411×891"), which `nodes`
   reads; Settings shows the wall clock in the locale's format. `apksim://stack` opens `SecondActivity` (plain views, a
 colour and tap count per level) over what is running, and its "Deeper" stacks another, for stack checks;
-`apksim://floating` a dialog-themed `FloatingActivity`; `--feature dev.apksim.testapp.launch_overlay` has its
+`apksim://floating` a dialog-themed `FloatingActivity`; `apksim://floating-tall[?bars=hide]` a floating, translucent,
+dimming WRAP_CONTENT window with a list taller than the display (`FloatingTallActivity`, issue 506; `ci-smoke.sh` checks its size); `--feature dev.apksim.testapp.launch_overlay` has its
 Application add an empty 0x0 overlay window before any activity (`ci-smoke.sh`: the first frame still comes). `snapshots/` has its screenshot-test specs
   (`spec.json`: 5 screens × 16 combinations; `ci.json`, the CI's). Build with `./gradlew :app:assembleDebug` inside it. Its `uiserver` module is an instrumentation-only APK, a
   tool's on-device server in miniature, for `scripts/adb-check.py` (`./gradlew :uiserver:assembleDebug`).
@@ -1768,6 +1769,12 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   and 1000 with `RealTimeSwipeTest` still passing; the default is unchanged, and spotting a running Scroller is not done).
 - `robolectric.windowManager.useRequestedSize`: a window gets the size it asks for, so a Compose Dialog
   (WRAP_CONTENT) is not measured at its width and then at the display's on every traversal (it never got idle).
+  Running instances set it too (`SimRunner`'s static block, issue 506): a dialog-themed activity's WRAP_CONTENT window
+  had the display's frame, so it was remeasured at the display's width, got a status bar inset of its own and ended up
+  shorter than on a device (`apksim://floating-tall`: 640x1686 at 91,48 as on the API 36 emulator, was 822x1638 at
+  0,72; `apksim://floating` 640 wide, was 822). `--jvm -Drobolectric.windowManager.useRequestedSize=false` (cold)
+  keeps the old frames. Not matched yet: a floating window that hides the bars itself stays inside them (the emulator
+  gives it the whole display).
 - Processes started together share one per-APK cache folder (`work/cache/<apk name>-<content key>`, `ApkCache`):
   `ElfLoader` extracts each `.so` to a per-process temporary file and renames it into place (and skips it by the
   entry's CRC, kept in `<name>.so.crc`), and `AppInfo` writes the manifest the same way. Copying in place let one of

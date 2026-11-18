@@ -110,3 +110,20 @@ class FloatingActivity : Activity() {
     setContentView(TextView(this).apply { text = "Floating"; textSize = 24f; setPadding(48, 48, 48, 48) })
   }
 }
+
+/**
+ * A floating, translucent, dimming activity with WRAP_CONTENT x WRAP_CONTENT window layout whose list is taller than
+ * the display (apksim://floating-tall, issue 506): the window should be shorter than the display, as on a device.
+ */
+class FloatingTallActivity : Activity() {
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+    val list = android.widget.ListView(this)
+    list.adapter = android.widget.ArrayAdapter(this, android.R.layout.simple_list_item_1, List(200) { "Row $it" })
+    setContentView(list)
+    window.setLayout(android.view.ViewGroup.LayoutParams.WRAP_CONTENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT)
+    if (intent.data?.getQueryParameter("bars") == "hide") {
+      window.insetsController?.hide(android.view.WindowInsets.Type.systemBars())
+    }
+  }
+}

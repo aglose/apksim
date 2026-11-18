@@ -106,6 +106,14 @@ tapped="$(popup)"
 drive 'open apksim://composeapp/trips?overlay=full' 'wait 2500' 'tap 550 1690' 'wait 1000' >/dev/null
 drive nodes | grep -q 'text="Notifications"' || { echo "a tap did not pass an untouchable overlay" >&2; exit 1; }
 echo "Popup and Trace: $shown-> $tapped"
+# A floating WRAP_CONTENT window whose list is taller than the display is the size its views measured, inside the
+# bars, as the API 36 emulator gives it (issue 506): it was the display's width and a status bar shorter.
+drive 'open apksim://floating-tall' 'wait 2000' >/dev/null
+floating="$(drive windows | grep -oE 'DecorView@[0-9,]+ [0-9x]+ \.FloatingTallActivity')"
+drive back 'wait 500' >/dev/null
+echo "Floating window: $floating"
+[[ "$floating" == 'DecorView@91,48 640x1686 .FloatingTallActivity' ]] \
+  || { echo "a floating wrap_content window is not the emulator's size" >&2; exit 1; }
 # A browser sign-in's way back (issue 336): the redirect activity hands the callback to the waiting singleTask activity
 # with CLEAR_TOP | SINGLE_TOP, which gets it in onNewIntent; stacked as a second copy, it showed "not started".
 drive 'open apksim://signin' 'wait 1500' 'tap-text Sign in' 'wait 500' 'open apksim://signin-callback?code=smoke42' 'wait 1500' >/dev/null
