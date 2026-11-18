@@ -600,7 +600,11 @@ drawn; else `error: not settled ...: REASON`), `restart [URL]` (every activity d
 `--activity`) or the URL's started fresh: no saved state, ViewModels cleared), `diff GOLDEN ACTUAL [MAP] [DELTA]` (pixels differing by more
 than DELTA, and a difference map), `clock [ISO|epoch-ms|real]` (the app's wall clock starts there and runs on).
 `back` on the last activity finishes it and the process exits a second later (`[apksim] exit 0: the last activity,
-...`, see `Exits`): there is no soft keyboard for it to dismiss.
+...`, see `Exits`): there is no soft keyboard for it to dismiss. Except on the task's root activity when it was started
+from the launcher intent (MAIN/LAUNCHER, the only activity in the stack) and nothing handles back: as on Android 12+
+(`ActivityClientController.onBackPressed` -> `moveTaskToBack`) the task goes to the back, as `home` does without
+`onUserLeaveHint` (`Host.moveRootToBack`, `DeviceControls.backToHome`; test runs do the same in `ShadowSimActivityClient`),
+the instance stays and `resume` or a click brings it back (issue 480).
 Simulator-style device controls (`DeviceControls.java`; each is also a Mac menu item, see "Simulator features"):
 `appearance dark|light|toggle`, `locale fr-FR`, `fontscale 1.3|+|-`, `timezone [ZONE]` (the zone the app sees; set at
 launch with `--timezone America/New_York`; see `TimeZones` below), `config` (configuration the app sees),

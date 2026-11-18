@@ -296,6 +296,11 @@ for k in watch tv desktop phone; do kinds="$kinds $k=$(drive "device $k" 'wait 8
 echo "Sensors by device:$kinds"
 [[ "$kinds" == " watch=18 tv=0 desktop=14 phone=20" ]] || { echo "a device kind did not list its sensors" >&2; exit 1; }
 drive 'sensor reset' 'back' 'wait 1000' >/dev/null
+# Back on the root launcher activity moves the task to the back (Android 12+), not finish it: stopped, alive, resumable.
+drive 'back' 'wait 800' 'windows' 'ping' | grep -q 'MainActivity{stopped}' \
+  || { echo "back on the root launcher activity did not stop it" >&2; exit 1; }
+drive 'resume' 'wait 500' 'windows' | grep -q 'MainActivity{resumed}' \
+  || { echo "resume after back on the root did not bring it back" >&2; exit 1; }
 
 # What installing gives the app before Application.onCreate (a normal permission, ANDROID_ID, its providers), and a bind
 # to a service nothing provides: false and no callbacks, so the screen's Kotlin connection does not end the app
