@@ -289,6 +289,10 @@ echo "Sensor rates: UI $((n1 - n0)) in 2 s (15 Hz: 30), GAME on a HandlerThread 
 # A screen that registers listeners but does not redraw settles (the sensors' ticks are not work that changes the screen).
 drive 'back' 'open apksim://sensors?redraw=0' 'wait 1500' 'settle 5000 300' | tail -1 | grep -q 'settled in' \
   || { echo "a screen with sensor listeners never settled" >&2; exit 1; }
+# A focused EditText's caret blink (Editor$Blink, every 500 ms) is not pending work either (issue 479).
+drive 'open apksim://edittext' 'wait 1500' 'settle 5000 300' | tail -1 | grep -q 'settled in' \
+  || { echo "a screen with a focused EditText never settled" >&2; exit 1; }
+drive 'back' >/dev/null  # leave the screen: the checks below expect the one under it
 # View animations play as on a device (issue 475): an animated fragment replace settles in about its 300 ms, not in the
 # ~3-7 s Robolectric's 1 ms-per-frame AnimationRunner kept it busy, and an AlphaAnimation still ends after its 300 ms.
 drive 'back' 'open apksim://view-animations' 'wait 1500' >/dev/null

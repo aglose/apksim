@@ -7,6 +7,8 @@ for _ in range(400):
         s = socket.create_connection(("127.0.0.1", port), timeout=1); break
     except OSError:
         time.sleep(0.05)
+else:
+    sys.exit(f"drive.py: nothing is listening on 127.0.0.1:{port} (is the instance running?)")
 f = s.makefile("rw")
 s.settimeout(30)
 for cmd in sys.argv[2:]:

@@ -119,10 +119,12 @@ quiet for QUIET_MS of real time:
 - no frame wanted (no vsync requested from the Choreographer), no window dirty or awaiting layout;
 - no input queued (a `tap` or `type` queues events that the loop delivers 8 ms apart);
 - the main looper has nothing due now, and nothing due within HORIZON_MS of simulated time (a delayed message later
-  than that, such as a 5 s auto-dismiss, does not hold it up). Three messages that never draw are skipped:
+  than that, such as a 5 s auto-dismiss, does not hold it up). Some messages that never draw are skipped:
   ViewRootImpl's MSG_TOUCH_BOOST_TIMEOUT and MSG_CHECK_INVALIDATION_IDLE (frame-rate bookkeeping that reposts itself
   for a few seconds after touches and drawing) and AnimationHandler's pauser (a second after a window goes, every
-  `restart`). Without the skips every capture waited 1-3 s for them;
+  `restart`), a sensor's tick, and a focused View EditText's caret blink (`Editor$Blink`, every 500 ms). Without the skips
+  every capture waited 1-3 s for them. The blink still draws a frame every 500 ms, so with a focused field keep QUIET_MS
+  under 500 (or use `--snapshot`, where carets do not blink);
 - no frame drawn during the quiet window, and the last frame's raster finished (the frame `shot` reads is the latest).
 
 Background threads are not inspected (an image load on an IO thread is invisible until it posts to the main thread);
