@@ -165,7 +165,7 @@ Wire: the instance gets `netwatch` on a control connection of its own (`dev.apks
 each as one JSON line); the server relays them to the tab as `n e {json}`. A tab may turn that down (issue 498, opt-in: a socket that
 never sends it gets `n e` as before): `inspect watch off` stops the per-exchange messages, the server still capturing and sending
 `n c {"total": N, "errors": M}` (every exchange since the session began; errors are those with an `error` or a status of 0 or 400-599)
-at most once a second while the count changes; `inspect watch on` sends the last 300 exchanges not yet sent to the tab (by id), then everything that arrived,
+at most once a second while the count changes; `inspect watch on` sends those of the last 300 exchanges not yet sent to this tab, then everything that arrived,
 as `n b [{json}, ...]` every 250 ms (a long backlog is a few messages of ~200 KB). The first `inspect watch ...` makes the socket's
 delivery batched, `on` or `off`. Rules apply either way. The tab's commands are `inspect rule add METHOD PATTERN
 STATUS LATENCY_MS TYPE BODY64 [HEADERS64]` (HEADERS64: base64 of `Name: value` lines), `inspect rule set JSON`, `inspect rule

@@ -820,21 +820,14 @@ final class Session {
   }
 
   // Watching (issue 498): a tab that sends `inspect watch on|off` opts into batches and can mute the per-exchange messages.
+  // Events are numbered here as they arrive (the instance's ids are taken before its lock, so they can arrive out of order),
+  // and `watchSent` is the highest number the tab has been sent, so `watch on` sends each kept event at most once.
+  private record NetEvent(long seq, String line) {}
   private final Object watchLock = new Object();
   private boolean watchOpted, watchOn = true, watchTicker;
-  private final ArrayDeque<String> watchRing = new ArrayDeque<>();  // the last 300 events, for `watch on`
-  private final ArrayList<String> watchPending = new ArrayList<>();
-  private long watchTotal, watchErrors, watchCountSent = -1, watchCountAt, watchLastId = -1;
-
-  /** The `id` an inspector event line starts with (`{"id":N,`), or -1. */
-  private static long eventId(String line) {
-    int e = line.indexOf(',');
-    try {
-      return line.startsWith("{\"id\":") && e > 6 ? Long.parseLong(line.substring(6, e)) : -1;
-    } catch (NumberFormatException x) {
-      return -1;
-    }
-  }
+  private final ArrayDeque<NetEvent> watchRing = new ArrayDeque<>();  // the last 300 events, for `watch on`
+  private final ArrayDeque<NetEvent> watchPending = new ArrayDeque<>();
+  private long watchSeq, watchSent, watchTotal, watchErrors, watchCountSent = -1, watchCountAt;
 
   private static final int WATCH_KEEP = 300, WATCH_BATCH_MS = 250, WATCH_COUNT_MS = 1000, WATCH_BATCH_CHARS = 200_000;
   private static final Pattern WATCH_FAILED = Pattern.compile(",\"error\":|,\"status\":(0|[45][0-9]{2}),");
@@ -842,16 +835,17 @@ final class Session {
   /** One event from the instance: sent as `n e` as before, unless the tab opted into watching (then counted, kept and batched). */
   private void netEvent(String line) {
     synchronized (watchLock) {
+      NetEvent ev = new NetEvent(++watchSeq, line);
       watchTotal++;
       if (WATCH_FAILED.matcher(line).find()) watchErrors++;
-      watchRing.addLast(line);
+      watchRing.addLast(ev);
       if (watchRing.size() > WATCH_KEEP) watchRing.removeFirst();
       if (!watchOpted) {
-        watchLastId = Math.max(watchLastId, eventId(line));
+        watchSent = ev.seq();
         ws.sendText("n e " + line);
       } else if (watchOn && !tabGone && !ended) {
-        watchPending.add(line);
-        if (watchPending.size() > WATCH_KEEP) watchPending.remove(0);
+        watchPending.addLast(ev);
+        if (watchPending.size() > WATCH_KEEP) watchPending.removeFirst();
       }
     }
   }
@@ -868,10 +862,11 @@ final class Session {
       watchOpted = true;
       watchOn = on;
       watchPending.clear();
-      if (on) {  // the backlog, once (what the tab already has is not sent again); then each batch carries what arrived since
-        for (String e : watchRing) if (eventId(e) > watchLastId) watchPending.add(e);
+      if (on) {  // the backlog the tab has not been sent, once; then each batch carries what arrived since
+        for (NetEvent e : watchRing) if (e.seq() > watchSent) watchPending.addLast(e);
+      } else {
+        watchCountSent = -1;
       }
-      else watchCountSent = -1;
       if (!watchTicker) {
         watchTicker = true;
         Thread.ofVirtual().name("serve-netwatch-batch-" + id).start(this::watchTick);
@@ -883,7 +878,7 @@ final class Session {
     try {
       while (!ended && !tabGone) {
         Thread.sleep(WATCH_BATCH_MS);
-        List<String> out = null;
+        List<NetEvent> out = null;
         String count = null;
         synchronized (watchLock) {
           long now = System.currentTimeMillis();
@@ -891,7 +886,7 @@ final class Session {
             if (!watchPending.isEmpty()) {
               out = new ArrayList<>(watchPending);
               watchPending.clear();
-              watchLastId = Math.max(watchLastId, eventId(out.get(out.size() - 1)));
+              watchSent = out.get(out.size() - 1).seq();  // pending is in arrival order
             }
           } else if (watchTotal != watchCountSent && now - watchCountAt >= WATCH_COUNT_MS) {
             watchCountSent = watchTotal;
@@ -904,9 +899,9 @@ final class Session {
         for (int i = 0; out != null && i < out.size(); ) {
           StringBuilder b = new StringBuilder("n b [");
           int n = 0;
-          while (i < out.size() && (n == 0 || b.length() + out.get(i).length() < WATCH_BATCH_CHARS)) {
+          while (i < out.size() && (n == 0 || b.length() + out.get(i).line().length() < WATCH_BATCH_CHARS)) {
             if (n++ > 0) b.append(',');
-            b.append(out.get(i++));
+            b.append(out.get(i++).line());
           }
           ws.sendText(b.append(']').toString());
         }
