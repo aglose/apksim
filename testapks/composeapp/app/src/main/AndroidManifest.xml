@@ -247,6 +247,15 @@
                 <data android:scheme="apksim" android:host="dialogs" />
             </intent-filter>
         </activity>
+        <!-- apksim://bottomsheet?kind=material|compose|plain: a bottom sheet over a screen with a tap counter behind. -->
+        <activity android:name=".BottomSheetActivity" android:exported="true" android:theme="@style/BottomSheetHost">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="bottomsheet" />
+            </intent-filter>
+        </activity>
         <!-- apksim://sensors[?rate=fastest|game|ui|normal]: every sensor SensorManager lists, with its events and last values. -->
         <activity android:name=".SensorsActivity" android:exported="true">
             <intent-filter>

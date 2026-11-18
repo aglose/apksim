@@ -17,6 +17,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewRootImpl;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.view.WindowManagerGlobal;
 import android.window.OnBackInvokedCallback;
@@ -1586,14 +1587,62 @@ public class Host {
     int x = 0;
     int y = 0;
     if (root.getLayoutParams() instanceof WindowManager.LayoutParams lp) {
-      // As the window manager places it: an axis with no pull to either side (NO_GRAVITY, the default) is centred.
+      // As the window manager places it (WindowLayout.computeFrames): in the parent frame, the display less the
+      // insets of the types and sides the window fits (a dialog's system bars, unless hidden; none for an
+      // edge-to-edge activity window), by its gravity, offsets and margins, then kept on that frame
+      // (Gravity.applyDisplay). An axis with no pull to either side (NO_GRAVITY, the default) is centred. On the whole
+      // display, a dialog with BOTTOM gravity sat over the navigation bar (issue 506). Not done: the display cutout's
+      // safe area, an IME-inset parent frame and multi-window modes.
+      // A sub-window (a PopupWindow: a panel attached to its activity's window) is placed in the window it is attached
+      // to, unless FLAG_LAYOUT_IN_SCREEN, and kept on the display frame all the same.
+      android.graphics.Rect display = displayFrame(lp);
+      android.graphics.Rect attached = attachedFrame(root, lp);
+      boolean inScreen = (lp.flags & WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN) != 0;
+      android.graphics.Rect parent = attached != null && !inScreen ? attached : display;
       android.graphics.Rect out = new android.graphics.Rect();
-      Gravity.apply(Gravity.getAbsoluteGravity(lp.gravity, root.getLayoutDirection()), rw, rh,
-          new android.graphics.Rect(0, 0, w, h), lp.x, lp.y, out);
+      int gravity = Gravity.getAbsoluteGravity(lp.gravity, root.getLayoutDirection());
+      Gravity.apply(gravity, rw, rh, parent, (int) (lp.x + lp.horizontalMargin * parent.width()),
+          (int) (lp.y + lp.verticalMargin * parent.height()), out);
+      Gravity.applyDisplay(gravity, display, out);
       x = out.left;
       y = out.top;
     }
     return new int[] {x, y};
+  }
+
+  /**
+   * The display less the insets this window fits ({@code getFitInsetsTypes}, {@code getFitInsetsSides}, visible ones
+   * unless it ignores visibility). The bars come from the display's SystemUi: a window's own insets state has them
+   * clipped to the frame Robolectric gave it.
+   */
+  private android.graphics.Rect displayFrame(WindowManager.LayoutParams lp) {
+    android.graphics.Rect display = new android.graphics.Rect(0, 0, w, h);
+    int types = lp.getFitInsetsTypes();
+    if (types == 0) return display;
+    android.graphics.Insets in = SystemBars.fitInsets(types, lp.isFitInsetsIgnoringVisibility());
+    int sides = lp.getFitInsetsSides();
+    return new android.graphics.Rect(
+        (sides & WindowInsets.Side.LEFT) != 0 ? in.left : 0,
+        (sides & WindowInsets.Side.TOP) != 0 ? in.top : 0,
+        w - ((sides & WindowInsets.Side.RIGHT) != 0 ? in.right : 0),
+        h - ((sides & WindowInsets.Side.BOTTOM) != 0 ? in.bottom : 0));
+  }
+
+  /**
+   * For a sub-window (TYPE_APPLICATION_PANEL and the like, whose token is its parent window's), where Host shows the
+   * window it is attached to; null for any other window, or when that window is not found.
+   */
+  private android.graphics.Rect attachedFrame(View root, WindowManager.LayoutParams lp) {
+    if (lp.type < WindowManager.LayoutParams.FIRST_SUB_WINDOW || lp.type > WindowManager.LayoutParams.LAST_SUB_WINDOW
+        || lp.token == null) {
+      return null;
+    }
+    for (View r : rootViews()) {
+      if (r == root || r.getWindowToken() != lp.token) continue;
+      int[] at = position(r);
+      return new android.graphics.Rect(at[0], at[1], at[0] + r.getWidth(), at[1] + r.getHeight());
+    }
+    return null;
   }
 
   /** The clock when the last frame was drawn (ms). */

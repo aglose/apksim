@@ -98,8 +98,13 @@ Read README.md for results and limits; this file covers how to work on the code.
     InputDispatcher decides: a window is touch-modal only when it is focusable and lacks FLAG_NOT_TOUCH_MODAL, so a
     non-focusable popup (a slider's value tooltip) takes only touches inside it (`isTouchThrough`). On a DOWN, each visible, touchable window above the target that has FLAG_WATCH_OUTSIDE_TOUCH and does not contain the point gets an ACTION_OUTSIDE in its own coordinates (`sendOutsideTouches`, as InputDispatcher does), so Compose popups dismiss on an outside tap. A touch event's
     raw coordinates are the screen's and x/y the window's, as a device delivers them (Compose reads the raw ones).
-    Host places windows itself (`position`: gravity and offsets on the display with `Gravity.apply`, as the window
-    manager does, so an axis with no gravity (NO_GRAVITY, a window's default) is centred; Robolectric's window session
+    Host places windows itself (`position`, as AOSP's `WindowLayout.computeFrames`: gravity, offsets and margins with
+    `Gravity.apply` in the parent frame, then `Gravity.applyDisplay` on the display frame; the display frame is the
+    display less the insets of the bars the window fits and that show (`getFitInsetsTypes`/`Sides`, bar sizes from
+    Robolectric's `SystemUi` through `SystemBars.fitInsets`: a dialog stays off the bars, an edge-to-edge activity
+    window does not), the parent frame that, or for a sub-window (a PopupWindow) without FLAG_LAYOUT_IN_SCREEN the
+    window it is attached to; issue 506: a BOTTOM-gravity dialog sat over the navigation bar; not done: the cutout's
+    safe area, an IME-inset parent, multi-window. An axis with no gravity (NO_GRAVITY, a window's default) is centred; Robolectric's window session
     gives a window that is not full-screen its measured size placed inside the bars' insets, not where the window
     manager would; before issue 506 the display's size at lp.x/lp.y), and tells their views: `ShadowSimViewRootImpl`
     moves the frame a relayout gives to that place, and `syncWindowPositions` each loop turn, so AttachInfo's window
@@ -593,7 +598,10 @@ Read README.md for results and limits; this file covers how to work on the code.
   reads; Settings shows the wall clock in the locale's format. `apksim://stack` opens `SecondActivity` (plain views, a
 colour and tap count per level) over what is running, and its "Deeper" stacks another, for stack checks;
 `apksim://floating` a dialog-themed `FloatingActivity`; `apksim://floating-tall[?bars=hide]` a floating, translucent,
-dimming WRAP_CONTENT window with a list taller than the display (`FloatingTallActivity`, issue 506; `ci-smoke.sh` checks its size); `--feature dev.apksim.testapp.launch_overlay` has its
+dimming WRAP_CONTENT window with a list taller than the display (`FloatingTallActivity`, issue 506; `ci-smoke.sh` checks its size);
+`apksim://bottomsheet?kind=material|compose|plain[&rows=N]` (`BottomSheetActivity`) a bottom sheet over a screen that counts taps
+behind it: Material Components' BottomSheetDialog (the test app's only use of that library), Material 3's ModalBottomSheet, or a
+framework Dialog with BOTTOM gravity (`ci-smoke.sh` checks it ends at the navigation bar); its sheet has a "Count" button; `--feature dev.apksim.testapp.launch_overlay` has its
 Application add an empty 0x0 overlay window before any activity (`ci-smoke.sh`: the first frame still comes). `snapshots/` has its screenshot-test specs
   (`spec.json`: 5 screens × 16 combinations; `ci.json`, the CI's). Build with `./gradlew :app:assembleDebug` inside it. Its `uiserver` module is an instrumentation-only APK, a
   tool's on-device server in miniature, for `scripts/adb-check.py` (`./gradlew :uiserver:assembleDebug`).
