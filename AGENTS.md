@@ -604,7 +604,7 @@ than DELTA, and a difference map), `clock [ISO|epoch-ms|real]` (the app's wall c
 from the launcher intent (MAIN/LAUNCHER, the only activity in the stack) and nothing handles back: as on Android 12+
 (`ActivityClientController.onBackPressed` -> `moveTaskToBack`) the task goes to the back, as `home` does without
 `onUserLeaveHint` (`Host.moveRootToBack`, `DeviceControls.backToHome`; test runs do the same in `ShadowSimActivityClient`),
-the instance stays and `resume` or a click brings it back (issue 480).
+the instance stays and `resume` or a click brings it back (issue 480). The launcher test reads the activity's current intent, so one that called `setIntent` with another still finishes (a device uses the task's base intent).
 Simulator-style device controls (`DeviceControls.java`; each is also a Mac menu item, see "Simulator features"):
 `appearance dark|light|toggle`, `locale fr-FR`, `fontscale 1.3|+|-`, `timezone [ZONE]` (the zone the app sees; set at
 launch with `--timezone America/New_York`; see `TimeZones` below), `config` (configuration the app sees),
