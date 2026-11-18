@@ -4,7 +4,7 @@ import java.io.IOException;
 
 /**
  * The duration of a sound file read from its container, for {@link ShadowSimMediaPlayer}: WAV, MP3 (Xing/Info or CBR
- * estimate), MP4/M4A (mvhd), Ogg Vorbis/Opus (last granule position) and FLAC (STREAMINFO). Reads only the file's
+ * estimate), ADTS AAC (frames counted), MP4/M4A (mvhd), Ogg Vorbis/Opus (last granule position) and FLAC (STREAMINFO). Reads only the file's
  * head and, for Ogg, its tail. Anything else, or a file that does not parse, is {@link #UNKNOWN_MS}.
  */
 final class MediaProbe {
@@ -28,6 +28,7 @@ final class MediaProbe {
       else if (eq(h, 0, "fLaC")) ms = flac(s);
       else if (eq(h, 0, "OggS")) ms = ogg(s);
       else if (eq(h, 4, "ftyp")) ms = mp4(s);
+      else if ((h[0] & 0xff) == 0xff && (h[1] & 0xf6) == 0xf0) ms = adts(s);
       else ms = mp3(s);
       return ms > 0 && ms < Integer.MAX_VALUE ? (int) ms : UNKNOWN_MS;
     } catch (IOException | RuntimeException e) {
@@ -137,6 +138,26 @@ final class MediaProbe {
     return -1;
   }
 
+  private static final int[] ADTS_RATES = {96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350};
+
+  /** ADTS AAC: its frames walked to the end, 1024 samples each at the first header's rate. */
+  private static long adts(Source s) throws IOException {
+    long len = s.length(), pos = 0, frames = 0;
+    int rate = 0;
+    byte[] h = new byte[7];
+    while (pos + 7 <= len && frames < 1_000_000) {
+      if (fill(s, pos, h) < 7 || (h[0] & 0xff) != 0xff || (h[1] & 0xf6) != 0xf0) break;
+      int index = (h[2] >> 2) & 15;
+      if (index >= ADTS_RATES.length) break;
+      if (rate == 0) rate = ADTS_RATES[index];
+      int length = ((h[3] & 3) << 11) | ((h[4] & 0xff) << 3) | ((h[5] & 0xe0) >> 5);
+      if (length < 7) break;
+      frames += 1 + (h[6] & 3);  // raw data blocks in this frame
+      pos += length;
+    }
+    return rate > 0 && frames > 0 ? frames * 1024 * 1000 / rate : -1;
+  }
+
   private static final int[][] BITRATES = {
       {0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448},   // V1 L1
       {0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384},      // V1 L2
@@ -144,6 +165,21 @@ final class MediaProbe {
       {0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256},      // V2 L1
       {0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160}};          // V2 L2/L3
   private static final int[] RATES = {44100, 48000, 32000};
+
+  /** {kbps, sample rate, samples per frame, frame length in bytes, layer} of a header at b[i], or null. */
+  private static int[] frame(byte[] b, int i) {
+    if (i + 4 > b.length || (b[i] & 0xff) != 0xff || (b[i + 1] & 0xe0) != 0xe0) return null;
+    int version = (b[i + 1] >> 3) & 3, layer = (b[i + 1] >> 1) & 3, br = (b[i + 2] >> 4) & 15, sr = (b[i + 2] >> 2) & 3;
+    if (version == 1 || layer == 0 || br == 0 || br == 15 || sr == 3) return null;
+    boolean v1 = version == 3;
+    int l = 4 - layer;  // 1..3
+    int kbps = BITRATES[v1 ? l - 1 : (l == 1 ? 3 : 4)][br];
+    int rate = RATES[sr] >> (version == 2 ? 1 : version == 0 ? 2 : 0);
+    int samples = l == 1 ? 384 : (l == 3 && !v1 ? 576 : 1152);
+    int padding = (b[i + 2] >> 1) & 1;
+    int length = l == 1 ? (12 * kbps * 1000 / rate + padding) * 4 : samples / 8 * kbps * 1000 / rate + padding;
+    return length < 4 ? null : new int[] {kbps, rate, samples, length, l};
+  }
 
   private static long mp3(Source s) throws IOException {
     long len = s.length(), pos = 0;
@@ -154,15 +190,13 @@ final class MediaProbe {
     byte[] b = new byte[4096];
     int n = fill(s, pos, b);
     for (int i = 0; i + 4 < n; i++) {
-      if ((b[i] & 0xff) != 0xff || (b[i + 1] & 0xe0) != 0xe0) continue;
-      int version = (b[i + 1] >> 3) & 3, layer = (b[i + 1] >> 1) & 3, br = (b[i + 2] >> 4) & 15, sr = (b[i + 2] >> 2) & 3;
-      if (version == 1 || layer == 0 || br == 0 || br == 15 || sr == 3) continue;
-      boolean v1 = version == 3;
-      int l = 4 - layer;  // 1..3
-      int row = v1 ? l - 1 : (l == 1 ? 3 : 4);
-      int kbps = BITRATES[row][br];
-      int rate = RATES[sr] >> (version == 2 ? 1 : version == 0 ? 2 : 0);
-      int samples = l == 1 ? 384 : (l == 3 && !v1 ? 576 : 1152);
+      int[] f = frame(b, i);
+      if (f == null) continue;
+      // A frame must be followed by another where it ends: two bytes that merely look like a header (inside an ADTS
+      // AAC stream, say) are not an MP3. A frame running past what was read is taken on its own.
+      if (i + f[3] + 4 <= n && frame(b, i + f[3]) == null) continue;
+      boolean v1 = ((b[i + 1] >> 3) & 3) == 3;
+      int l = f[4], kbps = f[0], rate = f[1], samples = f[2];
       boolean mono = ((b[i + 3] >> 6) & 3) == 3;
       int side = v1 ? (mono ? 17 : 32) : (mono ? 9 : 17);
       int tag = i + 4 + side;
