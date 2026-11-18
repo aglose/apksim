@@ -429,11 +429,12 @@ public class Host {
         framesAtQuiet = frames;
       } else if (now - quietSince >= quietNanos) {
         hw.withLatestFrame(b -> {});  // the last frame's raster has finished: `shot` reads it
-        pending.finish("settled in " + (now - start) / 1_000_000 + " ms");
+        pending.finish("settled in " + (now - start) / 1_000_000 + " ms" + (controls.hidden() ? " (app in background: `resume` brings it back)" : ""));
         return true;
       }
       if (now - start > maxNanos) {
-        pending.finish("error: not settled after " + (now - start) / 1_000_000 + " ms: " + reason);
+        pending.finish("error: not settled after " + (now - start) / 1_000_000 + " ms: " + reason
+            + (controls.hidden() ? " (app in background: `resume` brings it back)" : ""));
         return true;
       }
       return false;
@@ -444,7 +445,9 @@ public class Host {
   private String busy(ShadowLooper looper, List<View> roots) {
     if (!pendingScript.isEmpty() || drag != null) return "input queued";
     if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) return "a frame is wanted";
-    if (needsFrame(roots)) return "a window needs drawing";
+    // Behind the home screen nothing is drawn (the loop makes no frames), so a window that differs from the last
+    // frame's would stay "needing drawing" until a `resume` (issue 489).
+    if (!controls.hidden() && needsFrame(roots)) return "a window needs drawing";
     for (View r : roots) {
       if (HwRenderer.drawn(r) && r.isLayoutRequested()) return "a window needs layout (" + r.getClass().getSimpleName() + ")";
     }
