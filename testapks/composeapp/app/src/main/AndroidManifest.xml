@@ -165,6 +165,15 @@
                 <data android:scheme="apksim" android:host="timer" />
             </intent-filter>
         </activity>
+        <!-- apksim://edittext: a focused View EditText, its caret blink and `settle` (issue 479). -->
+        <activity android:name=".EditTextActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="edittext" />
+            </intent-filter>
+        </activity>
         <!-- apksim://popup-trace: a Trace section begun twice, and taps outside a non-focusable popup (issue 52). -->
         <activity android:name=".PopupTraceActivity" android:exported="true">
             <intent-filter>
