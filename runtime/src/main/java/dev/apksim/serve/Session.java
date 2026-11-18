@@ -1343,8 +1343,7 @@ final class Session {
       // Only now may the tab's lines reach the stream: before its answer, Control still reads the connection as a
       // command line, and a `viewport` there would be taken for a command (or swallowed by its reader's buffer).
       streamReady = true;
-      String v = viewport;
-      if (v != null) sendStreamLine(v + "\n");
+      sendViewport();
       if (viewers != null) viewers.codec(h264);
       if (options.containsKey("codec")) ws.sendText("c " + (h264 ? "h264" : "jpeg"));
       while (!ended) {
@@ -1537,6 +1536,23 @@ final class Session {
     if (h264) sendStreamLine(line);
   }
 
+  /**
+   * The tab's latest `viewport` to the stream. It is read under the socket's lock, so of two senders racing (the tab's
+   * thread with a new one, the reader as the stream becomes ready) the one writing last writes the newest.
+   */
+  private void sendViewport() {
+    Socket s = stream;
+    if (s == null || !streamReady) return;
+    try {
+      synchronized (s) {
+        String v = viewport;
+        if (v != null) s.getOutputStream().write((v + "\n").getBytes(StandardCharsets.US_ASCII));
+      }
+    } catch (IOException e) {
+      // the instance went away
+    }
+  }
+
   private void sendStreamLine(String line) {
     Socket s = stream;
     if (s == null || !streamReady) return;
@@ -1559,7 +1575,7 @@ final class Session {
     if (text.matches("viewport [0-9]{1,5} [0-9]{1,5}")) {
       // The size the tab shows the stream at (issue 499): the instance encodes no larger. Kept for a stream not open yet.
       viewport = text;
-      sendStreamLine(text + "\n");
+      sendViewport();
       return;
     }
     if (text.equals("key")) {

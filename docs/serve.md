@@ -535,7 +535,9 @@ screen rectangle, a click at its centre landing at the app's centre, the cutout 
   in the upper 16 (0 there for a frame that is not scaled, so a client that never sends `viewport` sees nothing new);
   the page keeps its canvas at the device's size and draws the picture scaled up into it, so fitting, skins, Fill and
   touch coordinates (device pixels) are as before. `viewport 0 0` is full resolution again; Fill mode shows the display
-  1:1 and so never scales. `shot`, recordings and screenshots stay at device resolution. With several stream connections
+  1:1 and so never scales. Up to 2k - 1 device pixels at the right and bottom edges are left out of a scaled frame
+  (whole blocks, even sizes) and the page stretches the rest over the display: under 2 pixels on the tab's screen, where
+  the frame is shown at about 1/k. `shot`, recordings and screenshots stay at device resolution. With several stream connections
   the largest viewport wins, and any without one gets everything (share viewers cannot send it). `apksimStats()` has
   `streamWidth`, `streamHeight` and `viewport`. `scripts/viewport-check.py PORT` checks the instance side (CI) and
   `scripts/viewport-page-check.py URL` the page in Chrome.
