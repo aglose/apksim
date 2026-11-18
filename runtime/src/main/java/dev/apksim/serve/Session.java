@@ -1340,6 +1340,10 @@ final class Session {
         line.append((char) c);
       }
       h264 = line.toString().trim().equals("ok stream h264");
+      // Only now may the tab's lines reach the stream: before its answer, Control still reads the connection as a
+      // command line, and a `viewport` there would be taken for a command (or swallowed by its reader's buffer).
+      streamReady = true;
+      sendViewport();
       if (viewers != null) viewers.codec(h264);
       if (options.containsKey("codec")) ws.sendText("c " + (h264 ? "h264" : "jpeg"));
       while (!ended) {
@@ -1524,9 +1528,34 @@ final class Session {
     sendStream("key\n");
   }
 
+  /** The tab's last `viewport W H`, sent to the instance's stream (and again once it has answered `ok stream`). */
+  private volatile String viewport;
+  private volatile boolean streamReady;
+
   private void sendStream(String line) {
+    if (h264) sendStreamLine(line);
+  }
+
+  /**
+   * The tab's latest `viewport` to the stream. It is read under the socket's lock, so of two senders racing (the tab's
+   * thread with a new one, the reader as the stream becomes ready) the one writing last writes the newest.
+   */
+  private void sendViewport() {
     Socket s = stream;
-    if (!h264 || s == null) return;
+    if (s == null || !streamReady) return;
+    try {
+      synchronized (s) {
+        String v = viewport;
+        if (v != null) s.getOutputStream().write((v + "\n").getBytes(StandardCharsets.US_ASCII));
+      }
+    } catch (IOException e) {
+      // the instance went away
+    }
+  }
+
+  private void sendStreamLine(String line) {
+    Socket s = stream;
+    if (s == null || !streamReady) return;
     try {
       synchronized (s) {
         s.getOutputStream().write(line.getBytes(StandardCharsets.US_ASCII));
@@ -1541,6 +1570,12 @@ final class Session {
   private void onMessage(String text) {
     if (text.equals("ack")) {
       acked();
+      return;
+    }
+    if (text.matches("viewport [0-9]{1,5} [0-9]{1,5}")) {
+      // The size the tab shows the stream at (issue 499): the instance encodes no larger. Kept for a stream not open yet.
+      viewport = text;
+      sendViewport();
       return;
     }
     if (text.equals("key")) {

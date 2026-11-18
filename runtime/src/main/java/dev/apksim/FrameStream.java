@@ -23,7 +23,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
  *
  * <p>Wire format, per frame: int32 length of what follows, then int32 width, int32 height, int64 the present time in
  * epoch microseconds, int32 encode time in microseconds, and the JPEG; for H.264, a byte (1 for a keyframe, else 0)
- * and the access unit in Annex B. Big-endian.
+ * and the access unit in Annex B. Big-endian. A `viewport W H` line (the size the tab shows the stream at) makes the
+ * frames smaller than the device's (see {@link #setViewport}); the header's width and height are then the frame's own
+ * in their lower 16 bits and the device's in their upper 16 ({@link #sized}).
  */
 final class FrameStream {
   private static final CopyOnWriteArrayList<Subscriber> SUBSCRIBERS = new CopyOnWriteArrayList<>();
@@ -105,6 +107,96 @@ final class FrameStream {
     }
   }
 
+  /**
+   * `viewport W H` from the serve relay (issue 499): the size, in device pixels, at which the tab shows the stream.
+   * Frames are scaled down by a whole factor before encoding when it is about half the device's size or less (see
+   * {@link #target}); `viewport 0 0` or a larger size goes back to full resolution. Frames carry their own size in the
+   * header and the device's beside it ({@link #sized}), and the device's pixels stay the touch coordinates.
+   */
+  private static void setViewport(Subscriber s, String args) {
+    try {
+      String[] v = args.trim().split(" +");
+      if (v.length != 2) return;
+      int w = Math.max(0, Math.min(16384, Integer.parseInt(v[0])));
+      int h = Math.max(0, Math.min(16384, Integer.parseInt(v[1])));
+      synchronized (LOCK) {
+        if (s.viewW == w && s.viewH == h) return;
+        s.viewW = w;
+        s.viewH = h;
+        s.needsFrame = true;  // a new size needs a frame (H.264: a keyframe, as the encoder is reopened)
+        wake = true;
+        LOCK.notifyAll();
+      }
+    } catch (NumberFormatException e) {
+      // ignored
+    }
+  }
+
+  /**
+   * Called with LOCK held: how to encode a w x h frame, as {width, height, k}: k 1 for as it is, else the frame divided
+   * by k (see {@link #scaleBgra}). k is the largest whole factor that still shows the frame at no less than the largest
+   * viewport asked for (5% slack: a display shown at 0.505 of its size is k = 2), so a frame is scaled only when shown at
+   * about half size or less, and never up; between half and full size it stays full (a fractional resample costs the
+   * encoder about what it saves). Any subscriber without a viewport gets full size.
+   */
+  private static int[] target(int w, int h) {
+    int vw = 0, vh = 0;
+    for (Subscriber s : SUBSCRIBERS) {
+      if (s.viewW <= 0 || s.viewH <= 0) return new int[] {w, h, 1};  // one wants everything
+      vw = Math.max(vw, s.viewW);
+      vh = Math.max(vh, s.viewH);
+    }
+    if (vw <= 0) return new int[] {w, h, 1};
+    double f = Math.min((double) vw / w, (double) vh / h);
+    int k = (int) Math.min(16, Math.floor(1.05 / f));
+    if (k < 2 || w / k < 2 || h / k < 2) return new int[] {w, h, 1};
+    return new int[] {w / k & ~1, h / k & ~1, k};
+  }
+
+  private static final java.lang.invoke.VarHandle PIXEL =
+      java.lang.invoke.MethodHandles.byteArrayViewVarHandle(int[].class, java.nio.ByteOrder.LITTLE_ENDIAN);
+
+  /**
+   * Downscale of BGRA pixels by a whole factor k (2-16): each output pixel is the mean of a k x k block, its four
+   * channels summed two to an int (16 bits a lane: k * k * 255 fits). The output is tw x th; source pixels past tw * k
+   * or th * k (at most k + 1 of them, as the size is made even) are left out. ~0.8 ms for a phone's frame at k = 2,
+   * close to a plain read of it; a resample to any size, a sum per output column, took 3-4 ms, about what encoding the
+   * smaller frame saves. Encoder thread only.
+   */
+  static void scaleBgra(byte[] src, int w, int h, byte[] dst, int tw, int th, int k) {
+    int stride = w * 4, half = k * k / 2, add = half | half << 16;
+    int shift = Integer.numberOfTrailingZeros(k * k);
+    boolean pow2 = Integer.bitCount(k) == 1;
+    for (int y = 0; y < th; y++) {
+      int row = y * k * stride, o = y * tw * 4;
+      if (k == 2) {
+        for (int x = 0, r0 = row, r1 = row + stride; x < tw; x++, r0 += 8, r1 += 8, o += 4) {
+          int p0 = (int) PIXEL.get(src, r0), p1 = (int) PIXEL.get(src, r0 + 4);
+          int p2 = (int) PIXEL.get(src, r1), p3 = (int) PIXEL.get(src, r1 + 4);
+          int lo = (p0 & 0x00FF00FF) + (p1 & 0x00FF00FF) + (p2 & 0x00FF00FF) + (p3 & 0x00FF00FF) + 0x00020002;
+          int hi = (p0 >>> 8 & 0x00FF00FF) + (p1 >>> 8 & 0x00FF00FF) + (p2 >>> 8 & 0x00FF00FF) + (p3 >>> 8 & 0x00FF00FF)
+              + 0x00020002;
+          PIXEL.set(dst, o, (lo >>> 2 & 0x00FF00FF) | (hi << 6 & 0xFF00FF00));
+        }
+        continue;
+      }
+      for (int x = 0; x < tw; x++, o += 4) {
+        int lo = add, hi = add;
+        for (int yy = 0, r = row + x * k * 4; yy < k; yy++, r += stride) {
+          for (int xx = 0, i = r; xx < k; xx++, i += 4) {
+            int p = (int) PIXEL.get(src, i);
+            lo += p & 0x00FF00FF;
+            hi += p >>> 8 & 0x00FF00FF;
+          }
+        }
+        int n = k * k;
+        int b = pow2 ? (lo & 0xFFFF) >>> shift : (lo & 0xFFFF) / n, r = pow2 ? lo >>> 16 >>> shift : (lo >>> 16) / n;
+        int g = pow2 ? (hi & 0xFFFF) >>> shift : (hi & 0xFFFF) / n, al = pow2 ? hi >>> 16 >>> shift : (hi >>> 16) / n;
+        PIXEL.set(dst, o, b | g << 8 | r << 16 | al << 24);
+      }
+    }
+  }
+
   /** Called with LOCK held. */
   private static void recomputePace() {
     long pace = 0;
@@ -152,6 +244,7 @@ final class FrameStream {
           String cmd = line.toString().trim();
           if (h264 && cmd.equals("key")) s.askKey();
           else if (h264 && cmd.startsWith("pace ")) setPace(s, cmd.substring(5));
+          else if (cmd.startsWith("viewport ")) setViewport(s, cmd.substring(9));
           line.setLength(0);
         }
       } catch (IOException e) {
@@ -178,7 +271,12 @@ final class FrameStream {
       s.run();
     } finally {
       synchronized (LOCK) {
+        int[] before = lastW > 0 ? target(lastW, lastH) : null;
         SUBSCRIBERS.remove(s);
+        // One that asked for the most (or for everything) went: the rest get the screen again at their own size.
+        if (before != null && !Arrays.equals(before, target(lastW, lastH))) {
+          for (Subscriber o : SUBSCRIBERS) o.needsFrame = true;
+        }
         recomputePace();  // its pace goes with it
         SimWindow.closeHides(!SUBSCRIBERS.isEmpty());
         wake = true;  // the encoder lets go of an H.264 encoder no one needs any more
@@ -212,6 +310,7 @@ final class FrameStream {
     H264Encoder video = null;
     int videoKbps = 0;
     byte[] raw = null;
+    byte[] scaled = null;  // raw divided by a whole factor, for a viewport of half the display or less
     int refines = REFINES;  // H.264 re-encodes of a still screen done since the last new frame
     // When the next refinement and the next retry are due (System.nanoTime): set by the encode that calls for them,
     // and kept across frames that bring nothing new, so redraws of an unchanged screen do not put them off.
@@ -228,6 +327,9 @@ final class FrameStream {
       boolean retry = false;
       boolean repeat;
       boolean needy;
+      int ew;
+      int eh;
+      int ek;
       synchronized (LOCK) {
         while (true) {
           // A frame presented again with the same pixels counts as none (unless someone still needs a frame): it
@@ -298,39 +400,50 @@ final class FrameStream {
           h = latestH;
           micros = latestMicros;
         }
+        int[] t = target(w, h);
+        ew = t[0];
+        eh = t[1];
+        ek = t[2];
         q = quality;
         rate = kbps;
       }
       if (SUBSCRIBERS.isEmpty()) continue;
+      byte[] pix = raw;  // what is encoded: raw itself, or raw scaled down to the viewport
+      if (ek > 1) {
+        if (scaled == null || scaled.length != ew * eh * 4) scaled = new byte[ew * eh * 4];
+        scaleBgra(raw, w, h, scaled, ew, eh, ek);
+        pix = scaled;
+      }
       refines = refine ? refines + 1 : 0;
       // JPEG for a new frame, or for a JPEG subscriber that has had none yet (it may have joined while the frame
       // before was being encoded, which then was not offered to it).
       if (hasCodec(false) && (!repeat || (!refine && anyNeedsFrame(false)))) {
         long t0 = System.nanoTime();
-        if (bitmap == null || bitmap.getWidth() != w || bitmap.getHeight() != h) {
+        if (bitmap == null || bitmap.getWidth() != ew || bitmap.getHeight() != eh) {
           if (bitmap != null) bitmap.recycle();
-          bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+          bitmap = Bitmap.createBitmap(ew, eh, Bitmap.Config.ARGB_8888);
         }
-        bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(raw));
+        bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(pix, 0, ew * eh * 4));
         jpeg.reset();
         bitmap.compress(Bitmap.CompressFormat.JPEG, q, jpeg);
         int encodeMicros = (int) ((System.nanoTime() - t0) / 1000);
-        Frame f = new Frame(jpeg.toByteArray(), w, h, micros, encodeMicros, true);
+        Frame f = new Frame(jpeg.toByteArray(), sized(ew, w, ek > 1), sized(eh, h, ek > 1), micros,
+            encodeMicros, true);
         for (Subscriber s : SUBSCRIBERS) if (!s.h264) s.offer(f);
       }
       if (hasCodec(true)) {
         long t0 = System.nanoTime();
-        if (video != null && (video.width != (w & ~1) || video.height != (h & ~1) || videoKbps != rate)) {
+        if (video != null && (video.width != (ew & ~1) || video.height != (eh & ~1) || videoKbps != rate)) {
           video.close();
           video = null;
         }
         if (video == null) {
-          video = H264Encoder.open(w, h, rate);
+          video = H264Encoder.open(ew, eh, rate);
           videoKbps = rate;
           key = true;
         }
         if (anyNeedsFrame(true)) key = true;  // a new H.264 subscriber starts at a keyframe
-        byte[] unit = video == null ? null : video.encode(raw, w * 4, micros, key);
+        byte[] unit = video == null ? null : video.encode(pix, ew * 4, micros, key);
         if (unit == null) {
           // Nothing came out (or no encoder for this size): a fresh encoder and the last frame again as a keyframe,
           // RETRY_MS later even on a still screen. Past MAX_FAILURES in a row the H.264 streams end (their tabs see
@@ -348,7 +461,9 @@ final class FrameStream {
           failures = 0;
           refineAt = System.nanoTime() + REFINE_MS * 1_000_000;  // the next refinement, if nothing new comes
           int encodeMicros = (int) ((System.nanoTime() - t0) / 1000);
-          Frame f = new Frame(unit, video.width, video.height, micros, encodeMicros, unit[0] == 1);
+          boolean small = ek > 1;
+          Frame f = new Frame(unit, sized(video.width, w, small), sized(video.height, h, small), micros, encodeMicros,
+              unit[0] == 1);
           for (Subscriber s : SUBSCRIBERS) if (s.h264) s.offer(f);
         }
       } else if (video != null) {
@@ -364,6 +479,15 @@ final class FrameStream {
         lastH = h;
       }
     }
+  }
+
+  /**
+   * A header's width or height: the frame's own, and for a frame scaled down to a viewport the device's in the upper 16
+   * bits (both at most 16384), so a page can keep drawing and mapping touches at the device's size. A frame that is not
+   * scaled has 0 there, as before: only a tab that sent `viewport` ever gets the upper bits set.
+   */
+  private static int sized(int frame, int device, boolean scaled) {
+    return scaled ? frame | device << 16 : frame;
   }
 
   private static boolean hasCodec(boolean h264) {
@@ -395,6 +519,9 @@ final class FrameStream {
     long paceNanos;
     /** No frame offered yet (H.264: no keyframe): the encoder sends it the current screen even if unchanged. */
     volatile boolean needsFrame = true;
+    /** This viewer's `viewport` in device pixels (0: full resolution). Guarded by LOCK. */
+    int viewW;
+    int viewH;
 
     Subscriber(DataOutputStream out, boolean h264) {
       this.out = out;
