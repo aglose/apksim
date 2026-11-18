@@ -282,6 +282,15 @@
                 <data android:scheme="apksim" android:host="exit" />
             </intent-filter>
         </activity>
+        <!-- apksim://mediaplayer?src=NAME: the framework MediaPlayer over an asset's descriptor, as an app plays a sound effect (issue 488). -->
+        <activity android:name=".MediaPlayerActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="mediaplayer" />
+            </intent-filter>
+        </activity>
         <!-- apksim://interop: Views hosted in Compose through AndroidView, which `nodes` and `tap-text` must reach (issue 478). -->
         <activity android:name=".InteropActivity" android:exported="true">
             <intent-filter>

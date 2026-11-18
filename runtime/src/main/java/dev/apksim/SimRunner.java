@@ -438,6 +438,7 @@ public class SimRunner extends RobolectricTestRunner {
       if (REPEAT_FOREVER) shadows.add(ShadowRepeatingAnimator.class);  // frames at vsyncs: INFINITE can mean it
     } else if (!TestActivities.testRun()) {
       shadows.add(ShadowRealSleep.class);  // running instances: SystemClock.sleep takes real time, not simulated
+      shadows.add(dev.apksim.video.ShadowSimMediaPlayer.class);  // running instances: unknown MediaPlayer sources play silently
       shadows.add(Exits.ShadowKillableProcess.class);  // running instances: killing the app's own process ends it
       if (REPEAT_FOREVER) shadows.add(ShadowRepeatingAnimator.class);  // Host's paused Choreographer: INFINITE repeats
     }
