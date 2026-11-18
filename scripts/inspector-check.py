@@ -23,6 +23,9 @@ refused and the session announces neither. Standard library only. As a tab does 
     pass-through one keeps going to the real server, and a target that is gone is a 502 row;
   - a patch rule (`inspect rule add GET PATTERN patch 0 - BODY64`, or `"patch": "JSON text"` in a set) is accepted and listed, and
     one that is not JSON or has a status or body of its own is refused;
+  - a second socket for the inspector alone (`/ws?inspect=ID`, issue 497) gets the remembered exchanges and live ones, lists, adds and
+    clears rules and reads a detail, is sent no frame and counts as no viewer, needs the token, closing it leaves the session, and the
+    session ending tells it;
   - `rec on input logcat` then `rec save` gives a recording the server serves.
 
 With --chrome (a Mac with Chrome): the page's report button downloads one zip holding the note, the settings, a screenshot, the
@@ -243,6 +246,106 @@ def patch_checks(t):
     check(any(x.count('"id"') == 2 for x in got), "a refused set changed nothing")
     t.ws.send("inspect rule clear")
     t.pump(1.5)
+
+
+def inspector_socket_checks(url, token, t, sid):
+    """Issue 497: a second socket for the inspector alone (`/ws?inspect=ID`), while the tab's own socket streams frames."""
+    hdr = {"Origin": sc.parts(url)[2]}
+    if token:
+        hdr["Cookie"] = "apksim_token=" + token
+
+    def read(ws, seconds, until=None):
+        got, end = [], time.time() + seconds
+        while time.time() < end:
+            m = ws.recv(0.2)
+            if m is None:
+                if until and until(got):
+                    break
+                continue
+            if m[0] == 8:
+                got.append((8, b""))
+                break
+            if m[0] in (1, 2):
+                got.append((m[0], m[1].decode("utf-8", "replace") if m[0] == 1 else m[1]))
+            if until and until(got):
+                break
+        return got
+
+    def texts(got):
+        return [x[1] for x in got if x[0] == 1]
+
+    bad = sc.WS(url, "/ws?inspect=" + "0" * 12, hdr)
+    check(bad.status == 404, f"a session that does not exist has no inspector socket ({bad.status})")
+    bad.s.close()
+    if token:
+        anon = sc.WS(url, f"/ws?inspect={sid}", {"Origin": sc.parts(url)[2]})
+        check(anon.status == 401, f"it needs the server's token as the session's own socket does ({anon.status})")
+        anon.s.close()
+        cross = sc.WS(url, f"/ws?inspect={sid}", dict(hdr, Origin="https://elsewhere.example"))
+        check(cross.status == 403, f"and refuses another origin ({cross.status})")
+        cross.s.close()
+    w = sc.WS(url, f"/ws?inspect={sid}", hdr)
+    check(w.status == 101, f"the inspector socket upgrades ({w.status})")
+    backlog = read(w, 5, until=lambda g: any(x.startswith("n e ") for x in texts(g)))
+    check(any(x.startswith("n e ") for x in texts(backlog)), "it gets the exchanges the inspector remembers on connect")
+    w.send("inspect rule list")
+    got = read(w, 5, until=lambda g: "n r rule []" in texts(g))
+    check("n r rule []" in texts(got), "it lists the rules, answered to it")
+    w.send("inspect rule add GET /socket-two 200 0 - -")
+    got = read(w, 5, until=lambda g: any(x.startswith("n r rule [") and "/socket-two" in x for x in texts(g)))
+    check(any("/socket-two" in x for x in texts(got)), "it adds a rule")
+    n = len(t.frames)
+    before = len(t.events())
+    t.tap(*FETCH)
+    live = read(w, 30, until=lambda g: sum(x.startswith("n e ") for x in texts(g)) >= 1)
+    check(any(x.startswith("n e ") for x in texts(live)), "a new exchange reaches it live")
+    check(t.pump(10, until=lambda: len(t.frames) > n), "the tab's socket kept streaming frames meanwhile")
+    check(t.pump(10, until=lambda: len(t.events()) > before), "and still gets its own events")
+    w.send("inspect detail 999999999")
+    got = read(w, 5, until=lambda g: any(x.startswith("n r detail") for x in texts(g)))
+    check(any(x.startswith("n r detail") for x in texts(got)), "a detail request is answered to it")
+    w.send("inspect rule clear")
+    read(w, 3, until=lambda g: "n r rule []" in texts(g))
+    w.send("touch down 10 10")
+    got = read(w, 3, until=lambda g: any(x.startswith("r refused") for x in texts(g)))
+    check(any(x.startswith("r refused") for x in texts(got)), "anything but inspect commands is refused")
+    check(not any(x[0] == 2 for x in backlog + live + got), "no frame was ever sent to it")
+    k = len(t.texts)
+    t.pump(5, until=lambda: any(x.startswith("s ") for x in t.texts[k:]))
+    st = next((json.loads(x[2:]) for x in reversed(t.texts) if x.startswith("s ")), {})
+    check(st.get("viewers", {}).get("count", 0) == 0, f"and it does not count as a viewer ({st.get('viewers')})")
+    extra = [sc.WS(url, f"/ws?inspect={sid}", hdr) for _ in range(4)]
+    over = [texts(read(x, 3, until=lambda g: any(y.startswith("x ") for y in texts(g)))) for x in extra]
+    check(sum(any(y.startswith("x too many") for y in o) for o in over) == 1, "a fifth inspector socket on a session is refused")
+    for x in extra:
+        x.s.close()
+    w.s.close()
+    time.sleep(1)
+    k = len(t.replies("rule"))
+    t.ws.send("inspect rule list")
+    check(t.pump(5, until=lambda: len(t.replies("rule")) > k), "closing it does not end the session")
+
+
+def inspector_socket_end_check(url, token, t, sid):
+    """The session ending closes an inspector socket with the usual `e` and `x`."""
+    hdr = {"Origin": sc.parts(url)[2]}
+    if token:
+        hdr["Cookie"] = "apksim_token=" + token
+    w = sc.WS(url, f"/ws?inspect={sid}", hdr)
+    check(w.status == 101, "a second inspector socket opens for the end check")
+    time.sleep(1)
+    t.ws.s.close()
+    end, got = time.time() + 30, []
+    while time.time() < end:
+        m = w.recv(0.5)
+        if m is None:
+            continue
+        if m[0] == 1:
+            got.append(m[1].decode("utf-8", "replace"))
+        if m[0] == 8 or any(x.startswith("x ") for x in got):
+            break
+    check(any(x.startswith("x ") for x in got), f"the session ending tells it ({[x[:60] for x in got][-2:]})")
+    w.s.close()
 
 
 def watch_checks(url, token, app):
@@ -491,6 +594,7 @@ def main():
         t.ws.send("inspect rule list")
         check(t.pump(5, until=lambda: t.replies("rule") and t.replies("rule")[-1] == "[]"), "an empty set removes the rules")
 
+        inspector_socket_checks(url, token, t, i["id"])
         forward_checks(t, a.forward_port)
         patch_checks(t)
 
@@ -509,6 +613,7 @@ def main():
                 status, data = sc.http(url, f"/api/sessions/{sid}/recordings/{rid}", token)
                 time.sleep(0.5)
             check(status == 200 and zipfile.is_zipfile(io.BytesIO(data)), f"the server serves it as a zip ({status}, {len(data)} bytes)")
+        inspector_socket_end_check(url, token, t, i["id"])
     finally:
         t.ws.s.close()
     if a.chrome is not None:
