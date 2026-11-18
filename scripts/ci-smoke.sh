@@ -133,6 +133,13 @@ echo "Recreate: $r0 -> $r1 -> $r2"
 [[ "$r0" == 'text="recreate: instances 1, live 1"' && "$r1" == 'text="recreate: instances 2, live 1"' \
    && "$r2" == 'text="recreate: instances 4, live 1"' ]] \
   || { echo "repeated recreate() calls were not one relaunch at a time" >&2; exit 1; }
+# Views hosted in Compose through AndroidView are in `nodes` and `tap-text` reaches them (issue 478).
+drive 'open apksim://interop' 'wait 2000' >/dev/null
+drive nodes | grep -q 'text="Row 3"' || { echo "nodes lacks a View hosted in Compose (AndroidView)" >&2; exit 1; }
+drive 'tap-text Row 3' 'wait 800' >/dev/null
+drive nodes | grep -q 'text="tapped: Row 3"' || { echo "tap-text did not reach a View hosted in Compose" >&2; exit 1; }
+echo "Interop: AndroidView rows listed and tapped"
+drive back 'wait 800' >/dev/null  # the stack as it was for the backs below
 drive back 'wait 800' >/dev/null
 drive back 'wait 800' >/dev/null
 [[ "$shown" == 'text="trace: begun twice 2 times" text="tooltip: shown" text="taps: 0" text="outside: 0" ' \

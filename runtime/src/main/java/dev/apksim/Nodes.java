@@ -82,6 +82,11 @@ final class Nodes {
     AccessibilityNodeProvider p = v.getAccessibilityNodeProvider();
     if (p != null) {
       walkVirtual(v, p, AccessibilityNodeProvider.HOST_VIEW_ID, depth, visit);
+      // Views the provider's owner hosts (Compose's AndroidView interop: AndroidViewsHandler and its holders) are
+      // children of the host view, not virtual nodes: the platform's tree continues into them, so this does too.
+      if (v instanceof android.view.ViewGroup g) {
+        for (int i = 0; i < g.getChildCount(); i++) walkView(g.getChildAt(i), depth + 1, visit);
+      }
       return;
     }
     AccessibilityNodeInfo info = v.createAccessibilityNodeInfo();
