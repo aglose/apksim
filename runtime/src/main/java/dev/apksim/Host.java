@@ -433,7 +433,10 @@ public class Host {
         return true;
       }
       if (now - start > maxNanos) {
-        pending.finish("error: not settled after " + (now - start) / 1_000_000 + " ms: " + reason
+        // Nothing was busy, but the quiet window did not fit before MAX_MS: say so rather than an empty reason.
+        String why = !reason.isEmpty() ? reason : "quiet for " + (quietSince == 0 ? 0 : (now - quietSince) / 1_000_000)
+            + " of " + quietNanos / 1_000_000 + " ms";
+        pending.finish("error: not settled after " + (now - start) / 1_000_000 + " ms: " + why
             + (controls.hidden() ? " (app in background: `resume` brings it back)" : ""));
         return true;
       }
