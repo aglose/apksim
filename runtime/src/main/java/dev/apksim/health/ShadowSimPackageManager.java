@@ -35,11 +35,21 @@ public class ShadowSimPackageManager extends ShadowApplicationPackageManager {
     return super.getPackageInfo(packageName, flags);
   }
 
+  /** When the app was installed here (the launch), epoch ms; 0 until InstallState sets it (issue 505). */
+  public static volatile long installTime;
+
   private void syncHealthGrants(String packageName) {
     android.app.Application app = RuntimeEnvironment.getApplication();
     if (app == null || packageName == null || !packageName.equals(app.getPackageName())) return;
     PackageInfo info = getInternalMutablePackageInfo(packageName);
-    if (info == null || info.requestedPermissions == null) return;
+    if (info == null) return;
+    long installed = installTime;
+    if (installed != 0) {
+      // As after `adb install`: Robolectric builds the PackageInfo from the manifest with both times 0 (12/31/69).
+      if (info.firstInstallTime == 0) info.firstInstallTime = installed;
+      if (info.lastUpdateTime == 0) info.lastUpdateTime = installed;
+    }
+    if (info.requestedPermissions == null) return;
     if (info.requestedPermissionsFlags == null || info.requestedPermissionsFlags.length != info.requestedPermissions.length) {
       int[] f = new int[info.requestedPermissions.length];
       if (info.requestedPermissionsFlags != null) {

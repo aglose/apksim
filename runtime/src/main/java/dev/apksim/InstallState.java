@@ -18,6 +18,8 @@ final class InstallState {
     // in both, as one the slot kept does.
     if (TestActivities.testRun()) SlotDevice.applySeeds(app);
     seedAndroidId(app);
+    // The install time apps show (PackageInfo.firstInstallTime/lastUpdateTime): the launch, as apksim installs at launch.
+    dev.apksim.health.ShadowSimPackageManager.installTime = System.currentTimeMillis();
     grantInstallPermissions(app);
     hostNetworks(app);
     standInBrowser(app);  // before the providers: AndroidX Startup initializers may look for a browser
