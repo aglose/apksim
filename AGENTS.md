@@ -913,7 +913,7 @@ before, providers being made only when first queried); a provider that fails is 
 (`-Dapksim.providerFailures=fail` crashes the launch as a device would: FATAL EXCEPTION, exit 10, see `Crashes`; log
 stays the default here, as a provider apksim cannot start may be apksim's gap, and such apps ran before). The standby's warm-up loads Conscrypt's
 native library, which OkHttp's startup initializer asks for (~125 ms of a warm launch otherwise). `apksim://install`
-(`InstallStateActivity`) shows what onCreate saw and binds to a service nothing provides (`ci-smoke.sh` checks it). Window modes (`applyWindowMode` in `simwindow.m`): only `front` takes focus; `nofocus` shows the
+(`InstallStateActivity`) shows what onCreate saw (and "installed: set": the app's PackageInfo firstInstallTime and lastUpdateTime are the launch time on the app's clock, `--clock` included, stamped by `InstallState` on every launch, not kept with a data slot; issue 505) and binds to a service nothing provides (`ci-smoke.sh` checks it). Window modes (`applyWindowMode` in `simwindow.m`): only `front` takes focus; `nofocus` shows the
 window on top, `background` behind every other window (orderBack), `minimized` in the Dock, `hidden` not at all; a
 Dock icon click shows it focused. The window server activates a newly launched regular app just after it finishes
 launching, asked or not, so the other modes start as an accessory app and turn regular (Dock icon) in

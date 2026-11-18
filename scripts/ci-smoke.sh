@@ -359,11 +359,11 @@ drive 'resume' 'wait 500' 'windows' | grep -q 'MainActivity{resumed}' \
 # What installing gives the app before Application.onCreate (a normal permission, ANDROID_ID, its providers), and a bind
 # to a service nothing provides: false and no callbacks, so the screen's Kotlin connection does not end the app
 # (the test app's apksim://install, issues 76 and 81).
-install() { drive nodes | grep -oE 'text="(install|android id|provider|bind missing): [^"]*"' | tr '\n' ' '; }
+install() { drive nodes | grep -oE 'text="(install|android id|provider|installed|bind missing): [^"]*"' | tr '\n' ' '; }
 drive 'open apksim://install' 'wait 3000' >/dev/null
 installed="$(install)"
 echo "Install state: $installed"
-[[ "$installed" == 'text="install: vibrate granted at create" text="android id: set at create" text="provider: before create" text="bind missing: false, unbound, 0 callbacks" ' ]] \
+[[ "$installed" == 'text="install: vibrate granted at create" text="android id: set at create" text="provider: before create" text="installed: set" text="bind missing: false, unbound, 0 callbacks" ' ]] \
   || { echo "the app did not start with what installing gives it, or a bind to nothing called back" >&2; exit 1; }
 drive back 'wait 1000' >/dev/null
 

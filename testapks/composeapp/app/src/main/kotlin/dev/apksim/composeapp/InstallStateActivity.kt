@@ -46,6 +46,12 @@ class InstallStateActivity : Activity() {
         textSize = 18f
         text = "provider: " + (if (ComposeApp.providerBeforeCreate) "before" else "after") + " create"
       })
+      addView(TextView(this@InstallStateActivity).apply {
+        textSize = 18f
+        val pi = packageManager.getPackageInfo(packageName, 0)
+        // As after `adb install`: both are the install time, not 0 (12/31/69; issue 505).
+        text = "installed: " + (if (pi.firstInstallTime > 0 && pi.lastUpdateTime > 0) "set" else "zero")
+      })
       addView(status)
     }
     setContentView(layout)
