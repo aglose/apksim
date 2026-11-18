@@ -225,7 +225,9 @@ Read README.md for results and limits; this file covers how to work on the code.
     overrides either way (launches cold). The test app's `apksim://appcompat` (`AppCompatCheckActivity`: a
     night-qualified colour and vector read through AppCompatResources with the activity's and the application's
     context, "appcompat: activity color=#.. vector=#.., app color=#.. vector=#.., instances N") shows the same values
-    with and without the collection across appearance switches and rotations; `ci-smoke.sh` checks it.
+    with and without the collection across appearance switches and rotations; `ci-smoke.sh` checks it. The trade is
+    deliberate: a destroyed activity's native-backed objects (Bitmap pixels, renderers) now wait for the next
+    collection that reaches them, or Host.Memory's idle one, instead of going at the recreation.
   - `MappedResources`, `org.robolectric.res.android.CppApkAssets` and `ResourceString` (apksim's copies of
     Robolectric 4.17's, ahead of them on the class path): a `resources.arsc` is a mapped file, not a `byte[]` on the
     heap. Robolectric inflates the framework's table (16.7 MB, the largest object of an idle instance's heap) and
