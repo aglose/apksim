@@ -20,6 +20,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -168,6 +169,10 @@ public final class Serve {
   final Map<String, String> reopened = new ConcurrentHashMap<>();
   /** Each reopened copy's saved record `changed` when it was made (BeamStore.writeBack refuses data changed since). */
   final Map<String, Long> reopenedChanged = new ConcurrentHashMap<>();
+  /** Reopened copies whose start named a `--device` in its options (issue 519): the page's device beats the saved one. */
+  final Set<String> reopenedNamedDevice = ConcurrentHashMap.newKeySet();
+  /** Upload grants of such starts (the copy is made once the build has arrived); one is a token, gone at its upload. */
+  final Set<String> namedDeviceUploads = ConcurrentHashMap.newKeySet();
   /** `--allow-beam`: the tickets that let a visitor's agent download an app's APK from here itself (phase 2). */
   final BeamTicket tickets = new BeamTicket();
   /** The agent's port the page reaches (`--beam-port`, default {@link Beam#DEFAULT_PORT}). */
@@ -1772,6 +1777,8 @@ public final class Serve {
     Map<String, Object> reopenedRec = beam && seed != null && reopened.containsKey(seed) ? store.saved(reopened.get(seed)) : null;
     if (reopenedRec != null) {
       for (String k : List.of("device", "appearance", "locale", "fontscale", "permissions")) {
+        // A --device in the start's own options names the device (issue 519): the saved one does not replace it.
+        if (k.equals("device") && reopenedNamedDevice.contains(seed) && Session.appDevice(app) != null) continue;
         if (reopenedRec.get(k) instanceof String v && !v.isEmpty()) options.putIfAbsent(k, v);
       }
     }
@@ -2000,6 +2007,7 @@ public final class Serve {
 
   /** Whether a saved session is open in a tab now (its copy held by a grant or a running session). */
   boolean savedOpen(String id) {
+    reopenedNamedDevice.retainAll(reopened.keySet());
     for (var e : List.copyOf(reopened.entrySet())) {
       String seed = e.getKey();
       boolean live = agent.ownsSeed(seed) || sessions.values().stream().anyMatch(x -> seed.equals(x.seedSlot));
@@ -2410,6 +2418,7 @@ public final class Serve {
       case "DELETE /beam/saved" -> deleteSaved(o, null, out);
       case "POST /beam/upload" -> {
         Beam.Grant g = agent.take(r.param("upload"), Beam.Kind.UPLOAD, o);
+        boolean namesDevice = g != null && namedDeviceUploads.remove(r.param("upload"));  // issue 519
         if (g == null) {
           Http.text(out, 403, "no such upload (each start's lasts two minutes and is used once): start again");
           return;
@@ -2433,6 +2442,7 @@ public final class Serve {
         if (g.extra() != null && g.extra().startsWith("@")) {
           try {
             seed = savedSeed(o, g.extra(), a.path());
+            if (seed != null && namesDevice) reopenedNamedDevice.add(seed);
           } catch (IOException e) {
             Http.text(out, 409, e.getMessage());
             return;
@@ -2525,6 +2535,7 @@ public final class Serve {
     long size;
     int protocol;
     List<String> launch;
+    boolean namesDevice = false;  // issue 519: a reopened save's start whose options name a --device
     try {
       if (!(Json.parse(new String(raw, StandardCharsets.UTF_8)) instanceof Map<?, ?> body)) throw new IOException("expected a JSON object");
       ticket = body.get("ticket") instanceof String t && t.length() <= 300 ? t : null;
@@ -2582,6 +2593,7 @@ public final class Serve {
         }
       }
       launch = Catalog.launchOptions(given);
+      namesDevice = !fromSaved && launch.contains("--device");
       // Issue 371: the network inspector for this session, if this Mac's owner allows it (`inspect-network optional|on`).
       Object inspect = body.get("inspect");
       if (inspect != null && !(inspect instanceof Boolean)) throw new IOException("\"inspect\" takes true or false");
@@ -2676,6 +2688,7 @@ public final class Serve {
       if (local != null) {
         try {
           seed = savedSeed(o, local, a.path());
+          if (seed != null && namesDevice && local.startsWith("@saved ")) reopenedNamedDevice.add(seed);
         } catch (IOException e) {
           Http.text(out, 409, e.getMessage());
           sweepBeam();
@@ -2695,7 +2708,14 @@ public final class Serve {
       sweepBeam();  // after the answer, with this start's grant holding its build
       return;
     }
-    Http.json(out, 200, "{\"need\":\"upload\",\"upload\":" + Http.q(agent.grant(Beam.Kind.UPLOAD, o, null, sha, name, launch, local != null ? local : data, protocol, pageLabel))
+    String uploadGrant = agent.grant(Beam.Kind.UPLOAD, o, null, sha, name, launch, local != null ? local : data, protocol, pageLabel);
+    // Issue 519: the upload makes the reopened copy, and must know the start named a device. Bounded: a grant never
+    // used leaves its token here, so the set is emptied when it has grown (those starts then run on the saved device).
+    if (namesDevice && local != null && local.startsWith("@saved ")) {
+      if (namedDeviceUploads.size() >= 4096) namedDeviceUploads.clear();
+      namedDeviceUploads.add(uploadGrant);
+    }
+    Http.json(out, 200, "{\"need\":\"upload\",\"upload\":" + Http.q(uploadGrant)
         + (why == null ? "" : ",\"why\":" + Http.q(why)) + "}");
   }
 
