@@ -917,6 +917,7 @@ its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outsid
 drives it; `PopupTouchTest` in a test run). The tap also gives the popup ACTION_OUTSIDE, so its `onDismissRequest` runs once ("outside: 1").
 `apksim://drawer` opens `DrawerActivity`: a `DrawerLayout` with three items that count clicks, settling through
 ViewDragHelper's Scroller (`DrawerSettleTest`, opt-in, see `--realtime-clock`).
+`apksim://interop` opens `InteropActivity`: a LazyColumn of `AndroidView` TextViews ("Row 0".."Row 19", "tapped: Row N" after a tap); `nodes` and `tap-text` reach them because `Nodes.walkView` also walks the child views of a view that has an accessibility provider, as the platform's tree does (issue 478; `ci-smoke.sh`).
 `apksim://dialogs[?open=full|modal|nonmodal|compose]` opens `DialogsActivity`: a full-screen dialog, a small
 (touch-modal) one, a small FLAG_NOT_TOUCH_MODAL one or a Compose Dialog over it; under all but the third accessibility
 reports only the dialog. Each counts taps on its "Count" button, for clicks at a centred dialog's node bounds

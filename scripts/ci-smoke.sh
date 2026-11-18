@@ -139,6 +139,7 @@ drive nodes | grep -q 'text="Row 3"' || { echo "nodes lacks a View hosted in Com
 drive 'tap-text Row 3' 'wait 800' >/dev/null
 drive nodes | grep -q 'text="tapped: Row 3"' || { echo "tap-text did not reach a View hosted in Compose" >&2; exit 1; }
 echo "Interop: AndroidView rows listed and tapped"
+drive back 'wait 800' >/dev/null  # the stack as it was for the backs below
 drive back 'wait 800' >/dev/null
 drive back 'wait 800' >/dev/null
 [[ "$shown" == 'text="trace: begun twice 2 times" text="tooltip: shown" text="taps: 0" text="outside: 0" ' \
