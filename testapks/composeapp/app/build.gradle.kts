@@ -72,6 +72,8 @@ dependencies {
   implementation(libs.androidx.core.ktx)
   // apksim://drawer: a DrawerLayout settles through ViewDragHelper's Scroller, with no animator (issue 215)
   implementation(libs.androidx.drawerlayout)
+  // apksim://appcompat: resources read through AppCompat's per-context caches across a recreation
+  implementation(libs.androidx.appcompat)
   implementation(libs.androidx.lifecycle.runtime.ktx)
   implementation(libs.androidx.activity.compose)
 

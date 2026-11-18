@@ -215,6 +215,19 @@ Read README.md for results and limits; this file covers how to work on the code.
     cleaned where apksim reports them (`StackTraces`: crashes, test failures, bundles); one the app prints itself shows
     `$$robo$$` frames. `-Dapksim.directCallSites=false` is Robolectric's binding (docs/perf-plan.md, B1).
     `scripts/check-call-sites.sh` (CI) checks re-binding and a binding racing an invalidation (`CallSiteCheck`).
+  - `org.robolectric.android.controller.ActivityController` (apksim's copy of Robolectric 4.17's, ahead of it on the
+    class path): a configuration change that recreates an activity no longer calls `System.gc()` in a running
+    instance. Robolectric collects there after destroying the old activity (its activities share one base context, and
+    it wants AppCompat's weak per-context caches flushed so tests do not depend on when a collection last ran): a full
+    stop-the-world collection inside every rotation, appearance, locale or font-scale change, for each activity of the
+    stack that is recreated, shown or not; ~60 ms on the test app's heap, 180-250 ms with 500 MB live (JFR's
+    jdk.SystemGC gave the stack), where a device collects nothing. Test runs keep it; `-Dapksim.recreateGc=true|false`
+    overrides either way (launches cold). The test app's `apksim://appcompat` (`AppCompatCheckActivity`: a
+    night-qualified colour and vector read through AppCompatResources with the activity's and the application's
+    context, "appcompat: activity color=#.. vector=#.., app color=#.. vector=#.., instances N") shows the same values
+    with and without the collection across appearance switches and rotations; `ci-smoke.sh` checks it. The trade is
+    deliberate: a destroyed activity's native-backed objects (Bitmap pixels, renderers) now wait for the next
+    collection that reaches them, or Host.Memory's idle one, instead of going at the recreation.
   - `MappedResources`, `org.robolectric.res.android.CppApkAssets` and `ResourceString` (apksim's copies of
     Robolectric 4.17's, ahead of them on the class path): a `resources.arsc` is a mapped file, not a `byte[]` on the
     heap. Robolectric inflates the framework's table (16.7 MB, the largest object of an idle instance's heap) and
@@ -962,6 +975,10 @@ tab's Camera button opens it once the permission is granted on a device with a c
 muted; `video` twice a few seconds apart should show `rendered` going up ~60 a second and `dropped` not at all.
 `apksim://video?codec=vp9` plays a 2 s 640x360 VP9 WebM instead; its label reads "video: vp9 selected, frames N"
 ("unsupported" where no VP9 decoder is listed, as the published Linux image).
+`?surface=1` draws into a SurfaceView, `?fit=1` puts the view in a centred 16:9 box as Media3's PlayerView lays it out
+(822x462 on the phone, 1462x822 turned), `?ballast=MB` keeps that many MB of small live objects (a large app's heap: a
+full collection then takes ~200 ms at 500). The activity handles its own configuration changes, so a rotation resizes
+the view under the same codec; the activity below it in the stack is still recreated.
 `apksim://crash?kind=coroutine|post|worker|bare|resume|config|destroy|handled|chained` opens `CrashActivity`, which throws 300 ms later: in
 viewModelScope.launch, a posted Runnable, a worker thread, a worker thread with an exception made without a stack trace
 (`bare`); `resume`, `config`, `destroy` throw from the second onResume (`recreate`, `restart URL`), onConfigurationChanged

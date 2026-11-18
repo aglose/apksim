@@ -218,6 +218,17 @@
                 <data android:scheme="apksim" android:host="view-animations" />
             </intent-filter>
         </activity>
+        <!-- apksim://appcompat: a night-qualified colour and vector read through AppCompatResources, recreated on
+             configuration changes. -->
+        <activity android:name=".AppCompatCheckActivity" android:exported="true"
+            android:theme="@style/Theme.AppCompat.DayNight">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="appcompat" />
+            </intent-filter>
+        </activity>
         <!-- apksim://drawer: a DrawerLayout that settles through a Scroller, no animator (issue 215). -->
         <activity android:name=".DrawerActivity" android:exported="true">
             <intent-filter>
@@ -318,7 +329,6 @@
                 <data android:scheme="apksim" android:host="install" />
             </intent-filter>
         </activity>
-        <!-- apksim://video: a 1080p60 clip looping full-screen in a TextureView. -->
         <!-- apksim://camera[?mode=compatible]: a CameraX preview and analysis of the front camera's frames. -->
         <activity android:name=".CameraActivity" android:exported="true">
             <intent-filter>
@@ -328,7 +338,10 @@
                 <data android:scheme="apksim" android:host="camera" />
             </intent-filter>
         </activity>
-        <activity android:name=".VideoActivity" android:exported="true">
+        <!-- apksim://video: a 1080p60 clip looping full-screen in a TextureView; handles its own configuration changes, so a
+             rotation resizes the view under the same codec. -->
+        <activity android:name=".VideoActivity" android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
