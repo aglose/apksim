@@ -122,12 +122,18 @@ final class HwRenderer {
     View first = roots.stream().filter(HwRenderer::drawn).findFirst().orElse(null);
     boolean covered = first != null && first.isOpaque() && first.getWidth() >= width && first.getHeight() >= height;
     if (!covered) c.drawColor(0xff000000);
+    // One dim layer, as the window manager's Dimmer keeps: beneath the top-most drawn window with FLAG_DIM_BEHIND, at
+    // its dimAmount. Dims of lower windows do not stack on it (issue 507).
+    View dimmer = null;
+    for (View root : roots) {
+      if (drawn(root) && root.getLayoutParams() instanceof WindowManager.LayoutParams lp
+          && (lp.flags & WindowManager.LayoutParams.FLAG_DIM_BEHIND) != 0) dimmer = root;
+    }
     for (View root : roots) {
       if (!drawn(root)) continue;
       int save = c.save();
-      if (root.getLayoutParams() instanceof WindowManager.LayoutParams lp
-          && (lp.flags & WindowManager.LayoutParams.FLAG_DIM_BEHIND) != 0) {
-        c.drawColor((int) (lp.dimAmount * 255) << 24);
+      if (root == dimmer) {
+        c.drawColor((int) (((WindowManager.LayoutParams) root.getLayoutParams()).dimAmount * 255) << 24);
       }
       int[] at = placer.position(root);
       c.translate(at[0], at[1]);
