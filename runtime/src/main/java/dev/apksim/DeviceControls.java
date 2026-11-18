@@ -902,7 +902,10 @@ final class DeviceControls {
     if (hiddenBy != null || top == null || top.get() != a || stack.size() != 1) return false;
     Intent in = a.getIntent();
     if (in == null || !Intent.ACTION_MAIN.equals(in.getAction()) || !in.hasCategory(Intent.CATEGORY_LAUNCHER)) return false;
-    new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> hide("home", false));  // out of the key's dispatch
+    new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+      // Re-checked: the activity may have started another or finished since (super.onBackPressed(); startActivity(...)).
+      if (stack.size() == 1 && stack.peek().get() == a && !a.isFinishing()) hide("home", false);
+    });  // out of the key's dispatch
     return true;
   }
 
