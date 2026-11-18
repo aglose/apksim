@@ -371,7 +371,7 @@ public class Host {
         if (settle != null && settle.check(firstFrame ? "no first frame yet" : busy(looper, roots))) settle = null;
         // Nothing to do until a message is due or something arrives: sleep (idleWait) rather than poll every 2 ms.
         boolean still = !firstFrame && settle == null && drag == null && pendingScript.isEmpty()
-            && System.nanoTime() - lastInput > IDLE_AFTER_INPUT_NANOS && Control.QUEUE.isEmpty() && !needsFrame(roots);
+            && System.nanoTime() - lastInput > IDLE_AFTER_INPUT_NANOS && Control.QUEUE.isEmpty() && (controls.hidden() || !needsFrame(roots));
         // A replay's journal has its next event due at a time of its own, which idleWait does not know: no idle sleep
         // until it is done (a sleep of up to 40 ms would delay events recorded closer together than that).
         boolean quiet = idleSleep && still && (replay == null || replay.done());  // -Dapksim.idleSleep=false: the 2 ms poll, but Host.Memory still sees stillness
@@ -429,11 +429,15 @@ public class Host {
         framesAtQuiet = frames;
       } else if (now - quietSince >= quietNanos) {
         hw.withLatestFrame(b -> {});  // the last frame's raster has finished: `shot` reads it
-        pending.finish("settled in " + (now - start) / 1_000_000 + " ms");
+        pending.finish("settled in " + (now - start) / 1_000_000 + " ms" + (controls.hidden() ? " (app in background: `resume` brings it back)" : ""));
         return true;
       }
       if (now - start > maxNanos) {
-        pending.finish("error: not settled after " + (now - start) / 1_000_000 + " ms: " + reason);
+        // Nothing was busy, but the quiet window did not fit before MAX_MS: say so rather than an empty reason.
+        String why = !reason.isEmpty() ? reason : "quiet for " + (quietSince == 0 ? 0 : (now - quietSince) / 1_000_000)
+            + " of " + quietNanos / 1_000_000 + " ms";
+        pending.finish("error: not settled after " + (now - start) / 1_000_000 + " ms: " + why
+            + (controls.hidden() ? " (app in background: `resume` brings it back)" : ""));
         return true;
       }
       return false;
@@ -444,7 +448,9 @@ public class Host {
   private String busy(ShadowLooper looper, List<View> roots) {
     if (!pendingScript.isEmpty() || drag != null) return "input queued";
     if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) return "a frame is wanted";
-    if (needsFrame(roots)) return "a window needs drawing";
+    // Behind the home screen nothing is drawn (the loop makes no frames), so a window that differs from the last
+    // frame's would stay "needing drawing" until a `resume` (issue 489).
+    if (!controls.hidden() && needsFrame(roots)) return "a window needs drawing";
     for (View r : roots) {
       if (HwRenderer.drawn(r) && r.isLayoutRequested()) return "a window needs layout (" + r.getClass().getSimpleName() + ")";
     }

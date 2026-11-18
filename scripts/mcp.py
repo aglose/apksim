@@ -436,7 +436,8 @@ class Server:
 
     def settle(self, i):
         r = i.cmd("settle 2500 150")
-        return "" if r.startswith("settled") else " (not settled: animating)"
+        bg = " (app in background: call resume)" if "app in background" in r else ""
+        return (bg if r.startswith("settled") else " (not settled: animating)" + bg)
 
     def activity(self, i):
         a = i.cmd("activity").rsplit(".", 1)[-1]
@@ -517,7 +518,8 @@ class Server:
             i.close()
             raise
         return "launched %s (%s, %.1fs)%s | %s\n%s" % (i.id, i.apk, time.time() - i.started,
-                                                     "" if r.startswith("settled") else " (not settled)", act,
+                                                     ("" if r.startswith("settled") else " (not settled)")
+                                                     + (" (app in background: call resume)" if "app in background" in r else ""), act,
                                                      "\n".join(shown[:ANSWER_LINES]))
 
     def t_instances(self, a):
