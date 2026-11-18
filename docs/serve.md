@@ -263,6 +263,12 @@ HTTP).
   exception's class as the log printed it, R8-renamed or not); `exit` an instance that ended by itself with status 0;
   `idle` the `--idle` limit; `busy` no free place; `no-app` an app id the server no longer has; `error` a start that
   failed. A tab that simply leaves gets neither message. The same on `apksim beam`.
+  A `crash` of a session that records (`--rec`; beam records `input` by default) adds `"rec":"RID"` (issue 516): the
+  crash bundle, saved under that id in the session's recordings folder (the instance is started with `--rec-crash-id
+  RID`, and `--rec-crash-dir` on serve; a beam instance writes into its own out folder, and the agent copies it out
+  as it does a `rec save` one), so `GET /api/sessions/ID/recordings/RID` (beam: `/beam/sessions/ID/recordings/RID?key=`)
+  serves it after the session ended, for the same week. The field is left out when no bundle was written (no channel on,
+  a `kill -9`, a server without `--allow-rec`, a bundle the agent could not copy).
 - Before that `x` message, an instance that died (or could not start) sends its last 50 log lines as `r log: LINE`
   messages, which serve's page shows in its log under the screen. A tab that left, idled out or ended the session
   normally gets none.

@@ -96,10 +96,16 @@ final class Crash {
   /**
    * The structured form of why a session ended, sent as `e {...}` just before the plain `x TEXT` (issue 418): `reason`
    * is `crash`, `exit`, `idle`, `busy`, `no-app`, `error` or `other`; `exception` is the uncaught exception's class when
-   * the log showed one. A page that does not know `e` ignores it and has `x`.
+   * the log showed one; `rec` the crash bundle's recording id, when one was saved. A page that does not know `e` ignores it and has `x`.
    */
   static String endJson(String reason, String text, String exception) {
-    return "{\"reason\":" + Http.q(reason) + ",\"text\":" + Http.q(text) + (exception != null ? ",\"exception\":" + Http.q(exception) : "") + "}";
+    return endJson(reason, text, exception, null);
+  }
+
+  /** With `rec`: the id of the crash bundle the session saved (issue 516), downloadable like a `rec save` recording. */
+  static String endJson(String reason, String text, String exception, String rec) {
+    return "{\"reason\":" + Http.q(reason) + ",\"text\":" + Http.q(text) + (exception != null ? ",\"exception\":" + Http.q(exception) : "")
+        + (rec != null ? ",\"rec\":" + Http.q(rec) : "") + "}";
   }
 
   static String clip(String s) {

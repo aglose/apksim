@@ -1096,11 +1096,12 @@ final class FlightRecorder {
    * (and the checkpoints in it) is deleted. Does nothing when no channel is on.
    */
   static void crashed(Throwable e) {
+    String target = crashTarget();
     FlightRecorder r = current;
     java.io.StringWriter w = new java.io.StringWriter();
     if (e != null) e.printStackTrace(new java.io.PrintWriter(w));
     if (r == null) {
-      crashedEarly(w.toString());
+      crashedEarly(w.toString(), target);
       return;
     }
     if (!(anyOn() || anyKept())) return;
@@ -1109,7 +1110,7 @@ final class FlightRecorder {
         r.deviceNow = checkpoints.isEmpty() ? null : checkpoints.get(checkpoints.size() - 1).device;
       }
       if (r.deviceNow == null) r.deviceNow = Map.of();
-      System.err.println("[apksim] rec: the app crashed: " + r.save(windowMs / 1000, null, w.toString()));
+      System.err.println("[apksim] rec: the app crashed: " + r.save(windowMs / 1000, target, w.toString()));
     } catch (Throwable t) {
       System.err.println("[apksim] rec: could not save the crash: " + t);
     }
@@ -1117,16 +1118,35 @@ final class FlightRecorder {
   }
 
   /**
+   * Where `apksim serve` and `apksim beam` want this session's crash bundle (issue 516), so the tab can download it:
+   * `-Dapksim.rec.crashId=RID` (12 hex digits) names it, in `-Dapksim.rec.crashDir` (serve) or the beam sandbox's own
+   * `rec/` folder. Null for any other launch: the bundle then goes to the screenshots folder as before.
+   */
+  private static String crashTarget() {
+    String id = System.getProperty("apksim.rec.crashId");
+    if (id == null || !id.matches("[0-9a-f]{12}")) return null;
+    String dir = BeamSandbox.ON ? BeamSandbox.recDir().toString() : System.getProperty("apksim.rec.crashDir");
+    if (dir == null || dir.isEmpty()) return null;
+    return Path.of(dir).resolve(id + ".apkrec").toString();
+  }
+
+  /**
    * A crash before the Host and its recorder exist (the Application's constructor, attach or onCreate): what the net
    * and db channels, on since launch (Rec.launch), have, and the exception, without anything of the app's (it may
    * not exist): no checkpoint, input or screen.
    */
-  private static void crashedEarly(String crash) {
+  private static void crashedEarly(String crash, String target) {
     if (!(Rec.db || Rec.NET.isOn()) && Rec.DB.size() == 0) return;
     try {
       long to = System.currentTimeMillis();
       String pkg = String.valueOf(System.getProperty("apksim.package", "app"));
-      Path out = reserve(DeviceControls.mediaDir(), pkg + "-" + new SimpleDateFormat("yyyy-MM-dd-HHmmss").format(new Date(to)) + "-crash");
+      Path out;
+      if (target != null) {
+        out = Storage.absolute(target);
+        Files.createDirectories(out.getParent());
+      } else {
+        out = reserve(DeviceControls.mediaDir(), pkg + "-" + new SimpleDateFormat("yyyy-MM-dd-HHmmss").format(new Date(to)) + "-crash");
+      }
       Map<String, Object> m = new LinkedHashMap<>();
       m.put("format", FORMAT);
       m.put("created", java.time.Instant.ofEpochMilli(to).toString());

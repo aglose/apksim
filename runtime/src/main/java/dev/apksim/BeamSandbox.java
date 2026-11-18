@@ -39,6 +39,11 @@ final class BeamSandbox {
     return out().resolve("classes");
   }
 
+  /** Where a recording meant for the agent is written (`rec/` in this process's out folder). */
+  static Path recDir() {
+    return out().resolve("rec");
+  }
+
   private static Path out() {
     return state().resolve("beam").resolve("out").resolve(pid());
   }

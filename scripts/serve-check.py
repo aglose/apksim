@@ -284,6 +284,8 @@ def main():
     ap.add_argument("--h264", choices=["required", "optional", "skip"], default="optional",
                     help="the H.264 stream's checks: required fails when the server answers JPEG (no encoder there)")
     ap.add_argument("--crash-app", help="id of an app that crashes at start (test app: -- --activity .CrashActivity)")
+    ap.add_argument("--crash-rec", action="store_true",
+                    help="the crash app records (--rec input in its options) on a server with --allow-rec: the end message must name the crash bundle (issue 516)")
     a = ap.parse_args()
     global ACK_DELAY_MS
     ACK_DELAY_MS = a.ack_delay
@@ -536,7 +538,7 @@ def main():
     check(gone, "closing the tab ends the session")
     check("apps" in st, "/api/status lists the apps' cache states")
     if a.crash_app:
-        crash_check(url, token, a.crash_app, a.device)
+        crash_check(url, token, a.crash_app, a.device, want_rec=a.crash_rec)
     print("RESULT " + json.dumps({"firstFrameMs": round(first_ms), "tapMs": round(median(taps)), "dragFps": round(fps),
                                   "frameLatencyMs": round(median(lat)), "encodeMs": round(median(enc), 1),
                                   "kbPerFrame": round(kb), "shaderFps": round(shader_fps), "shaderKb": round(shader_kb),
@@ -739,7 +741,7 @@ def check_h264(url, token, app, a):
     s.ws.s.close()
 
 
-def crash_check(url, token, app, device, expect=("uncaught exception", "crashed:")):
+def crash_check(url, token, app, device, expect=("uncaught exception", "crashed:"), want_rec=False):
     """A session whose app crashes: the tab gets the reason and the log's last lines, and the log endpoint the tail."""
     s = Session(url, token, app, device)
     check(s.ws.status == 101, "crash app: session WebSocket open")
@@ -752,6 +754,20 @@ def crash_check(url, token, app, device, expect=("uncaught exception", "crashed:
     if ended and "uncaught exception" in ended[0]:
         check(bool(ej) and "." in ej[0].get("exception", "") and ":" not in ej[0].get("exception", ""),
               f"with the exception's class: {ej[0].get('exception') if ej else None}")
+    rid = ej[0].get("rec") if ej else None
+    sid = str(next((json.loads(t[2:]) for t in s.texts if t.startswith("i ")), {}).get("id"))
+    if want_rec:
+        check(bool(rid) and len(rid) == 12, f"the end message names the crash bundle: {rid}")
+        if rid:
+            status, body = http(url, f"/api/sessions/{sid}/recordings/{rid}", token)
+            import io, zipfile
+            names = zipfile.ZipFile(io.BytesIO(body)).namelist() if status == 200 else []
+            check(status == 200 and "manifest.json" in names, f"and GET recordings/RID serves it ({status}, {len(body)} bytes, {names[:3]})")
+            if token:
+                status, _ = http(url, f"/api/sessions/{sid}/recordings/{rid}")
+                check(status == 401, f"which needs the token ({status})")
+    else:
+        check(rid is None, f"no crash bundle is named when none was asked for: {rid}")
     logs = [t for t in s.texts if t.startswith("r log: ")]
     check(0 < len(logs) <= 50 and any("FATAL EXCEPTION" in t for t in logs), f"the log's last lines reach the tab ({len(logs)})")
     i = next((json.loads(t[2:]) for t in s.texts if t.startswith("i ")), {})
