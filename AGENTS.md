@@ -355,7 +355,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     and Settings put back, its display set, `input.jsonl` at its recorded offsets; the network is live; issue 192).
     It replaces the app's data, /sdcard files and Settings values there, so it stops without `--yes` and backs the
     app's data up first (`--backup-dir`, `--no-backup`); `--dry-run` prints the plan and touches nothing. Only run
-    against apksim's own adb device so far, not a phone or emulator.
+    against apksim's own adb device so far, not a phone or emulator. Serve and beam give the instance `--rec-crash-id RID` (and serve `--rec-crash-dir`): a crash's bundle is then written as `RID.apkrec` in the session's recordings folder (a beam instance: its out folder's `rec/`, `BeamSandbox.recDir`), `Session.claimCrashBundle` makes it one of the session's recordings once the instance has gone, and the tab's end message carries `"rec":"RID"` (issue 516; `serve-check.py --crash-app ID --crash-rec`, by hand: not in CI; the beam side not run).
   - `ReplayPlan`, `Replay`: `apksim replay BUNDLE` (docs/replay.md): the checkpoint's slot, device and stack, `input.jsonl` fed to
     the Host loop at its offsets, the HAR answering, frames compared; exit 0/3 (diverged)/10; `scripts/replay-check.py`.
     `scripts/bisect-rec.py BUNDLE BUILD...`: the first build whose replay diverges, an HTML report (`bisect-rec-check.py`).
