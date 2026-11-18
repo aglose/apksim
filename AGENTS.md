@@ -981,7 +981,7 @@ full collection then takes ~200 ms at 500). The activity handles its own configu
 the view under the same codec; the activity below it in the stack is still recreated.
 `apksim://player` opens `PlayerViewActivity`: Media3's real `PlayerView` (media3-ui, Views, no controller) playing the
 same clip looping and muted; label "player: surface|texture, keep|new, instances N". The default SurfaceView or, with
-`?surface=texture`, a TextureView (two layout files: the type is an XML attribute); FIT, so `views` shows 822x462
+`?surface=texture`, a TextureView (two layout files: the type is an XML attribute); FIT, so `video` shows 822x462
 portrait and 1461x822 landscape. No configChanges: a rotation recreates the activity. By default a new ExoPlayer and
 codec per instance; `?keep=1` hands the ExoPlayer to the next instance (`onRetainNonConfigurationInstance`, the
 ViewModel-held-player pattern), so `codecsConfigured` stays 1 across rotations (issue 492's player shape).

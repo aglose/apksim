@@ -14,7 +14,7 @@ import androidx.media3.ui.PlayerView
 
 /**
  * apksim://player: Media3's PlayerView (Views, no controller) playing the 1080p60 clip looping and muted, FIT in the
- * view (822x462 on the phone in portrait, 1462x822 in landscape). `surface=texture` uses a TextureView instead of the
+ * view (822x462 on the phone in portrait, 1461x822 in landscape). `surface=texture` uses a TextureView instead of the
  * default SurfaceView (the surface type is a layout attribute, so each has its own layout file). The activity declares
  * no configChanges, so a rotation recreates it. By default its player is released in onDestroy and a new one made
  * (a new codec per rotation); with `keep=1` the ExoPlayer survives the recreation through
