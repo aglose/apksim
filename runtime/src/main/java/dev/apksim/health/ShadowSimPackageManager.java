@@ -15,7 +15,8 @@ import org.robolectric.shadows.ShadowApplicationPackageManager;
  * the permission prompt, {@code permission grant}, {@code pm grant} and {@code --permissions grant} change) never
  * reached the PackageInfo flags, and AndroidX's HealthConnectClient reads exactly those for
  * {@code getGrantedPermissions()} on API 34+, so an app that had been granted everything still saw nothing granted.
- * Only {@code android.permission.health.*}: other permissions' flags stay as Robolectric has them.
+ * Only {@code android.permission.health.*}: other permissions' flags stay as Robolectric has them. It also stamps the
+ * app's install times ({@link #stampInstallTime}).
  */
 @Implements(value = ApplicationPackageManager.class, isInAndroidSdk = false)
 public class ShadowSimPackageManager extends ShadowApplicationPackageManager {
@@ -24,31 +25,35 @@ public class ShadowSimPackageManager extends ShadowApplicationPackageManager {
   @Implementation
   @Override
   protected PackageInfo getPackageInfo(String packageName, int flags) throws PackageManager.NameNotFoundException {
-    syncHealthGrants(packageName);
+    syncPackageInfo(packageName);
     return super.getPackageInfo(packageName, flags);
   }
 
   @Implementation(minSdk = 33)
   @Override
   protected PackageInfo getPackageInfo(String packageName, Object flags) throws PackageManager.NameNotFoundException {
-    syncHealthGrants(packageName);
+    syncPackageInfo(packageName);
     return super.getPackageInfo(packageName, flags);
   }
 
-  /** When the app was installed here (the launch), epoch ms; 0 until InstallState sets it (issue 505). */
-  public static volatile long installTime;
+  /**
+   * As after `adb install`: the app's own PackageInfo gets [millis] as firstInstallTime and lastUpdateTime where they are
+   * 0 (Robolectric builds it from the manifest with both 0, so an About screen showed 12/31/69; issue 505). Set once, in
+   * InstallState, so getInstalledPackages and the other copies of the internal PackageInfo see it too.
+   */
+  public static void stampInstallTime(android.app.Application app, long millis) {
+    PackageInfo info = ((ShadowSimPackageManager) org.robolectric.shadow.api.Shadow.extract(app.getPackageManager()))
+        .getInternalMutablePackageInfo(app.getPackageName());
+    if (info == null) return;
+    if (info.firstInstallTime == 0) info.firstInstallTime = millis;
+    if (info.lastUpdateTime == 0) info.lastUpdateTime = millis;
+  }
 
-  private void syncHealthGrants(String packageName) {
+  private void syncPackageInfo(String packageName) {
     android.app.Application app = RuntimeEnvironment.getApplication();
     if (app == null || packageName == null || !packageName.equals(app.getPackageName())) return;
     PackageInfo info = getInternalMutablePackageInfo(packageName);
     if (info == null) return;
-    long installed = installTime;
-    if (installed != 0) {
-      // As after `adb install`: Robolectric builds the PackageInfo from the manifest with both times 0 (12/31/69).
-      if (info.firstInstallTime == 0) info.firstInstallTime = installed;
-      if (info.lastUpdateTime == 0) info.lastUpdateTime = installed;
-    }
     if (info.requestedPermissions == null) return;
     if (info.requestedPermissionsFlags == null || info.requestedPermissionsFlags.length != info.requestedPermissions.length) {
       int[] f = new int[info.requestedPermissions.length];
