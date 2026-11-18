@@ -100,7 +100,8 @@ Read README.md for results and limits; this file covers how to work on the code.
     raw coordinates are the screen's and x/y the window's, as a device delivers them (Compose reads the raw ones).
     Host places windows itself (`position`: gravity and offsets on the display with `Gravity.apply`, as the window
     manager does, so an axis with no gravity (NO_GRAVITY, a window's default) is centred; Robolectric's window session
-    gives a window that is not full-screen the display's size at lp.x/lp.y), and tells their views: `ShadowSimViewRootImpl`
+    gives a window that is not full-screen its measured size placed inside the bars' insets, not where the window
+    manager would; before issue 506 the display's size at lp.x/lp.y), and tells their views: `ShadowSimViewRootImpl`
     moves the frame a relayout gives to that place, and `syncWindowPositions` each loop turn, so AttachInfo's window
     position (getLocationOnScreen, boundsInScreen, Compose's window position) is where the window is drawn. Before, a
     centred dialog's views thought they were at the top left, and `nodes`, `tap-text` and UiAutomator missed them.

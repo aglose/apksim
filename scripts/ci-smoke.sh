@@ -109,7 +109,7 @@ echo "Popup and Trace: $shown-> $tapped"
 # A floating WRAP_CONTENT window whose list is taller than the display is the size its views measured, inside the
 # bars, as the API 36 emulator gives it (issue 506): it was the display's width and a status bar shorter.
 drive 'open apksim://floating-tall' 'wait 2000' >/dev/null
-floating="$(drive windows | grep -oE 'DecorView@[0-9,]+ [0-9x]+ \.FloatingTallActivity')"
+floating="$(drive windows | grep -oE 'DecorView@[0-9,]+ [0-9x]+( focused)? \.FloatingTallActivity' | sed 's/ focused//')"
 drive back 'wait 500' >/dev/null
 echo "Floating window: $floating"
 [[ "$floating" == 'DecorView@91,48 640x1686 .FloatingTallActivity' ]] \

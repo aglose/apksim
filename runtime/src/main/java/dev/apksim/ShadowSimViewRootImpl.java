@@ -46,8 +46,9 @@ public class ShadowSimViewRootImpl extends ShadowViewRootImpl {
   /**
    * In a running instance, the frame a relayout (or a resize) gives the window is moved to where Host shows it, so
    * that AttachInfo's window position, which ViewRootImpl copies from it, and with it getLocationOnScreen and
-   * accessibility's boundsInScreen, are the screen's from the traversal on: Robolectric's window session puts a window
-   * that is not full-screen (a centred dialog) at lp.x/lp.y with the display's size. A Compose dialog relayouts on every
+   * accessibility's boundsInScreen, are the screen's from the traversal on: Robolectric's window session places a window
+   * that is not full-screen (a centred dialog) inside the bars' insets, not where the window manager would (with
+   * useRequestedSize off, at lp.x/lp.y with the display's size). A Compose dialog relayouts on every
    * traversal and Compose caches the window's position it reads then, so moving it only afterwards
    * ({@link Host#syncWindowPositions}) left its nodes at the top left. Insets are worked out from the frame as
    * Robolectric gave it, as before.

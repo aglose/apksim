@@ -1804,9 +1804,10 @@ public class Host {
   /**
    * Puts each window where Host shows it as far as its views know: AttachInfo's window position, which
    * getLocationOnScreen, accessibility's boundsInScreen and the window's matrix to the screen read, and the frame's top
-   * left, which ViewRootImpl copies into it on each traversal. Robolectric's window session gives a window that is
-   * not full-screen (a centred dialog) a display-sized frame at lp.x/lp.y, so its views reported positions inside the
-   * window as screen positions: a dialog's nodes sat at the top left, where `tap-text` and UiAutomator then tapped.
+   * left, which ViewRootImpl copies into it on each traversal. Robolectric's window session places a window that is
+   * not full-screen (a centred dialog) inside the bars' insets, not where the window manager would (with
+   * useRequestedSize off, a display-sized frame at lp.x/lp.y), so its views reported positions inside the window as
+   * screen positions: a dialog's nodes sat at the top left, where `tap-text` and UiAutomator then tapped.
    * The frame's size is left as it is (it sets the window's measure specs and insets); a relayout puts Robolectric's
    * frame back, and the next loop turn moves it again.
    */
