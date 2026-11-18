@@ -62,8 +62,8 @@ public class ShadowSimMediaPlayer extends ShadowMediaPlayer {
   }
 
   private static MediaProbe.Source path(String path) {
-    try {
-      java.io.RandomAccessFile f = new java.io.RandomAccessFile(path, "r");
+    // buffered() reads what the probe needs at once, so the file is closed before this returns.
+    try (java.io.RandomAccessFile f = new java.io.RandomAccessFile(path, "r")) {
       return buffered(new MediaProbe.Source() {
         @Override public long length() throws IOException { return f.length(); }
         @Override public int read(long pos, byte[] b, int off, int len) throws IOException {
