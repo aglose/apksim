@@ -522,6 +522,14 @@ screen rectangle, a click at its centre landing at the app's centre, the cutout 
   several stream viewers keeps a pace per H.264 viewer and uses the slowest, and none while a JPEG viewer is attached.
   The `s` stats message has `keyDrops` (drop-to-keyframe cycles so far), `paceMs`, `busyMs` and `tabFrameMs`. The window and byte
   budget apply to both codecs.
+- Encoding at the size shown (issue 499): a tab sends `viewport W H` (the stream's display size in CSS pixels times the
+  device pixel ratio) on connect and when its layout changes; serve passes it to the instance's stream connection (kept
+  for one not open yet), for JPEG and H.264 alike. When both dimensions are under 75% of the device's, the instance box-filters
+  each frame down before encoding (aspect kept, even dimensions, never up) and the frame header carries the smaller size;
+  a size change is a keyframe. `viewport 0 0`, or a size that is not clearly smaller, is full resolution again, and with no
+  command nothing changes. Touch coordinates stay in device pixels (the page keeps using the session's device size, not the
+  frame's), and `shot`, recordings and screenshots stay at device resolution. With several viewers the largest viewport wins,
+  and any viewer without one gets everything. `scripts/viewport-check.py PORT` checks it.
 - Each frame carries the time it was presented and how long it took to encode, so the tab can show the stream's fps,
   present→screen delay and input→screen latency.
 - The page shows decoded frames at its display's refresh (`requestAnimationFrame`), as the Mac window shows its own at

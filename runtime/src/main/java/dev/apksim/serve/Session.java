@@ -557,6 +557,7 @@ final class Session {
     // H.264 when the tab can decode it (it says so with codec=h264) and serve allows it; the instance answers which.
     String ask = serve.allowH264 && "h264".equals(options.get("codec")) ? " h264 " + serve.bitrateKbps : "";
     stream.getOutputStream().write(("stream " + serve.quality + ask + "\n").getBytes(StandardCharsets.US_ASCII));
+    if (viewport != null) sendStreamLine(viewport + "\n");
     if (inspecting()) watchNetwork(p);
     if (serve.beam && app.launch().contains("--tab-relay")) watchRelay(p);
     if (serve.beam && inspecting()) watchForward(p);
@@ -1524,9 +1525,16 @@ final class Session {
     sendStream("key\n");
   }
 
+  /** The tab's last `viewport W H`, sent to the instance's stream (and again when it is opened). */
+  private volatile String viewport;
+
   private void sendStream(String line) {
+    if (h264) sendStreamLine(line);
+  }
+
+  private void sendStreamLine(String line) {
     Socket s = stream;
-    if (!h264 || s == null) return;
+    if (s == null) return;
     try {
       synchronized (s) {
         s.getOutputStream().write(line.getBytes(StandardCharsets.US_ASCII));
@@ -1541,6 +1549,12 @@ final class Session {
   private void onMessage(String text) {
     if (text.equals("ack")) {
       acked();
+      return;
+    }
+    if (text.matches("viewport [0-9]{1,5} [0-9]{1,5}")) {
+      // The size the tab shows the stream at (issue 499): the instance encodes no larger. Kept for a stream not open yet.
+      viewport = text;
+      sendStreamLine(text + "\n");
       return;
     }
     if (text.equals("key")) {
