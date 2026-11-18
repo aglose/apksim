@@ -962,7 +962,129 @@ static void s_stack_chk_fail(void) {
   fprintf(stderr, "[apksim] stack corruption detected in native code\n");
   abort();
 }
-static void s_set_abort_message(const char *m) { fprintf(stderr, "F/libc: %s\n", m); }
+static char abort_msg[512];
+static void s_set_abort_message(const char *m) {
+  fprintf(stderr, "F/libc: %s\n", m);
+  strlcpy(abort_msg, m, sizeof abort_msg);
+}
+// A native abort (std::terminate from an uncaught C++ exception, abort(), a failed assert) ends the process with
+// nothing in the log after the library's own line: say why, as Exits does for every other way (issue 477).
+static void abort_handler(int sig) {
+  static const char a[] = "[apksim] exit 134: native abort in app code";
+  write(2, a, sizeof a - 1);
+  if (abort_msg[0]) {
+    write(2, ": ", 2);
+    write(2, abort_msg, strlen(abort_msg));
+  }
+  write(2, "\n", 1);
+  signal(SIGABRT, SIG_DFL);
+  raise(SIGABRT);
+}
+static pthread_once_t abort_once = PTHREAD_ONCE_INIT;
+static void install_abort_handler(void) { signal(SIGABRT, abort_handler); }
+
+// ---------------------------------------------------------------- timerfd (Linux's; macOS has none)
+// A pipe the reader sees 8-byte expiration counts on, fed by a thread per timer. Keyed by the read end.
+typedef struct {
+  int rd, wr, clock;
+  pthread_mutex_t mu;
+  pthread_cond_t cv;
+  struct timespec deadline;  // monotonic/realtime of the clock's own kind; tv_sec 0 = disarmed
+  struct timespec interval;
+  int armed, gen;
+} TimerFd;
+#define TFDS 64
+static TimerFd *tfds[TFDS];
+static pthread_mutex_t tfd_mu = PTHREAD_MUTEX_INITIALIZER;
+static clockid_t tfd_clock(int c) { return c == 0 ? CLOCK_REALTIME : CLOCK_MONOTONIC; }
+static int ts_cmp(struct timespec a, struct timespec b) {
+  return a.tv_sec != b.tv_sec ? (a.tv_sec < b.tv_sec ? -1 : 1) : (a.tv_nsec < b.tv_nsec ? -1 : a.tv_nsec > b.tv_nsec);
+}
+static struct timespec ts_add(struct timespec a, struct timespec b) {
+  a.tv_sec += b.tv_sec; a.tv_nsec += b.tv_nsec;
+  if (a.tv_nsec >= 1000000000L) { a.tv_sec++; a.tv_nsec -= 1000000000L; }
+  return a;
+}
+static void *tfd_thread(void *arg) {
+  TimerFd *t = arg;
+  pthread_mutex_lock(&t->mu);
+  for (;;) {
+    while (!t->armed) pthread_cond_wait(&t->cv, &t->mu);
+    int gen = t->gen;
+    struct timespec now;
+    clock_gettime(tfd_clock(t->clock), &now);
+    if (ts_cmp(now, t->deadline) < 0) {
+      struct timespec d = t->deadline;
+      if (t->clock != 0) {  // relative wait on the monotonic clock
+        struct timespec rem = {d.tv_sec - now.tv_sec, d.tv_nsec - now.tv_nsec};
+        if (rem.tv_nsec < 0) { rem.tv_sec--; rem.tv_nsec += 1000000000L; }
+        struct timespec abs;
+        clock_gettime(CLOCK_REALTIME, &abs);
+        d = ts_add(abs, rem);
+      }
+      pthread_cond_timedwait(&t->cv, &t->mu, &d);
+      if (gen != t->gen) continue;
+      clock_gettime(tfd_clock(t->clock), &now);
+      if (ts_cmp(now, t->deadline) < 0) continue;
+    }
+    uint64_t n = 1;
+    if (t->interval.tv_sec || t->interval.tv_nsec) {
+      while (ts_cmp(t->deadline, now) <= 0) { t->deadline = ts_add(t->deadline, t->interval); if (t->deadline.tv_sec == 0) break; n++; }
+      n--;
+    } else t->armed = 0;
+    pthread_mutex_unlock(&t->mu);
+    ssize_t w = write(t->wr, &n, sizeof n);
+    (void)w;
+    pthread_mutex_lock(&t->mu);
+  }
+  return NULL;
+}
+static int s_timerfd_create(int clock, int flags) {
+  int fds[2];
+  if (pipe(fds)) return -1;
+  if (flags & 0x800) { fcntl(fds[0], F_SETFL, O_NONBLOCK); }
+  fcntl(fds[1], F_SETFL, O_NONBLOCK);
+  fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+  fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+  TimerFd *t = calloc(1, sizeof *t);
+  t->rd = fds[0]; t->wr = fds[1]; t->clock = clock;
+  pthread_mutex_init(&t->mu, NULL);
+  pthread_cond_init(&t->cv, NULL);
+  pthread_mutex_lock(&tfd_mu);
+  int slot = -1;
+  for (int i = 0; i < TFDS; i++) if (!tfds[i]) { slot = i; break; }
+  if (slot < 0) { pthread_mutex_unlock(&tfd_mu); close(fds[0]); close(fds[1]); free(t); errno = EMFILE; return -1; }
+  tfds[slot] = t;
+  pthread_mutex_unlock(&tfd_mu);
+  pthread_t th;
+  pthread_attr_t at;
+  pthread_attr_init(&at);
+  pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+  pthread_create(&th, &at, tfd_thread, t);
+  return t->rd;
+}
+// new_value is Linux's struct itimerspec: it_interval then it_value, two 16-byte timespecs.
+static int s_timerfd_settime(int fd, int flags, const struct timespec *nv, struct timespec *old) {
+  TimerFd *t = NULL;
+  pthread_mutex_lock(&tfd_mu);
+  for (int i = 0; i < TFDS; i++) if (tfds[i] && tfds[i]->rd == fd) t = tfds[i];
+  pthread_mutex_unlock(&tfd_mu);
+  if (!t || !nv) { errno = EINVAL; return -1; }
+  if (old) memset(old, 0, 2 * sizeof *old);
+  pthread_mutex_lock(&t->mu);
+  t->interval = nv[0];
+  if (nv[1].tv_sec == 0 && nv[1].tv_nsec == 0) t->armed = 0;
+  else {
+    struct timespec v = nv[1];
+    if (!(flags & 1)) { struct timespec now; clock_gettime(tfd_clock(t->clock), &now); v = ts_add(now, v); }
+    t->deadline = v;
+    t->armed = 1;
+  }
+  t->gen++;
+  pthread_cond_broadcast(&t->cv);
+  pthread_mutex_unlock(&t->mu);
+  return 0;
+}
 
 // Signals belong to the JVM: registering handlers from a library would break it.
 static int s_sigaction(int s, const void *a, void *o) {
@@ -1117,7 +1239,7 @@ typedef struct { const char *name; void *fn; } Entry;
 static const Entry table[] = {
     E("sincos", s_sincos), E("sincosf", s_sincosf), E("tgkill", s_tgkill), E("eglGetCurrentContext", s_egl_current), E("_ctype_", a_ctype),
     E("__cmsg_nxthdr", s_cmsg_nxthdr), E("epoll_create", s_enosys), E("epoll_create1", s_enosys), E("epoll_ctl", s_enosys), E("epoll_wait", s_enosys),
-    E("eventfd", s_enosys), E("timerfd_create", s_enosys), E("timerfd_settime", s_enosys), E("memfd_create", s_enosys),
+    E("eventfd", s_enosys), E("timerfd_create", s_timerfd_create), E("timerfd_settime", s_timerfd_settime), E("memfd_create", s_enosys),
     E("__errno", s_errno), E("__stack_chk_fail", s_stack_chk_fail), E("__sF", sF),
     E("stdin", &a_stdin), E("stdout", &a_stdout), E("stderr", &a_stderr),
     E("snprintf", snprintf_thunk), E("sprintf", sprintf_thunk), E("fprintf", fprintf_thunk), E("printf", printf_thunk),
@@ -1178,6 +1300,7 @@ void *bionic_lookup(const char *name) {
   a_stdout = (FILE *)(sF + 152);
   a_stderr = (FILE *)(sF + 304);
   if (!a_ctype['a' + 1]) init_ctype();
+  pthread_once(&abort_once, install_abort_handler);
   void *net = net_lookup(name);
   if (net) return net;
   void *graphics = jnigraphics_lookup(name);
