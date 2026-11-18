@@ -31,6 +31,7 @@ import base64
 import hashlib
 import http.client
 import importlib.util
+import io
 import json
 import os
 import glob
@@ -1506,13 +1507,72 @@ def stop(p):
         p.wait(10)  # ended before anything removes its state folder
 
 
+def crash_checks(apksim, apk, sha, size):
+    """Issue 516: a beamed app that crashes with a recorder channel on (beam records `input` by default) leaves its crash
+    bundle as one of the session's recordings: the end message names it (`"rec"`), and the page that started the session
+    downloads it with its key after the session has ended. With the recorder off, no field. A state folder of its own."""
+    state = tempfile.mkdtemp(prefix="beam-check-crash-")
+    env = dict(os.environ, APKSIM_HOME=state, APKSIM_BEAM_CONSENT="allow")
+    gp, origin, other = free_port(), "http://crash.beam-check.test", "http://other.beam-check.test"
+    with open(apk, "rb") as f:
+        body = f.read()
+    start = {"sha256": sha, "name": "beam-check.apk", "size": size, "options": ["--activity", ".CrashActivity"]}
+
+    def run_agent():
+        log = open(os.path.join(state, f"agent-{time.time():.0f}.log"), "w")
+        g = subprocess.Popen([apksim, "beam", "--port", str(gp)], stdout=subprocess.DEVNULL, stderr=log, env=env)
+        check(wait_up(gp, "/beam/hello"), "crash: an agent")
+        return g
+
+    def crashed_session():
+        grant, _ = begin(gp, origin, start, body)
+        check("token" in grant, "crash: a session granted")
+        s = open_session(gp, grant, origin)
+        try:
+            s.pump(60, until=lambda: any(t.startswith("x ") for t in s.texts))
+        except (EOFError, OSError):
+            pass
+        ej = [json.loads(t[2:]) for t in s.texts if t.startswith("e {")]
+        return s, (ej[0] if ej else {})
+
+    g = run_agent()
+    try:
+        s, e = crashed_session()
+        sid, fkey = session_info(s).get("id", ""), next((t[2:] for t in s.texts if t.startswith("f ")), "")
+        rid = e.get("rec")
+        check(e.get("reason") == "crash" and isinstance(rid, str) and len(rid) == 12,
+              f"crash: the end message says it crashed and names the crash bundle ({e})")
+        if rid:
+            st, _, data = req(gp, "GET", f"/beam/sessions/{sid}/recordings/{rid}?key={fkey}", origin)
+            names = zipfile.ZipFile(io.BytesIO(data)).namelist() if st == 200 else []
+            check(st == 200 and "manifest.json" in names, f"crash: the page downloads it after the session ended ({st}, {len(data)} bytes)")
+            if st == 200:
+                m = json.loads(zipfile.ZipFile(io.BytesIO(data)).read("manifest.json"))
+                check("Exception" in str(m.get("crash", "")), "crash: with the exception in its manifest")
+            check(req(gp, "GET", f"/beam/sessions/{sid}/recordings/{rid}?key={fkey}", other)[0] == 404, "crash: another site cannot")
+            check(req(gp, "GET", f"/beam/sessions/{sid}/recordings/{rid}?key=wrong", origin)[0] == 404, "crash: nor without the key")
+        shots = glob.glob(os.path.join(state, "screenshots", "*-crash*.apkrec"))
+        check(not shots, f"crash: nothing left in the screenshots folder ({shots})")
+        stop(g)
+        g = None
+        r = subprocess.run([apksim, "beam", "config", "rec", "off"], capture_output=True, text=True, env=env, timeout=60)
+        check(r.returncode == 0, f"crash: config rec off ({r.stdout.strip()[:80]})")
+        g = run_agent()
+        s, e = crashed_session()
+        check(e.get("reason") == "crash" and "rec" not in e, f"crash: with the recorder off, no bundle is named ({e})")
+    finally:
+        if g:
+            stop(g)
+        subprocess.run([apksim, "--stop-standbys"], capture_output=True, env=env, timeout=60)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("apk")
     ap.add_argument("--apksim", default=os.path.join(os.path.dirname(HERE), "apksim"))
     ap.add_argument("--server-port", type=int, default=47480)
     ap.add_argument("--agent-port", type=int, default=47481)
-    ap.add_argument("--only", choices=["adb", "forward", "loopback", "allow"], help="run only this part")
+    ap.add_argument("--only", choices=["adb", "forward", "loopback", "allow", "crash"], help="run only this part")
     a = ap.parse_args()
     sp, gp, apksim = a.server_port, a.agent_port, a.apksim
     if a.only == "allow":
@@ -1543,6 +1603,13 @@ def main():
             sys.exit(1)
         print("beam check passed (forward)")
         return
+    if a.only == "crash":
+        crash_checks(apksim, a.apk, sha, size)
+        if sc.FAILED:
+            print(f"{len(sc.FAILED)} check(s) failed")
+            sys.exit(1)
+        print("beam check passed (crash)")
+        return
     if a.only == "adb":
         adb_checks(apksim, a.apk, sha, size)
         if sc.FAILED:
@@ -1560,6 +1627,7 @@ def main():
     warm_checks(apksim, a.apk, sha, size)
     data_checks(apksim, a.apk, sha, size)
     adb_checks(apksim, a.apk, sha, size)
+    crash_checks(apksim, a.apk, sha, size)
     loopback_checks(apksim, a.apk)
     forward_checks(apksim, a.apk, sha, size)
     r = beam(apksim, "status")
