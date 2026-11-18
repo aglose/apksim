@@ -139,6 +139,23 @@ drive nodes | grep -q 'text="Row 3"' || { echo "nodes lacks a View hosted in Com
 drive 'tap-text Row 3' 'wait 800' >/dev/null
 drive nodes | grep -q 'text="tapped: Row 3"' || { echo "tap-text did not reach a View hosted in Compose" >&2; exit 1; }
 echo "Interop: AndroidView rows listed and tapped"
+# Resources read through AppCompat's per-context caches are the new configuration's after a recreation, which no
+# longer collects in a running instance (Robolectric's System.gc() in ActivityController.configurationChange).
+appcompat_line() { drive nodes | grep -o 'appcompat: activity color=#[0-9a-f]* vector=#[0-9a-f]*, app color=#[0-9a-f]* vector=#[0-9a-f]*' || true; }
+appcompat_same() { [[ "$1" =~ ^appcompat:\ activity\ color=(#[0-9a-f]+)\ vector=(#[0-9a-f]+),\ app\ color=(#[0-9a-f]+)\ vector=(#[0-9a-f]+)$ \
+  && "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" && "${BASH_REMATCH[1]}" == "${BASH_REMATCH[3]}" && "${BASH_REMATCH[1]}" == "${BASH_REMATCH[4]}" ]]; }
+drive 'open apksim://appcompat' 'wait 2000' >/dev/null
+ac1=$(appcompat_line)
+drive 'appearance toggle' 'wait 2000' >/dev/null
+ac2=$(appcompat_line)
+drive 'rotate right' 'wait 2000' >/dev/null
+ac3=$(appcompat_line)
+drive 'rotate portrait' 'wait 1500' 'appearance toggle' 'wait 2000' >/dev/null
+ac4=$(appcompat_line)
+appcompat_same "$ac1" && appcompat_same "$ac2" && [[ "$ac1" != "$ac2" && "$ac3" == "$ac2" && "$ac4" == "$ac1" ]] \
+  || { echo "AppCompat resources after a recreation: '$ac1' / '$ac2' / '$ac3' / '$ac4'" >&2; exit 1; }
+echo "AppCompat: night colour and vector follow the appearance across recreations"
+drive back 'wait 800' >/dev/null
 drive back 'wait 800' >/dev/null  # the stack as it was for the backs below
 drive back 'wait 800' >/dev/null
 drive back 'wait 800' >/dev/null
