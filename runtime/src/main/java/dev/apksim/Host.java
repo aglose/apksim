@@ -448,7 +448,7 @@ public class Host {
    * null. Some that never draw are skipped: ViewRootImpl's MSG_TOUCH_BOOST_TIMEOUT (39) and
    * MSG_CHECK_INVALIDATION_IDLE (40), frame-rate bookkeeping that reposts itself for a few seconds after touches and
    * drawing, and AnimationHandler's pauser, which pauses the animators of windows no longer visible a second after one
-   * goes (every `restart`).
+   * goes (every `restart`), and a focused EditText's caret blink (Editor$Blink, every 500 ms).
    */
   private static String dueMessage(long until) {
     try {
@@ -458,6 +458,9 @@ public class Host {
         android.os.Handler target = m.getTarget();
         String handler = target == null ? "" : target.getClass().getName();
         if (m.getCallback() instanceof Sensors.Reg) continue;  // a sensor's tick: the next event, not work that changes the screen
+        // A focused EditText's caret blink (every 500 ms): it redraws the caret alone, and counting it kept `settle` from
+        // ever answering on a screen with a focused field (issue 479). Espresso counts the main looper idle despite it too.
+        if (m.getCallback() != null && m.getCallback().getClass().getName().equals("android.widget.Editor$Blink")) continue;
         if ((m.what == 39 || m.what == 40) && handler.equals("android.view.ViewRootImpl$ViewRootHandler")) continue;
         if (m.what == 2 && handler.equals("android.view.Choreographer$FrameHandler") && m.obj != null
             && m.obj.getClass().getName().startsWith("android.animation.AnimationHandler$$Lambda")) continue;

@@ -289,6 +289,9 @@ echo "Sensor rates: UI $((n1 - n0)) in 2 s (15 Hz: 30), GAME on a HandlerThread 
 # A screen that registers listeners but does not redraw settles (the sensors' ticks are not work that changes the screen).
 drive 'back' 'open apksim://sensors?redraw=0' 'wait 1500' 'settle 5000 300' | tail -1 | grep -q 'settled in' \
   || { echo "a screen with sensor listeners never settled" >&2; exit 1; }
+# A focused EditText's caret blink (Editor$Blink, every 500 ms) is not pending work either (issue 479).
+drive 'open apksim://edittext' 'wait 1500' 'settle 5000 300' | tail -1 | grep -q 'settled in' \
+  || { echo "a screen with a focused EditText never settled" >&2; exit 1; }
 # Device kinds: what an emulator of each lists (a TV none, a watch adds heart rate, a desktop has no proximity or steps).
 kinds=""
 drive 'sensor light on' >/dev/null
