@@ -811,12 +811,91 @@ final class Session {
         }
         for (String line; (line = r.readLine()) != null; ) {
           // The instance cuts a long URL itself (Inspector.URL_SHOWN): an event is a few KB, at most about 20 KB escaped.
-          if (line.length() < 40_000 && line.startsWith("{")) ws.sendText("n e " + line);
+          if (line.length() < 40_000 && line.startsWith("{")) netEvent(line);
         }
       } catch (IOException e) {
         // the instance went away
       }
     });
+  }
+
+  // Watching (issue 498): a tab that sends `inspect watch on|off` opts into batches and can mute the per-exchange messages.
+  private final Object watchLock = new Object();
+  private boolean watchOpted, watchOn = true, watchTicker;
+  private final ArrayDeque<String> watchRing = new ArrayDeque<>();  // the last 300 events, for `watch on`
+  private final ArrayList<String> watchPending = new ArrayList<>();
+  private long watchTotal, watchErrors, watchCountSent = -1, watchCountAt;
+
+  private static final int WATCH_KEEP = 300, WATCH_BATCH_MS = 250, WATCH_COUNT_MS = 1000, WATCH_BATCH_CHARS = 200_000;
+  private static final Pattern WATCH_FAILED = Pattern.compile(",\"error\":|,\"status\":(0|[45][0-9]{2}),");
+
+  /** One event from the instance: sent as `n e` as before, unless the tab opted into watching (then counted, kept and batched). */
+  private void netEvent(String line) {
+    synchronized (watchLock) {
+      watchTotal++;
+      if (WATCH_FAILED.matcher(line).find()) watchErrors++;
+      watchRing.addLast(line);
+      if (watchRing.size() > WATCH_KEEP) watchRing.removeFirst();
+      if (!watchOpted) ws.sendText("n e " + line);
+      else if (watchOn) watchPending.add(line);
+    }
+  }
+
+  /** `inspect watch on|off`: the first one makes this socket's exchanges batched (`n b [..]` every 250 ms); off sends `n c {"total","errors"}` at most once a second. */
+  private void watchCommand(String t) {
+    String mode = t.strip();
+    boolean on = mode.equals("inspect watch on");
+    if (!on && !mode.equals("inspect watch off")) {
+      ws.sendText("r refused: usage: inspect watch on|off");
+      return;
+    }
+    synchronized (watchLock) {
+      watchOpted = true;
+      watchOn = on;
+      watchPending.clear();
+      if (on) watchPending.addAll(watchRing);  // the backlog, once; then each batch carries what arrived since
+      else watchCountSent = -1;
+      if (!watchTicker) {
+        watchTicker = true;
+        Thread.ofVirtual().name("serve-netwatch-batch-" + id).start(this::watchTick);
+      }
+    }
+  }
+
+  private void watchTick() {
+    try {
+      while (!ended && !tabGone) {
+        Thread.sleep(WATCH_BATCH_MS);
+        List<String> out = null;
+        String count = null;
+        synchronized (watchLock) {
+          long now = System.currentTimeMillis();
+          if (watchOn) {
+            if (!watchPending.isEmpty()) {
+              out = new ArrayList<>(watchPending);
+              watchPending.clear();
+            }
+          } else if (watchTotal != watchCountSent && now - watchCountAt >= WATCH_COUNT_MS) {
+            watchCountSent = watchTotal;
+            watchCountAt = now;
+            count = "n c {\"total\":" + watchTotal + ",\"errors\":" + watchErrors + "}";
+          }
+        }
+        if (count != null) ws.sendText(count);
+        // One message holds up to ~200 KB of events, so a long backlog is a few.
+        for (int i = 0; out != null && i < out.size(); ) {
+          StringBuilder b = new StringBuilder("n b [");
+          int n = 0;
+          while (i < out.size() && (n == 0 || b.length() + out.get(i).length() < WATCH_BATCH_CHARS)) {
+            if (n++ > 0) b.append(',');
+            b.append(out.get(i++));
+          }
+          ws.sendText(b.append(']').toString());
+        }
+      }
+    } catch (InterruptedException e) {
+      // ending
+    }
   }
 
   private static final String URL_CHARS = "[A-Za-z0-9._~:/?#\\[\\]@!$&'()*+,;=%-]";
@@ -1587,6 +1666,10 @@ final class Session {
       keep = text.equals("keep on");
       logLine("[beam] keep on this Mac: " + (keep ? "on" : "off"));
       ws.sendText("k " + (keep ? "on" : "off"));
+      return;
+    }
+    if (text.startsWith("inspect watch ") && inspecting()) {
+      watchCommand(text);
       return;
     }
     if (text.startsWith("inspect ")) {

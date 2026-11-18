@@ -9,6 +9,7 @@ refused and the session announces neither. Standard library only. As a tab does 
 `apksim://network` screen, whose server api.apksim.test does not exist:
 
   - the session announces `rec`, `inspect` and the issue template, and only then;
+  - `inspect watch off|on` (issue 498): no n e while off, n c counts, the backlog and later exchanges as n b batches;
   - tapping Fetch gives a row for the failed lookup (status 0), in the event stream a tab reads (`n e {...}`);
   - a rule (`inspect rule add`) that answers POST /v1/greeting with 200 and a JSON body (and 600 ms of latency) makes the same tap
     an exchange: status 200, answered by the rule, the added latency in its time, nothing sent to a server; the rule list says it was
@@ -244,6 +245,46 @@ def patch_checks(t):
     t.pump(1.5)
 
 
+def watch_checks(url, token, app):
+    """Issue 498: `inspect watch on|off` mutes the per-exchange messages (a count instead) and batches them when on."""
+    def batches(t):
+        return [e for x in t.texts if x.startswith("n b ") for e in json.loads(x[4:])]
+
+    t = Tab(url, token, app, "codec=jpeg&open=apksim%3A%2F%2Fnetwork")
+    try:
+        check(t.wait_text(lambda x: x.startswith("i "), 60), "watch: a session starts")
+        check(t.pump(90, until=lambda: len(t.frames) >= 2), "watch: the app shows its first frames")
+        time.sleep(2)
+        t.ws.send("inspect watch off")
+        t.pump(1)
+        base_e, base_b = len(t.events()), len(batches(t))
+        t.tap(*FETCH)
+        check(t.wait_text(lambda x: x.startswith("n c "), 30), "watch off: a count arrives")
+        t.pump(3)
+        counts = [json.loads(x[4:]) for x in t.texts if x.startswith("n c ")]
+        check(len(t.events()) == base_e and len(batches(t)) == base_b, "watch off: no n e and no n b message")
+        check(counts[-1]["total"] >= 1 and counts[-1]["errors"] >= 1, f"watch off: the count has the failed lookup ({counts[-1]})")
+        stamps = len(counts)
+        t.pump(3)
+        check(len(t.texts) and len([x for x in t.texts if x.startswith("n c ")]) == stamps, "watch off: a still count is not sent again")
+        t.ws.send("inspect watch on")
+        check(t.wait_text(lambda x: x.startswith("n b "), 10), "watch on: the backlog arrives as a batch")
+        check(any(e["method"] == "DNS" for e in batches(t)), "the batch holds the exchange made while off")
+        seen = len(batches(t))
+        # The failed lookup is not repeated; an exchange a rule answers is new every time.
+        t.ws.send("inspect rule add POST /v1/greeting 200 0 application/json " + base64.b64encode(GREETING).decode())
+        check(t.wait_text(lambda x: x.startswith("n r rule {"), 10), "watch on: a rule is added")
+        t.tap(*FETCH)
+        check(t.pump(30, until=lambda: len(batches(t)) > seen), "watch on: new exchanges come in batches")
+        check(len(t.events()) == base_e, "and never as n e")
+        t.ws.send("inspect rule list")
+        t.ws.send("inspect rule clear")
+        t.ws.send("inspect rule list")
+        check(t.wait_text(lambda x: x == "n r rule []", 10), "rules still answer while watching")
+    finally:
+        t.ws.s.close()
+
+
 def optional_checks(url, token, app):
     """Issue 371, a server started with `--inspect-network optional`: only a session that asks for the inspector has it."""
     for ask in (False, True):
@@ -320,6 +361,7 @@ def main():
             check(any(x.startswith("r refused: inspect") for x in d.texts), "and its inspect commands are refused")
         finally:
             d.ws.s.close()
+        watch_checks(url, token, app)
         check(rec and i.get("issueUrl", "").startswith("https://") and "{title}" in i["issueUrl"], "it announces rec and the issue template")
         check(t.pump(90, until=lambda: len(t.frames) >= 2), "the app shows its first frames")
         time.sleep(2)
