@@ -221,6 +221,29 @@ final class SystemBars {
     }
   }
 
+  /**
+   * The display's insets of these types, from the system bars this display has (a window placing itself in the rest:
+   * Host.position), each bar counted while it shows, or always with ignoreVisibility. Only the status and navigation
+   * bars: nothing else (a caption bar, the IME) has a frame here.
+   */
+  static android.graphics.Insets fitInsets(int types, boolean ignoreVisibility) {
+    Object ui = systemUi();
+    int l = 0, t = 0, r = 0, b = 0;
+    for (Object bar : new Object[] {
+        (types & WindowInsets.Type.statusBars()) != 0 ? ReflectionHelpers.callInstanceMethod(ui, "getStatusBar") : null,
+        (types & WindowInsets.Type.navigationBars()) != 0 ? ReflectionHelpers.callInstanceMethod(ui, "getNavigationBar") : null}) {
+      if (bar == null || !(ignoreVisibility || visible(bar))) continue;
+      int size = ReflectionHelpers.callInstanceMethod(bar, "getSize");
+      switch (String.valueOf((Object) ReflectionHelpers.callInstanceMethod(bar, "getSide"))) {
+        case "LEFT" -> l = Math.max(l, size);
+        case "RIGHT" -> r = Math.max(r, size);
+        case "BOTTOM" -> b = Math.max(b, size);
+        default -> t = Math.max(t, size);
+      }
+    }
+    return android.graphics.Insets.of(l, t, r, b);
+  }
+
   // Robolectric keeps SystemUi package-private.
   private static Object systemUi() {
     return ReflectionHelpers.callStaticMethod(robolectric("SystemUi"), "systemUiForDefaultDisplay");

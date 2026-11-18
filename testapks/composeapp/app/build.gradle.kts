@@ -74,6 +74,8 @@ dependencies {
   implementation(libs.androidx.drawerlayout)
   // apksim://appcompat: resources read through AppCompat's per-context caches across a recreation
   implementation(libs.androidx.appcompat)
+  // BottomSheetDialog (apksim://bottomsheet?kind=material).
+  implementation(libs.material)
   implementation(libs.androidx.lifecycle.runtime.ktx)
   implementation(libs.androidx.activity.compose)
 

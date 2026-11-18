@@ -17,6 +17,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewRootImpl;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.view.WindowManagerGlobal;
 import android.window.OnBackInvokedCallback;
@@ -1585,15 +1586,93 @@ public class Host {
   private int[] position(View root, int rw, int rh) {
     int x = 0;
     int y = 0;
-    if (root.getLayoutParams() instanceof WindowManager.LayoutParams lp) {
-      // As the window manager places it: an axis with no pull to either side (NO_GRAVITY, the default) is centred.
+    if (root.getLayoutParams() instanceof WindowManager.LayoutParams appLp) {
+      // The window's attributes as ViewRootImpl sends them (mWindowAttributes: adjustLayoutParamsForCompatibility
+      // drops the status bar from the fitted types for FLAG_LAYOUT_IN_SCREEN, FLAG_TRANSLUCENT_STATUS and the like),
+      // which Robolectric sized the frame from; the app's own params otherwise.
+      WindowManager.LayoutParams lp = windowAttributes(root, appLp);
+      // As the window manager places it (WindowLayout.computeFrames): in the parent frame, the display less the
+      // insets of the types and sides the window fits (a dialog's system bars, unless hidden; none for an
+      // edge-to-edge activity window), by its gravity, offsets and margins, then kept on that frame
+      // (Gravity.applyDisplay). An axis with no pull to either side (NO_GRAVITY, the default) is centred. On the whole
+      // display, a dialog with BOTTOM gravity sat over the navigation bar (issue 506). Not done: the display cutout's
+      // safe area, an IME-inset parent frame and multi-window modes.
+      // A sub-window (a PopupWindow: a panel attached to its activity's window) is placed in the window it is attached
+      // to, unless FLAG_LAYOUT_IN_SCREEN, and kept on the display frame all the same, except with FLAG_LAYOUT_NO_LIMITS
+      // (a popup with clipping off), whose display frame has no bounds.
+      android.graphics.Rect display = displayFrame(lp);
+      android.graphics.Rect attached = attachedFrame(root, lp);
+      boolean inScreen = (lp.flags & WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN) != 0;
+      android.graphics.Rect parent = attached != null && !inScreen ? attached : display;
       android.graphics.Rect out = new android.graphics.Rect();
-      Gravity.apply(Gravity.getAbsoluteGravity(lp.gravity, root.getLayoutDirection()), rw, rh,
-          new android.graphics.Rect(0, 0, w, h), lp.x, lp.y, out);
+      int gravity = Gravity.getAbsoluteGravity(lp.gravity, root.getLayoutDirection());
+      Gravity.apply(gravity, rw, rh, parent, (int) (lp.x + lp.horizontalMargin * parent.width()),
+          (int) (lp.y + lp.verticalMargin * parent.height()), out);
+      boolean noLimits = (lp.flags & WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS) != 0
+          && lp.type != WindowManager.LayoutParams.TYPE_SYSTEM_ERROR;
+      if (!noLimits) Gravity.applyDisplay(gravity, display, out);
       x = out.left;
       y = out.top;
     }
     return new int[] {x, y};
+  }
+
+  /** ViewRootImpl's copy of a window's attributes, or the params given when it has none. */
+  private static WindowManager.LayoutParams windowAttributes(View root, WindowManager.LayoutParams lp) {
+    ViewRootImpl vri = root.getViewRootImpl();
+    if (vri == null) return lp;
+    try {
+      Object attrs = WINDOW_ATTRIBUTES.get(vri);
+      return attrs instanceof WindowManager.LayoutParams a ? a : lp;
+    } catch (IllegalAccessException e) {
+      return lp;
+    }
+  }
+
+  private static final java.lang.reflect.Field WINDOW_ATTRIBUTES;
+
+  static {
+    try {
+      WINDOW_ATTRIBUTES = ViewRootImpl.class.getDeclaredField("mWindowAttributes");
+      WINDOW_ATTRIBUTES.setAccessible(true);
+    } catch (NoSuchFieldException e) {
+      throw new ExceptionInInitializerError(e);
+    }
+  }
+
+  /**
+   * The display less the insets this window fits ({@code getFitInsetsTypes}, {@code getFitInsetsSides}, visible ones
+   * unless it ignores visibility). The bars come from the display's SystemUi: a window's own insets state has them
+   * clipped to the frame Robolectric gave it.
+   */
+  private android.graphics.Rect displayFrame(WindowManager.LayoutParams lp) {
+    android.graphics.Rect display = new android.graphics.Rect(0, 0, w, h);
+    int types = lp.getFitInsetsTypes();
+    if (types == 0) return display;
+    android.graphics.Insets in = SystemBars.fitInsets(types, lp.isFitInsetsIgnoringVisibility());
+    int sides = lp.getFitInsetsSides();
+    return new android.graphics.Rect(
+        (sides & WindowInsets.Side.LEFT) != 0 ? in.left : 0,
+        (sides & WindowInsets.Side.TOP) != 0 ? in.top : 0,
+        w - ((sides & WindowInsets.Side.RIGHT) != 0 ? in.right : 0),
+        h - ((sides & WindowInsets.Side.BOTTOM) != 0 ? in.bottom : 0));
+  }
+
+  /**
+   * For a sub-window (TYPE_APPLICATION_PANEL and the like, whose token is its parent window's), where Host shows the
+   * window it is attached to; null for any other window, or when that window is not found.
+   */
+  private android.graphics.Rect attachedFrame(View root, WindowManager.LayoutParams lp) {
+    if (lp.type < WindowManager.LayoutParams.FIRST_SUB_WINDOW || lp.type > WindowManager.LayoutParams.LAST_SUB_WINDOW
+        || lp.token == null) {
+      return null;
+    }
+    for (View r : rootViews()) {
+      if (r == root || r.getWindowToken() != lp.token) continue;
+      int[] at = position(r);
+      return new android.graphics.Rect(at[0], at[1], at[0] + r.getWidth(), at[1] + r.getHeight());
+    }
+    return null;
   }
 
   /** The clock when the last frame was drawn (ms). */
@@ -1804,9 +1883,10 @@ public class Host {
   /**
    * Puts each window where Host shows it as far as its views know: AttachInfo's window position, which
    * getLocationOnScreen, accessibility's boundsInScreen and the window's matrix to the screen read, and the frame's top
-   * left, which ViewRootImpl copies into it on each traversal. Robolectric's window session gives a window that is
-   * not full-screen (a centred dialog) a display-sized frame at lp.x/lp.y, so its views reported positions inside the
-   * window as screen positions: a dialog's nodes sat at the top left, where `tap-text` and UiAutomator then tapped.
+   * left, which ViewRootImpl copies into it on each traversal. Robolectric's window session places a window that is
+   * not full-screen (a centred dialog) inside the bars' insets, not where the window manager would (with
+   * useRequestedSize off, a display-sized frame at lp.x/lp.y), so its views reported positions inside the window as
+   * screen positions: a dialog's nodes sat at the top left, where `tap-text` and UiAutomator then tapped.
    * The frame's size is left as it is (it sets the window's measure specs and insets); a relayout puts Robolectric's
    * frame back, and the next loop turn moves it again.
    */

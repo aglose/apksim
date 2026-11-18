@@ -23,6 +23,7 @@ grpc = "1.85.1"
 jodaTime = "2.10.14"
 drawerLayout = "1.2.0"
 appcompat = "1.7.1"
+material = "1.12.0"
 camerax = "1.6.2"
 healthConnect = "1.1.0"
 fragment = "1.8.9"
@@ -50,6 +51,7 @@ androidx-navigation-compose = { module = "androidx.navigation:navigation-compose
 androidx-recyclerview = { module = "androidx.recyclerview:recyclerview", version.ref = "recyclerview" }
 androidx-test-espresso-contrib = { module = "androidx.test.espresso:espresso-contrib", version.ref = "androidxTestEspresso" }
 androidx-appcompat = { module = "androidx.appcompat:appcompat", version.ref = "appcompat" }
+material = { module = "com.google.android.material:material", version.ref = "material" }
 androidx-drawerlayout = { module = "androidx.drawerlayout:drawerlayout", version.ref = "drawerLayout" }
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidxActivity" }

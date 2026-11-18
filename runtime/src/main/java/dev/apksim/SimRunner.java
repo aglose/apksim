@@ -49,6 +49,18 @@ public class SimRunner extends RobolectricTestRunner {
   /** Off with -Dapksim.repeatForever=false: Robolectric's cap of INFINITE repeats at 1 everywhere ({@link ShadowRepeatingAnimator}). */
   static final boolean REPEAT_FOREVER = !"false".equals(System.getProperty("apksim.repeatForever"));
 
+  static {
+    // A window gets the size its view hierarchy measured (WRAP_CONTENT), placed by its gravity, as from a device's
+    // window manager, in running instances as in test runs (Instrument sets it there). Without it Robolectric's
+    // window session gave a floating window that is not full-screen the display's size: a dialog-themed activity was
+    // remeasured at the display's width, got a status bar inset it should not have and ended up shorter than on a
+    // device (issue 506). Robolectric reads it at every relayout; --jvm -Drobolectric.windowManager.useRequestedSize=false
+    // (a cold launch) keeps the old frames.
+    if (System.getProperty("robolectric.windowManager.useRequestedSize") == null) {
+      System.setProperty("robolectric.windowManager.useRequestedSize", "true");
+    }
+  }
+
   /**
    * One injector, so one SandboxManager and one sandbox, for every class run here. The framework is loaded once per
    * process ({@link FlatLoader}), so a second sandbox would bring a second "main thread" to a main Looper already

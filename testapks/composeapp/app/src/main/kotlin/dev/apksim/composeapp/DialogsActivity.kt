@@ -103,7 +103,7 @@ class DialogsActivity : Activity() {
     var dialogTaps = 0
     val count = TextView(this).apply { text = "dialog taps: 0"; setTextColor(Color.WHITE) }
     val title = when (which) {
-      "full" -> "Full-screen dialog open"
+      "full", "inscreen" -> "Full-screen dialog open"
       "modal" -> "Small modal dialog open"
       else -> "Small non-modal dialog open"
     }
@@ -121,6 +121,11 @@ class DialogsActivity : Activity() {
     w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
     when (which) {
       "full" -> w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+      // A full dialog laid out in the screen: the window manager no longer fits it below the status bar.
+      "inscreen" -> {
+        w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        w.addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN)
+      }
       "nonmodal" -> w.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
     }
     dialog.show()

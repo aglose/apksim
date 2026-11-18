@@ -103,10 +103,42 @@ class SecondActivity : Activity() {
   }
 }
 
-/** A dialog-themed (floating) activity: the activity under it stays visible, paused, as on a device. */
+/**
+ * A dialog-themed (floating) activity: the activity under it stays visible, paused, as on a device. `?popup=1` shows a
+ * PopupWindow at TOP|START 48,100 of its window (a sub-window is placed in the window it is attached to: 139,833 on the
+ * phone), `?popup=offscreen` one with clipping off at -100,100 (FLAG_LAYOUT_NO_LIMITS: left partly off the display).
+ */
 class FloatingActivity : Activity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    setContentView(TextView(this).apply { text = "Floating"; textSize = 24f; setPadding(48, 48, 48, 48) })
+    val content = TextView(this).apply { text = "Floating"; textSize = 24f; setPadding(48, 48, 48, 48) }
+    setContentView(content)
+    val popup = intent.data?.getQueryParameter("popup") ?: return
+    content.post {
+      val p = android.widget.PopupWindow(TextView(this).apply {
+        text = "Popup on the floating window"
+        setBackgroundColor(android.graphics.Color.rgb(200, 160, 40))
+        setPadding(24, 24, 24, 24)
+      }, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, false)
+      if (popup == "offscreen") p.isClippingEnabled = false
+      p.showAtLocation(content, Gravity.TOP or Gravity.START, if (popup == "offscreen") -100 else 48, 100)
+    }
+  }
+}
+
+/**
+ * A floating, translucent, dimming activity with WRAP_CONTENT x WRAP_CONTENT window layout whose list is taller than
+ * the display (apksim://floating-tall, issue 506): the window should be shorter than the display, as on a device.
+ */
+class FloatingTallActivity : Activity() {
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+    val list = android.widget.ListView(this)
+    list.adapter = android.widget.ArrayAdapter(this, android.R.layout.simple_list_item_1, List(200) { "Row $it" })
+    setContentView(list)
+    window.setLayout(android.view.ViewGroup.LayoutParams.WRAP_CONTENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT)
+    if (intent.data?.getQueryParameter("bars") == "hide") {
+      window.insetsController?.hide(android.view.WindowInsets.Type.systemBars())
+    }
   }
 }
