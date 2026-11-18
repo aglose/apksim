@@ -210,6 +210,7 @@ const state = { app: params.get("app") || "", device: params.get("device") || ""
   locale: params.get("locale") || "", fontscale: params.get("fontscale") || "", open: params.get("open") || "",
   orientation: params.get("orientation") || "", skin: params.get("skin") || "" };
 let ws = null, ended = false, onHome = false, frameW = 0, frameH = 0;
+let streamW = 0, streamH = 0;  // the last frame's own size: smaller than frameW x frameH (the device's) under a viewport
 // Embedded (?embed=1, docs/serve.md): the host page picks the app; a token in the frame's URL is kept in memory and
 // sent with this page's own requests (a cross-site frame gets no SameSite cookie), and taken out of the address.
 const embed = params.get("embed") === "1", token = params.get("token");
@@ -716,16 +717,20 @@ function median(a) { if (!a.length) return NaN; const s = [...a].sort((x, y) => 
 const received = [];  // [time, bytes] of the last second's frames
 function onFrame(buf, sock) {
   const dv = new DataView(buf);
-  const w = dv.getInt32(0), h = dv.getInt32(4), encode = dv.getInt32(16) / 1000;
+  // The frame's own size; a frame scaled down to this tab's viewport (issue 499) has the device's in the upper 16 bits,
+  // which is what the canvas, fitting and touch coordinates keep using: the picture is drawn scaled up into it.
+  const rw = dv.getInt32(0), rh = dv.getInt32(4), w = rw & 0xffff, h = rh & 0xffff;
+  const dw = (rw >>> 16) || w, dh = (rh >>> 16) || h, encode = dv.getInt32(16) / 1000;
+  streamW = w; streamH = h;
   const presented = Number(dv.getBigInt64(8)) / 1000 - clockOffset;  // in this machine's time
   received.push([now(), buf.byteLength]);
   while (received.length && received[0][0] < now() - 1000) received.shift();
-  if (mode === "h264") return onVideo(dv, buf, sock, w, h, presented, encode);
+  if (mode === "h264") return onVideo(dv, buf, sock, w, h, presented, encode, dw, dh);
   const jpeg = new Blob([new Uint8Array(buf, 20)], { type: "image/jpeg" });
   chain = chain.then(() => createImageBitmap(jpeg)).then(bmp => {
     // Decoding takes a moment: by now Stop or a new session may have replaced this frame's socket.
     if (sock !== ws || ended) { bmp.close(); return; }
-    present(bmp, w, h, presented, encode, buf.byteLength, sock);
+    present(bmp, dw, dh, presented, encode, buf.byteLength, sock);
   }).catch(() => { if (sock === ws) send("ack"); });
 }
 // Decoded frames reach the canvas at the display's refresh (requestAnimationFrame), as the Mac window presents its
@@ -761,6 +766,7 @@ function draw(image, w, h) {
   if (w !== frameW || h !== frameH) { frameW = canvas.width = w; frameH = canvas.height = h; fit(); fillFrame(w, h); }
   ctx.drawImage(image, 0, 0, w, h);
   drawsSinceVsync++;
+  if (ws && !ws.viewportSent && !viewportTimer) sendViewport();  // a socket that has none yet (a move keeps the size)
 }
 // What reached the screen per display refresh (requestAnimationFrame), counted as the Mac window counts its display
 // link's vsyncs (`frames`' screen part, native/simwindow.m): a refresh with a new frame drawn since the last is shown
@@ -899,7 +905,7 @@ let retryTimer = 0;
 // and an older socket closing never touches a newer session's decoder.
 let decoderSock = null;
 function socketClosed(sock) { if (decoderSock === sock) { closeDecoder(); decoderSock = null; } }
-function onVideo(dv, buf, sock, w, h, presented, encode) {
+function onVideo(dv, buf, sock, w, h, presented, encode, dw, dh) {
   const key = dv.getUint8(20) === 1, data = new Uint8Array(buf, 21);
   if (key) {
     const codec = avcCodec(data);
@@ -925,7 +931,7 @@ function onVideo(dv, buf, sock, w, h, presented, encode) {
     if (!keyAsked) { send("key"); keyAsked = true; }
     return;
   }
-  decoding.push({ sock, w, h, presented, encode, bytes: buf.byteLength });
+  decoding.push({ sock, w: dw, h: dh, presented, encode, bytes: buf.byteLength });
   try { decoder.decode(new EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: Number(dv.getBigInt64(8)), data })); }
   catch (e) { videoLost(e.message); }
 }
@@ -948,8 +954,26 @@ window.apksimStats = () => ({ fps: drawnAt.filter(x => x > now() - 1000).length,
   // earlier one stopped growing there), and is not emptied when a move or a restart opens another socket.
   encodeMs: median(encodes), kb: sizes.length ? sizes.reduce((a, b) => a + b, 0) / sizes.length / 1024 : NaN,
   frames: (ws && ws.shownFrames) || 0,
-  width: frameW, height: frameH, codec: mode });
+  width: frameW, height: frameH, streamWidth: streamW, streamHeight: streamH, viewport: (ws && ws.viewportSent) || "", codec: mode });
+// The size the stream is shown at, in device pixels (issue 499): the instance encodes no larger than that when it is
+// clearly smaller than the display (a small window, a split layout, a display that is not HiDPI). Sent once the first
+// frame has set the canvas's size and again whenever the layout settles on another; per socket, so a new session (or a
+// move) gets it too. Frames keep the device's size for the canvas and for touches.
+let viewportTimer = 0;
+function sendViewport() {
+  clearTimeout(viewportTimer);
+  viewportTimer = setTimeout(() => {
+    viewportTimer = 0;
+    if (!frameW || !ws || ws.readyState !== 1 || ended) return;
+    const r = canvas.getBoundingClientRect(), d = devicePixelRatio || 1;
+    const v = "viewport " + Math.min(99999, Math.round(r.width * d)) + " " + Math.min(99999, Math.round(r.height * d));
+    if (v === ws.viewportSent) return;
+    ws.viewportSent = v;
+    send(v);
+  }, 150);
+}
 function fit() {
+  sendViewport();
   if (fill.on) { skinOff(); fillFit(); return; }
   if (skinFit()) return;
   const stage = $("stage"), w = frameW || canvas.width, h = frameH || canvas.height;

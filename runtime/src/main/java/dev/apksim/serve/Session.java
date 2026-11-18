@@ -812,7 +812,7 @@ final class Session {
         }
         for (String line; (line = r.readLine()) != null; ) {
           // The instance cuts a long URL itself (Inspector.URL_SHOWN): an event is a few KB, at most about 20 KB escaped.
-          if (line.length() < 40_000 && line.startsWith("{")) ws.sendText("n e " + line);
+          if (line.length() < 40_000 && line.startsWith("{")) netEvent(line);
         }
       } catch (IOException e) {
         // the instance went away
@@ -986,6 +986,98 @@ final class Session {
       w.send("e " + Crash.endJson(reason == null ? "other" : reason, text, null));
       w.send("x " + text);
       w.closeAfter(text);
+    }
+  }
+
+  // Watching (issue 498): a tab that sends `inspect watch on|off` opts into batches and can mute the per-exchange messages.
+  // Events are numbered here as they arrive (the instance's ids are taken before its lock, so they can arrive out of order),
+  // and `watchSent` is the highest number the tab has been sent, so `watch on` sends each kept event at most once.
+  private record NetEvent(long seq, String line) {}
+  private final Object watchLock = new Object();
+  private boolean watchOpted, watchOn = true, watchTicker;
+  private final ArrayDeque<NetEvent> watchRing = new ArrayDeque<>();  // the last 300 events, for `watch on`
+  private final ArrayDeque<NetEvent> watchPending = new ArrayDeque<>();
+  private long watchSeq, watchSent, watchTotal, watchErrors, watchCountSent = -1, watchCountAt;
+
+  private static final int WATCH_KEEP = 300, WATCH_BATCH_MS = 250, WATCH_COUNT_MS = 1000, WATCH_BATCH_CHARS = 200_000;
+  private static final Pattern WATCH_FAILED = Pattern.compile(",\"error\":|,\"status\":(0|[45][0-9]{2}),");
+
+  /** One event from the instance: sent as `n e` as before, unless the tab opted into watching (then counted, kept and batched). */
+  private void netEvent(String line) {
+    synchronized (watchLock) {
+      NetEvent ev = new NetEvent(++watchSeq, line);
+      watchTotal++;
+      if (WATCH_FAILED.matcher(line).find()) watchErrors++;
+      watchRing.addLast(ev);
+      if (watchRing.size() > WATCH_KEEP) watchRing.removeFirst();
+      if (!watchOpted) {
+        watchSent = ev.seq();
+        ws.sendText("n e " + line);
+      } else if (watchOn && !tabGone && !ended) {
+        watchPending.addLast(ev);
+        if (watchPending.size() > WATCH_KEEP) watchPending.removeFirst();
+      }
+    }
+  }
+
+  /** `inspect watch on|off`: the first one makes this socket's exchanges batched (`n b [..]` every 250 ms); off sends `n c {"total","errors"}` at most once a second. */
+  private void watchCommand(String t) {
+    String mode = t.strip();
+    boolean on = mode.equals("inspect watch on");
+    if (!on && !mode.equals("inspect watch off")) {
+      ws.sendText("r refused: usage: inspect watch on|off");
+      return;
+    }
+    synchronized (watchLock) {
+      watchOpted = true;
+      watchOn = on;
+      watchPending.clear();
+      if (on) {  // the backlog the tab has not been sent, once; then each batch carries what arrived since
+        for (NetEvent e : watchRing) if (e.seq() > watchSent) watchPending.addLast(e);
+      } else {
+        watchCountSent = -1;
+      }
+      if (!watchTicker) {
+        watchTicker = true;
+        Thread.ofVirtual().name("serve-netwatch-batch-" + id).start(this::watchTick);
+      }
+    }
+  }
+
+  private void watchTick() {
+    try {
+      while (!ended && !tabGone) {
+        Thread.sleep(WATCH_BATCH_MS);
+        List<NetEvent> out = null;
+        String count = null;
+        synchronized (watchLock) {
+          long now = System.currentTimeMillis();
+          if (watchOn) {
+            if (!watchPending.isEmpty()) {
+              out = new ArrayList<>(watchPending);
+              watchPending.clear();
+              watchSent = out.get(out.size() - 1).seq();  // pending is in arrival order
+            }
+          } else if (watchTotal != watchCountSent && now - watchCountAt >= WATCH_COUNT_MS) {
+            watchCountSent = watchTotal;
+            watchCountAt = now;
+            count = "n c {\"total\":" + watchTotal + ",\"errors\":" + watchErrors + "}";
+          }
+        }
+        if (count != null) ws.sendText(count);
+        // One message holds up to ~200 KB of events, so a long backlog is a few.
+        for (int i = 0; out != null && i < out.size(); ) {
+          StringBuilder b = new StringBuilder("n b [");
+          int n = 0;
+          while (i < out.size() && (n == 0 || b.length() + out.get(i).line().length() < WATCH_BATCH_CHARS)) {
+            if (n++ > 0) b.append(',');
+            b.append(out.get(i++).line());
+          }
+          ws.sendText(b.append(']').toString());
+        }
+      }
+    } catch (InterruptedException e) {
+      // ending
     }
   }
 
@@ -1510,6 +1602,10 @@ final class Session {
         line.append((char) c);
       }
       h264 = line.toString().trim().equals("ok stream h264");
+      // Only now may the tab's lines reach the stream: before its answer, Control still reads the connection as a
+      // command line, and a `viewport` there would be taken for a command (or swallowed by its reader's buffer).
+      streamReady = true;
+      sendViewport();
       if (viewers != null) viewers.codec(h264);
       if (options.containsKey("codec")) ws.sendText("c " + (h264 ? "h264" : "jpeg"));
       while (!ended) {
@@ -1694,9 +1790,34 @@ final class Session {
     sendStream("key\n");
   }
 
+  /** The tab's last `viewport W H`, sent to the instance's stream (and again once it has answered `ok stream`). */
+  private volatile String viewport;
+  private volatile boolean streamReady;
+
   private void sendStream(String line) {
+    if (h264) sendStreamLine(line);
+  }
+
+  /**
+   * The tab's latest `viewport` to the stream. It is read under the socket's lock, so of two senders racing (the tab's
+   * thread with a new one, the reader as the stream becomes ready) the one writing last writes the newest.
+   */
+  private void sendViewport() {
     Socket s = stream;
-    if (!h264 || s == null) return;
+    if (s == null || !streamReady) return;
+    try {
+      synchronized (s) {
+        String v = viewport;
+        if (v != null) s.getOutputStream().write((v + "\n").getBytes(StandardCharsets.US_ASCII));
+      }
+    } catch (IOException e) {
+      // the instance went away
+    }
+  }
+
+  private void sendStreamLine(String line) {
+    Socket s = stream;
+    if (s == null || !streamReady) return;
     try {
       synchronized (s) {
         s.getOutputStream().write(line.getBytes(StandardCharsets.US_ASCII));
@@ -1711,6 +1832,12 @@ final class Session {
   private void onMessage(String text) {
     if (text.equals("ack")) {
       acked();
+      return;
+    }
+    if (text.matches("viewport [0-9]{1,5} [0-9]{1,5}")) {
+      // The size the tab shows the stream at (issue 499): the instance encodes no larger. Kept for a stream not open yet.
+      viewport = text;
+      sendViewport();
       return;
     }
     if (text.equals("key")) {
@@ -1757,6 +1884,10 @@ final class Session {
       keep = text.equals("keep on");
       logLine("[beam] keep on this Mac: " + (keep ? "on" : "off"));
       ws.sendText("k " + (keep ? "on" : "off"));
+      return;
+    }
+    if (text.startsWith("inspect watch ") && inspecting()) {
+      watchCommand(text);
       return;
     }
     if (text.startsWith("inspect ")) {

@@ -59,6 +59,8 @@ drive 'wait 3000' >/dev/null
 python3 "$ROOT/scripts/swipe-check.py" "$PORT"
 # Touch moves and wheel events that queue up are merged at dispatch; downs, ups and typed text are not (issue 450).
 python3 "$ROOT/scripts/input-merge-check.py" "$PORT"
+# The stream is encoded at the size a tab says it shows it at, and back at full size (issue 499).
+python3 "$ROOT/scripts/viewport-check.py" "$PORT"
 
 trip() { drive nodes | grep -oE 'text="(Italian|Roman) vacation"' | head -1; }
 drive 'tap 350 1690' 'wait 1500' >/dev/null

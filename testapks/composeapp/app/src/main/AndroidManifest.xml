@@ -349,6 +349,15 @@
                 <data android:scheme="apksim" android:host="video" />
             </intent-filter>
         </activity>
+        <!-- apksim://player: Media3's PlayerView playing the video clip; no configChanges, so a rotation recreates it. -->
+        <activity android:name=".PlayerViewActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="player" />
+            </intent-filter>
+        </activity>
         <!-- apksim://system-sources: Wi-Fi, network, battery, volume, brightness, Bluetooth awaited in coroutines. -->
         <activity android:name=".SystemSourcesActivity" android:exported="true">
             <intent-filter>
