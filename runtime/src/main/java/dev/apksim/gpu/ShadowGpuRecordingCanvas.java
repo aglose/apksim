@@ -135,10 +135,10 @@ public class ShadowGpuRecordingCanvas extends ShadowNativeBaseRecordingCanvas {
     if (!aligned) {
       // Off whole pixels the copy would be sampled again, half a pixel off, which is left to HWUI for a draw whose
       // CPU cost is small. A big one (a full-width CENTER_CROP header, 1782 x 1002.4 pixels: issue 491) is snapped
-      // to the pixel grid instead: its edges move by at most half a pixel and its scale by less than 0.1%, and HWUI's
+      // to the pixel grid instead: its edges move by at most half a pixel and its scale by less than 0.2% (checked), and HWUI's
       // CPU sampling of it was ~15 ms a frame.
-      if (!SNAP || (long) (ir - il) * (ib - it) < SNAP_MIN_PIXELS || Math.abs((ir - il) - (dr - dl)) > 1f
-          || Math.abs((ib - it) - (db - dt)) > 1f) {
+      if (!SNAP || (long) (ir - il) * (ib - it) < SNAP_MIN_PIXELS || Math.abs((ir - il) - (dr - dl)) > 0.002f * (dr - dl)
+          || Math.abs((ib - it) - (db - dt)) > 0.002f * (db - dt)) {
         GpuBitmaps.passed[3]++;
         return null;
       }
