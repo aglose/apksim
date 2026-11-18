@@ -116,6 +116,16 @@ public class Host {
     return h != null && h.controls != null && h.controls.recreate(c);
   }
 
+  /**
+   * Activity.onBackPressed() reaching the framework's default in a running instance: on the task's root launcher
+   * activity the task goes to the back (Android 12+), as `home` does. False when no Host runs or it is not that
+   * activity (the caller finishes it).
+   */
+  static boolean moveRootToBack(Activity a) {
+    Host h = current;
+    return h != null && h.controls != null && h.controls.backToHome(a);
+  }
+
   /** Whether scripted input is still waiting to be dispatched. Main thread only. */
   static boolean inputQueued() {
     Host h = current;

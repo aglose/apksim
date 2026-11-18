@@ -891,12 +891,34 @@ final class DeviceControls {
     }
   }
 
+  /**
+   * Back on the task's root launcher activity (Android 12+): the system moves the task to the back instead of
+   * finishing it (ActivityClientController.onBackPressed -> moveTaskToBack). The activity is stopped, the process
+   * stays, and `resume` (or a click on the window) brings it back. False when {@code a} is not that activity: a
+   * non-root one, one not started from the launcher intent, or while the app is already hidden.
+   */
+  boolean backToHome(Activity a) {
+    ActivityController<? extends Activity> top = stack.peek();
+    if (hiddenBy != null || top == null || top.get() != a || stack.size() != 1) return false;
+    Intent in = a.getIntent();
+    if (in == null || !Intent.ACTION_MAIN.equals(in.getAction()) || !in.hasCategory(Intent.CATEGORY_LAUNCHER)) return false;
+    new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+      // Re-checked: the activity may have started another or finished since (super.onBackPressed(); startActivity(...)).
+      if (stack.size() == 1 && stack.peek().get() == a && !a.isFinishing()) hide("home", false);
+    });  // out of the key's dispatch
+    return true;
+  }
+
   private String hide(String why) {
+    return hide(why, true);
+  }
+
+  private String hide(String why, boolean leaving) {
     if (hiddenBy != null) return "already " + hiddenBy;
     ActivityController<? extends Activity> top = stack.peek();
     if (top == null) return "no activity";
     Crashes.app(() -> {
-      if (why.equals("home")) top.userLeaving();
+      if (why.equals("home") && leaving) top.userLeaving();
       Host.arrange(new java.util.ArrayList<>(stack), true);  // every visible one stopped and hidden
       if (why.equals("home")) app.onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN);
     });

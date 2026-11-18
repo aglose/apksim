@@ -467,7 +467,7 @@ public final class TestActivities {
     @Override
     protected void onBackPressed() {
       if (!testRun()) {
-        super.onBackPressed();
+        if (!Host.moveRootToBack(realActivity)) super.onBackPressed();
         return;
       }
       org.robolectric.util.reflector.Reflector.reflector(ActivityReflector.class, realActivity).onBackPressed();
