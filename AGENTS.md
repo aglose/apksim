@@ -459,11 +459,11 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `elfloader.c`, `bionic.c`, `jnibridge.c`: the Android ELF loader, bionic→libSystem shim, and a JNI table wrapper
     for the AAPCS-vs-Apple varargs difference (chosen by caller address).
   - `bionic.c` also has `timerfd_create`/`timerfd_settime` (Mac only, Linux has glibc's: a pipe fed by a thread per
-    timer, closed and freed by the `close` shim; expirations are added up and written as one 8-byte count while the pipe
+    timer, freed when ELF code calls `close` on it (`net_close`; not `dup2` over it); expirations are added up and written as one 8-byte count while the pipe
     is empty, and `timerfd_settime` clears a count not yet read; no `timerfd_gettime`, no epoll) and a SIGABRT handler
     that logs `[apksim] exit 134: native abort: MESSAGE` (the message from `android_set_abort_message`, a C++ uncaught
     exception's text): before, a native abort ended the process with nothing after the library's own line (issue 477).
-    It replaces the JVM's own SIGABRT disposition, so a JVM-internal abort prints it too.
+    Mac only (Linux has no such line yet). It replaces the JVM's own SIGABRT disposition, so a JVM-internal abort prints it too.
   - `alooper.c` (Mac and Linux): the NDK's `ALooper_*` (prepare, forThread, acquire, release, addFd, removeFd,
     pollOnce, pollAll, wake), which native SDKs run their event loops on (issue 477: Mapbox's common library ended the
     app at `ALooper_prepare`). Watched fds are polled with poll(2), level-triggered as epoll is, with Android's
@@ -472,7 +472,9 @@ Read README.md for results and limits; this file covers how to work on the code.
     watched at once. A thread with a Java Looper (the main thread, a HandlerThread) gets one backed by it, found by
     `forThread` without `prepare`, as on a device: an `apksim-alooper` thread polls its fds and posts an asynchronous
     message to that Looper (`NativeLoopers`) that runs the ready callbacks there, then waits for it before polling
-    again (a message a test reset dropped is posted again after a second). Not done: `ALooper_addFd` of an epoll fd,
+    again (a message a test reset dropped is posted again after a second; a looper that quit stops its watcher). An fd
+    closed without `removeFd` is forgotten, as epoll forgets it. `ALooper_pollOnce` on a Java-backed looper's own
+    thread also works, beside the watcher (unusual on a device). Not done: `ALooper_addFd` of an epoll fd,
     `AChoreographer`, `AInputQueue`. `NativeLoaderTest`'s looper tests check a native thread (timerfd, idents, wake),
     the main thread and a HandlerThread.
   - `jnigraphics.c` (Mac and Linux): libjnigraphics' `AndroidBitmap_*` for ELF code, through `NativeBitmaps` (see "Video").

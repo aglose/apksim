@@ -100,24 +100,40 @@ static JNIEnv *env_for_thread(int *attached) {
   return NULL;
 }
 
+static void looper_free(Looper *l) {
+  if (l->ctl_rd >= 0) close(l->ctl_rd);
+  if (l->ctl_wr >= 0) close(l->ctl_wr);
+  close(l->wake_rd);
+  close(l->wake_wr);
+  free(l->reqs);
+  free(l->resp);
+  pthread_mutex_destroy(&l->mu);
+  pthread_cond_destroy(&l->cv);
+  free(l);
+}
+static int looper_remove(Looper *l, int fd, int seq);
+
 // ---------------------------------------------------------------- the watcher of a Java-backed looper
+// References: the thread's own (TLS), each ALooper_acquire, and one while a pump message is outstanding (taken when
+// pump_pending goes up, given back by the pump that clears it, or by the watcher when the looper has quit). When they
+// reach 0 the watcher frees the looper itself (it holds the JNIEnv the global reference needs).
 
 static void *watch(void *arg) {
   Looper *l = arg;
   JNIEnv *env = NULL;
   JavaVMAttachArgs a = {JNI_VERSION_1_6, "apksim-alooper", NULL};
-  if ((*vm)->AttachCurrentThreadAsDaemon(vm, (void **)&env, &a) != JNI_OK) {
-    fprintf(stderr, "[apksim] ALooper: could not attach its watcher thread; fd callbacks on a Java looper will not run\n");
-    return NULL;
-  }
+  int attached = (*vm)->AttachCurrentThreadAsDaemon(vm, (void **)&env, &a) == JNI_OK;
+  if (!attached) fprintf(stderr, "[apksim] ALooper: could not attach its watcher thread; fd callbacks on a Java looper will not run\n");
   struct pollfd *fds = NULL;
-  int cap = 0;
+  int *seqs = NULL, cap = 0, gone = !attached;
   for (;;) {
     pthread_mutex_lock(&l->mu);
     int repost = 0;
+    // A looper that quit (or a thread we could not attach): nothing to post to; wait for the last release.
+    while (gone && !l->closing) pthread_cond_wait(&l->cv, &l->mu);
     while (l->pump_pending && !l->closing) {
       // A posted message can be dropped (Robolectric clears loopers between tests, a looper quits): after a
-      // second without its pump, post another. A late one only releases its reference.
+      // second without its pump, post another under the same reference. A late one finds its token stale.
       struct timespec d;
       clock_gettime(CLOCK_REALTIME, &d);
       d.tv_sec += 1;
@@ -130,37 +146,50 @@ static void *watch(void *arg) {
       pthread_mutex_unlock(&l->mu);
       break;
     }
-    if (repost) {
+    if (!repost) {
+      if (cap < l->nreq + 1) {
+        int c = l->nreq + 8;
+        struct pollfd *f = realloc(fds, c * sizeof *fds);
+        int *q = realloc(seqs, c * sizeof *seqs);
+        if (f) fds = f;
+        if (q) seqs = q;
+        if (!f || !q) {
+          pthread_mutex_unlock(&l->mu);
+          usleep(100000);
+          continue;
+        }
+        cap = c;
+      }
+      int n = 0;
+      fds[n++] = (struct pollfd){l->ctl_rd, POLLIN, 0};
+      for (int i = 0; i < l->nreq; i++) {
+        seqs[n] = l->reqs[i].seq;
+        fds[n++] = (struct pollfd){l->reqs[i].fd, to_poll(l->reqs[i].events), 0};
+      }
       pthread_mutex_unlock(&l->mu);
-      goto post;
+      int r = poll(fds, (nfds_t)n, -1);
+      if (r < 0) {
+        if (errno != EINTR) usleep(10000);
+        continue;
+      }
+      if (fds[0].revents) drain(l->ctl_rd);
+      int ready = 0;
+      for (int i = 1; i < n; i++) {
+        if (fds[i].revents & POLLNVAL) looper_remove(l, fds[i].fd, seqs[i]);  // closed: epoll forgets it
+        else ready |= fds[i].revents != 0;
+      }
+      if (!ready) continue;
+      pthread_mutex_lock(&l->mu);
+      if (l->closing) {
+        pthread_mutex_unlock(&l->mu);
+        break;
+      }
+      if (!l->pump_pending) {
+        l->pump_pending = 1;
+        l->refs++;  // the outstanding pump's
+      }
     }
-    if (cap < l->nreq + 1) {
-      cap = l->nreq + 8;
-      fds = realloc(fds, cap * sizeof *fds);
-    }
-    int n = 0;
-    fds[n++] = (struct pollfd){l->ctl_rd, POLLIN, 0};
-    for (int i = 0; i < l->nreq; i++) fds[n++] = (struct pollfd){l->reqs[i].fd, to_poll(l->reqs[i].events), 0};
-    pthread_mutex_unlock(&l->mu);
-    int r = poll(fds, (nfds_t)n, -1);
-    if (r < 0) {
-      if (errno == EINTR) continue;
-      usleep(10000);
-      continue;
-    }
-    if (fds[0].revents) drain(l->ctl_rd);
-    int ready = 0;
-    for (int i = 1; i < n; i++) ready |= fds[i].revents != 0;
-    if (!ready) continue;
-  post:
-    pthread_mutex_lock(&l->mu);
-    if (l->closing) {
-      pthread_mutex_unlock(&l->mu);
-      break;
-    }
-    l->pump_pending = 1;
     int token = ++l->token;
-    l->refs++;  // the message's, released when it runs
     pthread_mutex_unlock(&l->mu);
     jvalue args[3] = {{.l = l->jlooper}, {.j = (jlong)(intptr_t)l}, {.i = token}};
     jboolean posted = (*env)->CallStaticBooleanMethodA(env, helper, m_post, args);
@@ -169,16 +198,23 @@ static void *watch(void *arg) {
       (*env)->ExceptionClear(env);
       posted = JNI_FALSE;
     }
-    if (!posted) {  // the looper has quit, or the post threw: try again later
+    if (!posted) {  // the looper has quit: stop watching, give back the pump's reference
       pthread_mutex_lock(&l->mu);
-      if (l->token == token) l->pump_pending = 0;
-      l->refs--;
+      gone = 1;
+      if (l->pump_pending) {
+        l->pump_pending = 0;
+        if (--l->refs == 0) l->closing = 1;
+      }
       pthread_mutex_unlock(&l->mu);
-      usleep(100000);
     }
   }
   free(fds);
-  (*vm)->DetachCurrentThread(vm);
+  free(seqs);
+  if (attached) {
+    (*env)->DeleteGlobalRef(env, l->jlooper);
+    (*vm)->DetachCurrentThread(vm);
+  }
+  looper_free(l);
   return NULL;
 }
 
@@ -193,16 +229,25 @@ static Looper *looper_new(int allow, jobject jlooper, JNIEnv *env) {
   l->allow_non_callbacks = allow;
   l->ctl_rd = l->ctl_wr = -1;
   if (make_pipe(&l->wake_rd, &l->wake_wr)) {
+    pthread_mutex_destroy(&l->mu);
+    pthread_cond_destroy(&l->cv);
     free(l);
     return NULL;
   }
   if (jlooper) {
     l->jlooper = (*env)->NewGlobalRef(env, jlooper);
-    if (make_pipe(&l->ctl_rd, &l->ctl_wr) || pthread_create(&l->watcher, NULL, watch, l)) {
+    pthread_attr_t at;
+    pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    if (make_pipe(&l->ctl_rd, &l->ctl_wr) || pthread_create(&l->watcher, &at, watch, l)) {
       fprintf(stderr, "[apksim] ALooper: no watcher thread; fd callbacks on this Java looper will not run\n");
       (*env)->DeleteGlobalRef(env, l->jlooper);
       l->jlooper = NULL;
+      if (l->ctl_rd >= 0) close(l->ctl_rd);
+      if (l->ctl_wr >= 0) close(l->ctl_wr);
+      l->ctl_rd = l->ctl_wr = -1;
     }
+    pthread_attr_destroy(&at);
   }
   return l;
 }
@@ -217,28 +262,14 @@ static void looper_release(Looper *l) {
   if (!l) return;
   pthread_mutex_lock(&l->mu);
   int left = --l->refs;
-  if (left == 0 && l->jlooper) {
+  int watched = l->jlooper != NULL;
+  if (left == 0 && watched) {  // the watcher frees it
     l->closing = 1;
     pthread_cond_broadcast(&l->cv);
     poke(l->ctl_wr);
   }
   pthread_mutex_unlock(&l->mu);
-  if (left) return;
-  if (l->jlooper) {
-    pthread_join(l->watcher, NULL);
-    int attached = 0;
-    JNIEnv *env = env_for_thread(&attached);
-    if (env) (*env)->DeleteGlobalRef(env, l->jlooper);  // else kept: a few bytes, never a crash
-    close(l->ctl_rd);
-    close(l->ctl_wr);
-  }
-  close(l->wake_rd);
-  close(l->wake_wr);
-  free(l->reqs);
-  free(l->resp);
-  pthread_mutex_destroy(&l->mu);
-  pthread_cond_destroy(&l->cv);
-  free(l);
+  if (left == 0 && !watched) looper_free(l);
 }
 
 static void changed(Looper *l) {  // under l->mu: the watcher polls the new set
@@ -256,7 +287,7 @@ static int looper_add(Looper *l, int fd, int ident, int events, Callback cb, voi
   } else {
     ident = POLL_CALLBACK;
   }
-  if (fd < 0) return -1;
+  if (fd < 0 || fcntl(fd, F_GETFD) == -1) return -1;  // as epoll_ctl refuses a bad fd
   pthread_mutex_lock(&l->mu);
   int i = 0;
   while (i < l->nreq && l->reqs[i].fd != fd) i++;
@@ -341,6 +372,10 @@ static int poll_inner(Looper *l, int timeout_ms) {
       }
       for (int i = 1; i < n; i++) {
         if (!fds[i].revents) continue;
+        if (fds[i].revents & POLLNVAL) {  // closed without removeFd: epoll would forget it, so do we
+          looper_remove(l, snap[i].fd, snap[i].seq);
+          continue;
+        }
         if (l->nresp == l->resp_cap) {
           int cap = l->resp_cap ? l->resp_cap * 2 : 8;
           Resp *p = realloc(l->resp, cap * sizeof *p);
@@ -469,16 +504,18 @@ static int a_remove_fd(void *l, int fd) { return l ? looper_remove(l, fd, -1) : 
 static void JNICALL pump(JNIEnv *env, jclass c, jlong ptr, jint token) {
   Looper *l = (Looper *)(intptr_t)ptr;
   pthread_mutex_lock(&l->mu);
-  int current = l->pump_pending && l->token == token && !l->closing;
+  // Only the latest message holds the reference; a stale one (reposted after a second) touches nothing.
+  int current = l->pump_pending && l->token == token;
   pthread_mutex_unlock(&l->mu);
-  if (current) {
+  if (!current) return;
+  if (!l->closing) {
     poll_inner(l, 0);
     l->nresp = l->iresp = 0;  // no idents on a Java looper: nobody would ask for them
-    pthread_mutex_lock(&l->mu);
-    if (l->token == token) l->pump_pending = 0;
-    pthread_cond_broadcast(&l->cv);
-    pthread_mutex_unlock(&l->mu);
   }
+  pthread_mutex_lock(&l->mu);
+  l->pump_pending = 0;
+  pthread_cond_broadcast(&l->cv);
+  pthread_mutex_unlock(&l->mu);
   looper_release(l);
 }
 
