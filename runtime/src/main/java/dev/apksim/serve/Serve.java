@@ -20,6 +20,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -168,6 +169,8 @@ public final class Serve {
   final Map<String, String> reopened = new ConcurrentHashMap<>();
   /** Each reopened copy's saved record `changed` when it was made (BeamStore.writeBack refuses data changed since). */
   final Map<String, Long> reopenedChanged = new ConcurrentHashMap<>();
+  /** Reopened copies whose start named a `--device` in its options (issue 519): the page's device beats the saved one. */
+  final Set<String> reopenedNamedDevice = ConcurrentHashMap.newKeySet();
   /** `--allow-beam`: the tickets that let a visitor's agent download an app's APK from here itself (phase 2). */
   final BeamTicket tickets = new BeamTicket();
   /** The agent's port the page reaches (`--beam-port`, default {@link Beam#DEFAULT_PORT}). */
@@ -1771,17 +1774,9 @@ public final class Serve {
     // as `apksim beam run` does, unless the page names them.
     Map<String, Object> reopenedRec = beam && seed != null && reopened.containsKey(seed) ? store.saved(reopened.get(seed)) : null;
     if (reopenedRec != null) {
-      // Issue 519: a `--device` the start's options name that differs from the one the session was saved with is the page
-      // naming a device: the recorded one does not replace it.
-      String savedLaunchDevice = null;
-      if (reopenedRec.get("launch") instanceof List<?> sl) {
-        int sd = sl.lastIndexOf("--device");
-        if (sd >= 0 && sd + 1 < sl.size()) savedLaunchDevice = String.valueOf(sl.get(sd + 1));
-      }
-      String startDevice = Session.appDevice(app);
-      boolean pageNamedDevice = startDevice != null && !startDevice.equals(savedLaunchDevice);
       for (String k : List.of("device", "appearance", "locale", "fontscale", "permissions")) {
-        if (k.equals("device") && pageNamedDevice) continue;
+        // A --device in the start's own options names the device (issue 519): the saved one does not replace it.
+        if (k.equals("device") && reopenedNamedDevice.contains(seed) && Session.appDevice(app) != null) continue;
         if (reopenedRec.get(k) instanceof String v && !v.isEmpty()) options.putIfAbsent(k, v);
       }
     }
@@ -2010,6 +2005,7 @@ public final class Serve {
 
   /** Whether a saved session is open in a tab now (its copy held by a grant or a running session). */
   boolean savedOpen(String id) {
+    reopenedNamedDevice.retainAll(reopened.keySet());
     for (var e : List.copyOf(reopened.entrySet())) {
       String seed = e.getKey();
       boolean live = agent.ownsSeed(seed) || sessions.values().stream().anyMatch(x -> seed.equals(x.seedSlot));
@@ -2535,6 +2531,7 @@ public final class Serve {
     long size;
     int protocol;
     List<String> launch;
+    boolean namesDevice = false;  // issue 519: a reopened save's start whose options name a --device
     try {
       if (!(Json.parse(new String(raw, StandardCharsets.UTF_8)) instanceof Map<?, ?> body)) throw new IOException("expected a JSON object");
       ticket = body.get("ticket") instanceof String t && t.length() <= 300 ? t : null;
@@ -2592,6 +2589,7 @@ public final class Serve {
         }
       }
       launch = Catalog.launchOptions(given);
+      namesDevice = !fromSaved && launch.contains("--device");
       // Issue 371: the network inspector for this session, if this Mac's owner allows it (`inspect-network optional|on`).
       Object inspect = body.get("inspect");
       if (inspect != null && !(inspect instanceof Boolean)) throw new IOException("\"inspect\" takes true or false");
@@ -2686,6 +2684,7 @@ public final class Serve {
       if (local != null) {
         try {
           seed = savedSeed(o, local, a.path());
+          if (seed != null && namesDevice) reopenedNamedDevice.add(seed);
         } catch (IOException e) {
           Http.text(out, 409, e.getMessage());
           sweepBeam();

@@ -1087,8 +1087,9 @@ page that runs a new build per pull request made the visitor repeat it for every
   unknown id gets). `sha256` may be left out (its own build is used); one naming another build is refused (400: that is
   `dataFrom`). Its own build may be gone: with `sha256`, `ticket` and `url` as in any start it comes back the usual way.
   The session runs with the launch options, device (a Fill tab's `WxH@D` size too, within the bounds a beam tab's
-  `device` command has), appearance, locale, font scale and permissions it was saved with, unless the page names them (a `--device` in the start's `options` that differs from the saved launch's
-  names the device: issue 519);
+  `device` command has), appearance, locale, font scale and permissions it was saved with, unless the page names them (a `--device` in
+  the start's `options` names the device: that start runs on it, the save's record unchanged; a start without `options`
+  runs on the saved one; issue 519);
   either way they win over the app's own launch options, as with `apksim beam run`. The answer is the usual grant with `"data": true, "saved": ID`.
   - It runs on a copy, not in the saved slot: the slot (`k<id>-0` and its `.device`) is packed as a hand-off is
     (`SlotPack`, through folder handles, links left out) and unpacked into the session's own `bm<12 hex>-0`, so the beam

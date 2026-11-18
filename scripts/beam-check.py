@@ -1321,6 +1321,21 @@ def saved_tab_checks(apksim, gp, apk, apk_path, sha, size, sid, slot_start):
               "saved: what it wrote is back in the saved slot, and the copy is gone")
         check(saved_ids(apksim) == [sid], f"saved: still one saved session, the same ({saved_ids(apksim)})")
 
+        # Issue 519: a --device in the start's options names the device; a start without options runs on the saved one.
+        def reopen_device(body_extra, what, want):
+            until(lambda: not any(x.get("id") == sid and x.get("open") for x in json.loads(req(gp, "GET", "/beam/saved", B)[2] or b"[]")), 15)
+            st, _, body = req(gp, "POST", "/beam/start", B, dict({"protocol": 2, "saved": sid}, **body_extra))
+            s = open_session(gp, json.loads(body) if st == 200 else {}, B)
+            said = [json.loads(t[2:]).get("device") for t in s.texts if t.startswith("d {") and "\"device\"" in t]
+            check(st == 200 and said[-1:] == [want], f"saved: reopened {what}, it runs on {want} ({st}, {said})")
+            check(close_session(s), "saved: and that session ends")
+            until(lambda: not glob.glob(os.path.join(STATE, "cache", "data", PKG, "bm*")), 15)
+
+        saved_device = json.load(open(os.path.join(STATE, "beam", "saved", sid + ".json"))).get("device")
+        reopen_device({"options": ["--activity", "SlotStateActivity", "--device", "tablet"]}, "with --device tablet in its options", "tablet")
+        reopen_device({}, "without options", saved_device)
+        reopen_device({"options": ["--activity", "SlotStateActivity"]}, "with options that name no device", saved_device)
+
         # `apksim beam run` opening it while a tab has it open: the tab's copy, made before, is not put back over what
         # the run may have written, but kept as a new saved session.
         st, _, body = req(gp, "POST", "/beam/start", B, {"protocol": 2, "saved": sid})
