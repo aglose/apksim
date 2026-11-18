@@ -176,6 +176,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     `apksim://recreate` (`RecreateActivity`: "Recreate twice", "Recreate from onCreate", "recreate: instances N, live
     1") is checked in `ci-smoke.sh`.
   - `TimeTick`: ACTION_TIME_TICK (registered receivers only) from Host's loop at each minute of `SimClock`'s clock; not under `--snapshot` (issue 109).
+  - `AudioFx`: `android.media.audiofx.Visualizer` (issue 514): Robolectric leaves its natives unshadowed, so `getCaptureSizeRange()` answered null and `getMaxCaptureRate()` 0, and an app sizing its capture from them died on the first play. They answer as AOSP's (128..1024, 20000 mHz, 44.1 kHz); a visualizer enables and configures with SUCCESS and gets no data. `VisualizerTest`.
   - `Crashes`: uncaught exceptions in running instances, as RuntimeInit's KillApplicationHandler (issue 104). The JVM
     had no default handler, so ThreadGroup printed "Exception in thread" and the app ran on: kotlinx.coroutines hands a
     coroutine's exception to the thread's handler itself (traced: `propagateExceptionFinalResort`, ThreadGroup, no
