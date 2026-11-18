@@ -1043,6 +1043,18 @@ public final class TestActivities {
     @Override
     protected Instrumentation.ActivityResult execStartActivity(Context who, IBinder contextThread, IBinder token,
         Activity target, Intent intent, int requestCode, Bundle options) {
+      // No Settings app here: as Instrumentation.checkStartActivityResult does on a device with none, the call throws
+      // (apps catch it and say so) instead of being dropped with a log line later (issue 504). Running instances only:
+      // Robolectric-style suites check the recorded start.
+      String act = intent.getAction();
+      // Only the two actions the issue names, and not for a result: other Settings actions (app details, overlay or
+      // exact-alarm requests) resolve on a device, so an app seldom catches them, and keep being dropped (or
+      // answered RESULT_CANCELED for a result) rather than ending the app. Only this overload is hooked.
+      if (!testRun() && requestCode < 0 && intent.getComponent() == null
+          && ("android.settings.SETTINGS".equals(act) || "android.settings.WIFI_SETTINGS".equals(act))
+          && RuntimeEnvironment.getApplication().getPackageManager().resolveActivity(intent, 0) == null) {
+        throw new android.content.ActivityNotFoundException("No Activity found to handle " + intent);
+      }
       Instrumentation.ActivityResult r = super.execStartActivity(who, contextThread, token, target, intent, requestCode, options);
       if (testRun() && requestCode < 0) {
         Intent copy = new Intent(intent);

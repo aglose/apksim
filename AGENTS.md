@@ -962,6 +962,11 @@ ViewDragHelper's Scroller (`DrawerSettleTest`, opt-in, see `--realtime-clock`).
 (touch-modal) one, a small FLAG_NOT_TOUCH_MODAL one or a Compose Dialog over it; under all but the third accessibility
 reports only the dialog. Each counts taps on its "Count" button, for clicks at a centred dialog's node bounds
 (`CoveredWindowsTest`, `adb-check.py`).
+`apksim://settings-intent` opens `SettingsIntentActivity`: it starts ACTION_WIFI_SETTINGS and ACTION_SETTINGS, which nothing here resolves, so
+startActivity throws ActivityNotFoundException in a running instance (issue 504; "settings: wifi=notfound, settings=notfound";
+`ci-smoke.sh`). Only those two actions, and not for a result: other `android.settings.*` actions (app details, overlay
+permission) are still dropped with a log line (or answered RESULT_CANCELED for a result), as an app seldom catches them.
+Test runs keep Robolectric's recorded start.
 `apksim://slot` opens `SlotStateActivity`: the Settings.Global values `apksim_slot_check` and `apksim_slot_seed` and the
 file `/sdcard/apksim-slot-check.txt` as Application.onCreate saw them ("at app start") and now, and "Write" to set the
 first and the file, plus typed values (Global putInt, Secure putLong, System putFloat; "typed:" reads them back with the

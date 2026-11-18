@@ -367,6 +367,12 @@ echo "Install state: $installed"
   || { echo "the app did not start with what installing gives it, or a bind to nothing called back" >&2; exit 1; }
 drive back 'wait 1000' >/dev/null
 
+# No Settings app: startActivity(ACTION_WIFI_SETTINGS) throws ActivityNotFoundException, as on a device without one,
+# so an app can catch it (the test app's apksim://settings-intent, issue 504).
+drive 'open apksim://settings-intent' 'wait 1500' nodes | grep -q 'text="settings: wifi=notfound, settings=notfound"' \
+  || { echo "startActivity of an android.settings action did not throw ActivityNotFoundException" >&2; exit 1; }
+drive back 'wait 1000' >/dev/null
+
 # A frame rate cap (maxfps, as --max-fps): the Shader tab animates without end, and draws no faster than the cap.
 # Counted from `stats` over a timed window, not `frames`: that leaves out intervals of 100 ms or more, and under
 # Rosetta a CPU-drawn Shader frame can take that long.
