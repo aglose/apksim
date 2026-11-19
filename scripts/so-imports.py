@@ -28,23 +28,30 @@ def parse(d):
                 while not struct.unpack_from('<I', d, chain + (last - so) * 4)[0] & 1: last += 1
                 n = last + 1
             else: n = so
-    und = []; defd = []
+    und = []; defd = []; weak = set()
     for i in range(1, n):
         nm, info, oth, shndx, val, sz = struct.unpack_from('<IBBHQQ', d, symtab + i * 24)
         (und if shndx == 0 else defd).append(name(nm))
-    return [name(x) for x in needed], und, defd
-for apk in sys.argv[1:]:
-    print('==', apk.split('/')[-1])
-    z = zipfile.ZipFile(apk)
-    libs = {}
-    for e in z.namelist():
-        if e.startswith('lib/arm64-v8a/') and e.endswith('.so'):
-            libs[e.split('/')[-1]] = parse(z.read(e))
-    provided = set(s for v in libs.values() for s in v[2])
-    allimp = collections.Counter()
-    for k, (need, und, defd) in sorted(libs.items()):
-        ext = [u for u in und if u not in provided]
-        print(f'  {k}: needs {[x for x in need if x not in libs]} imports {len(und)}, unresolved in APK {len(ext)}')
-        allimp.update(ext)
-    print('  total distinct external symbols:', len(allimp))
-    print('  ', ' '.join(sorted(allimp)))
+        if shndx == 0 and info >> 4 == 2: weak.add(name(nm))  # weak: the loader leaves it null when nothing provides it
+    return [name(x) for x in needed], und, defd, weak
+
+def main():
+    for apk in sys.argv[1:]:
+        print('==', apk.split('/')[-1])
+        z = zipfile.ZipFile(apk)
+        libs = {}
+        for e in z.namelist():
+            if e.startswith('lib/arm64-v8a/') and e.endswith('.so'):
+                libs[e.split('/')[-1]] = parse(z.read(e))
+        provided = set(s for v in libs.values() for s in v[2])
+        allimp = collections.Counter()
+        for k, (need, und, defd, weak) in sorted(libs.items()):
+            ext = [u for u in und if u not in provided]
+            print(f'  {k}: needs {[x for x in need if x not in libs]} imports {len(und)}, unresolved in APK {len(ext)}')
+            allimp.update(ext)
+        print('  total distinct external symbols:', len(allimp))
+        print('  ', ' '.join(sorted(allimp)))
+
+
+if __name__ == '__main__':
+    main()

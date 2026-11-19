@@ -1,0 +1,75 @@
+{
+ "comment": "URLs and SHA-256 only: no APK is committed. docs/corpus.md says how to add one.",
+ "apps": [
+  {
+   "name": "markor",
+   "stack": "Plain Views, Java/Kotlin, small, 2 DEX files",
+   "license": "Apache-2.0",
+   "url": "https://f-droid.org/repo/net.gsantner.markor_164.apk",
+   "sha256": "c29412e02d03e4f0511746a1bcef48c6b73fc1f70c1024fbf04903b0b3f4c485"
+  },
+  {
+   "name": "wikipedia",
+   "stack": "Views + Kotlin, R8 release, multi-DEX, a few arm64 libraries",
+   "license": "Apache-2.0",
+   "url": "https://f-droid.org/repo/org.wikipedia_50616.apk",
+   "sha256": "d225e5d08fe461f12fa0af7b617e6e715f3112986165c34e0572a1a056129dd1"
+  },
+  {
+   "name": "homeassistant",
+   "stack": "Kotlin + Compose, R8 release, 9 DEX files, Hilt",
+   "license": "Apache-2.0",
+   "url": "https://f-droid.org/repo/io.homeassistant.companion.android.minimal_25506.apk",
+   "sha256": "61d96f4bcfb1f890aa10dd66dbeba55ffcdea8d98be56989360dbbffd0e81f49"
+  },
+  {
+   "name": "florisboard",
+   "stack": "Compose + Kotlin, a Rust native library",
+   "license": "Apache-2.0",
+   "url": "https://f-droid.org/repo/dev.patrickgold.florisboard_117.apk",
+   "sha256": "d8ef30b212730e7c005250f3f9a8bcee4afd1605b66efaa15f7f59a89cffa9b5"
+  },
+  {
+   "name": "localsend",
+   "stack": "Flutter (Dart AOT), arm64-v8a libraries only",
+   "license": "Apache-2.0",
+   "url": "https://f-droid.org/repo/org.localsend.localsend_app_643.apk",
+   "sha256": "82ec3568fba2aa5295b9aae8b76f701d7a4703d86b9f8bad749472038fbaeab3"
+  },
+  {
+   "name": "jitsi",
+   "stack": "React Native (Hermes), WebRTC native libraries, the arm64 build",
+   "license": "Apache-2.0",
+   "url": "https://f-droid.org/repo/org.jitsi.meet_26000002.apk",
+   "sha256": "72a89e53ca532b3ab44e9204644edeef282d7d66a366939ea55f062057c47df4"
+  },
+  {
+   "name": "gramophone",
+   "stack": "Media3 music player, Kotlin, Views and Material",
+   "license": "Apache-2.0",
+   "url": "https://f-droid.org/repo/org.akanework.gramophone_24.apk",
+   "sha256": "fe36158a4ba3829f74aa43c50f3048c26f0a9e15635460b9d823cf01dbff034c"
+  },
+  {
+   "name": "wireguard",
+   "stack": "Go native library (libwg-go) and a JNI tool, Kotlin/Java app",
+   "license": "Apache-2.0",
+   "url": "https://download.wireguard.com/android-client/com.wireguard.android-1.0.20260315.apk",
+   "sha256": "f92971bc804f4c448e8845ae97e426095eab06ec09a2473a3fa2cfe7288e3298"
+  },
+  {
+   "name": "mpv",
+   "stack": "Native-heavy media: libmpv, FFmpeg, 10 arm64 libraries",
+   "license": "MIT",
+   "url": "https://f-droid.org/repo/is.xyz.mpv_48.apk",
+   "sha256": "5cba2237b20ba34b79eaccfbd39bdb5b09d2a9a774bdccee09ca450eac4edd34"
+  },
+  {
+   "name": "fossify-gallery",
+   "stack": "Kotlin Views, media viewing, 12 arm64 libraries (image codecs)",
+   "license": "GPL-3.0",
+   "url": "https://f-droid.org/repo/org.fossify.gallery_40.apk",
+   "sha256": "ff3e6122ccf1873620e9e8e374b9c9dec4d7eb3a8f42559135bd82562c65f41f"
+  }
+ ]
+}
