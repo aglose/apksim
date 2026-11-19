@@ -209,7 +209,13 @@ Read README.md for results and limits; this file covers how to work on the code.
     would end 1; serve's, which sets `APKSIM_NO_CORE`, reads the report itself in `Session.explainExit`, as beam does
     from its scratch, and words its end message and log the same way: `Crash.hsErrReason`). A warm launch's client
     exits 134 as well. A signal HotSpot does not handle (SIGKILL) leaves no report, and a native abort
-    has `bionic.c`'s line instead. No flight-recorder bundle is written for a JVM crash (nothing is left to write
+    has `bionic.c`'s line instead (which stays silent after a summary: the summary leaves `crash-reported` in the scratch
+    folder, `APKSIM_SCRATCH`, and the abort handler looks for it, since HotSpot ends a fatal error with abort()). The hook
+    is set only when ROOT and STATE are made of `A-Za-z0-9_./+@:,=-` (OnError goes through `sh -c`; HotSpot expands `%`).
+    An address in a library the ELF loader mapped is anonymous memory to the JVM (a bare `C  0x0000007000004608`): the
+    loader appends `BASE SIZE lib/ABI/NAME.so` to `APKSIM_SCRATCH/elf-modules` as each library loads, and the summary
+    names the address `lib/arm64-v8a/NAME.so+0xOFFSET` (checked by a library whose JNI function writes through NULL).
+    Serve's and beam's reports are read by Java without that list: an app library's frame there is still an address. No flight-recorder bundle is written for a JVM crash (nothing is left to write
     it: only Java crashes, `Crashes`, save one). Checked by `kill -SEGV` of an instance (cold, warm, serve).
   - `Exits`: why a running instance ends, one `[apksim] exit N: REASON` line on stderr for every way (issue 116: a
     process ended 0 with nothing in the log). The last activity finishing names it and the call, with the stack of
@@ -504,7 +510,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     Mac only (Linux has no such line yet). It replaces the JVM's own SIGABRT disposition, so a JVM-internal abort prints it too.
   - `elfloader.c` logs, once per library as it loads, the imports nothing implements (neither another loaded library,
     `bionic_lookup` nor the host): `[apksim] lib/arm64-v8a/NAME.so: N imports have no implementation: a, b, c` (names
-    cut at ~400 characters, weak imports left out); each gets a stub that logs `native code called unsupported function:
+    counted once each, the list cut at ~400 characters with `(list cut)`, weak imports left out); each gets a stub that logs `native code called unsupported function:
     NAME` when called. Before (issue 523) the line named the symbol only, without its library, and every relocation of it.
     The test app's fixtures print none.
   - `alooper.c` (Mac and Linux): the NDK's `ALooper_*` (prepare, forThread, acquire, release, addFd, removeFd,

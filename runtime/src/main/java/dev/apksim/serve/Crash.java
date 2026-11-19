@@ -21,7 +21,7 @@ final class Crash {
   private static final Pattern EXCEPTION = Pattern.compile("(?:^|\\s)((?:[A-Za-z_$][\\w$]*\\.)+[A-Za-z_$][\\w$]*(?::\\s.*)?)$");
   private static final Pattern EXIT = Pattern.compile("\\[apksim\\] exit (-?\\d+): (.*)");
   private static final Pattern HS_ERR = Pattern.compile("hs_err_pid(\\d+)\\.log");
-  private static final Pattern SIGNAL = Pattern.compile("(SIG[A-Z]+) \\(0x[0-9a-f]+\\)");
+  private static final Pattern SIGNAL = Pattern.compile("(SIG[A-Z0-9]+) \\(0x[0-9a-f]+\\)");
   /** Longest line the tab or the log endpoint gets. */
   static final int MAX_LINE = 400;
   /** What `GET /api/sessions/ID/log` returns at most, and what a tab gets when a session ends badly. */
