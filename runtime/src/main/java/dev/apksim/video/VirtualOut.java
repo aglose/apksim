@@ -24,7 +24,7 @@ final class VirtualOut {
   VirtualOut(int rate, int frameBytes, int bufferBytes) {
     this.rate = Math.max(1, rate);
     long frames = bufferBytes > 0 ? bufferBytes / Math.max(1, frameBytes) : 0;
-    this.capacity = Math.max(frames, this.rate / 20);  // at least 50 ms, so a write is never refused for good
+    this.capacity = Math.max(frames, this.rate / 10);  // at least 100 ms, as CoreAudio's stream, so a write is never refused for good
   }
 
   private long raw(long now) {
@@ -51,6 +51,7 @@ final class VirtualOut {
   /** Takes up to {@code frames} frames; when blocking, waits for room while playing. Returns the frames taken. */
   int write(long frames, boolean blocking) {
     long taken = 0;
+    boolean interrupted = false;  // kept and restored at the end: an interrupt does not cut a write short, as on CoreAudio's
     synchronized (lock) {
       while (!closed) {
         long p = settle();
@@ -71,11 +72,11 @@ final class VirtualOut {
         try {
           lock.wait(ms);
         } catch (InterruptedException e) {
-          Thread.currentThread().interrupt();
-          break;
+          interrupted = true;
         }
       }
     }
+    if (interrupted) Thread.currentThread().interrupt();
     return (int) taken;
   }
 

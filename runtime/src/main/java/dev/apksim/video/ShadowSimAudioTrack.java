@@ -14,7 +14,8 @@ import org.robolectric.util.ReflectionHelpers;
  * AudioTrack that plays: PCM goes to the Mac's default output (native/audio.m) and the playback head moves only as
  * CoreAudio plays it. Robolectric's own AudioTrack counts everything written as played at once, so a media player
  * that follows the audio clock (ExoPlayer does) would race through its content. Non-PCM encodings, and hosts
- * without {@link SimAudio}, keep Robolectric's behaviour.
+ * without {@link SimAudio} keep Robolectric's behaviour, except running instances on a host with no sound device,
+ * whose tracks run on a {@link VirtualOut} clock (issue 545).
  */
 @Implements(AudioTrack.class)
 public class ShadowSimAudioTrack extends ShadowAudioTrack {

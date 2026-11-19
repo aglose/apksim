@@ -593,7 +593,7 @@ final class Session {
   String audioStreamState() {
     // A Mac's tracks play on CoreAudio, the Linux image's run on a virtual clock (issue 545): both are copied. Not with --audio off.
     List<String> l = app.launch();
-    int i = l.indexOf("--audio");
+    int i = l.lastIndexOf("--audio");
     return i >= 0 && i + 1 < l.size() && l.get(i + 1).equals("off") ? "off" : "stream";
   }
 
