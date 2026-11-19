@@ -30,6 +30,8 @@ MAX_APK = 300 << 20  # bytes: the largest of the list is ~125 MB
 def java_bin():
     # The JDK build.sh used first (apksim.jar is Java 22+ and JAVA_HOME may be an older one), then JAVA_HOME.
     for home in (open(os.path.join(ROOT, "work/jdk.path")).read().strip() if os.path.exists(os.path.join(ROOT, "work/jdk.path")) else None, os.environ.get("JAVA_HOME")):
+        if home and not os.path.isabs(home):
+            home = os.path.join(ROOT, home)
         if home and os.path.exists(os.path.join(home, "bin/java")):
             return os.path.join(home, "bin/java")
     return shutil.which("java") or sys.exit("corpus: no java (run scripts/build.sh, or set JAVA_HOME)")
@@ -168,8 +170,11 @@ def missing_imports(apk, so, shim):
 # ---- running
 
 def link_check(apk, out_json, cp, platform, timeout):
-    r = subprocess.run([java_bin(), "-Xmx6g", "-cp", cp, os.path.join(ROOT, "scripts/link-check.java"), apk, out_json, platform],
-                       capture_output=True, text=True, timeout=timeout)
+    try:
+        r = subprocess.run([java_bin(), "-Xmx6g", "-cp", cp, os.path.join(ROOT, "scripts/link-check.java"), apk, out_json, platform],
+                           capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None, "link-check failed: timed out after %d s" % timeout
     if r.returncode != 0 or not os.path.exists(out_json):
         return None, "link-check failed (%d): %s" % (r.returncode, (r.stderr or r.stdout).strip()[-600:])
     return json.load(open(out_json)), None
