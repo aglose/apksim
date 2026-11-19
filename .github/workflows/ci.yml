@@ -441,6 +441,18 @@ jobs:
         run: |
           python3 scripts/bundle-check.py app.apk test.apk bundle-check \
             --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" --local tests
+      # Observer gate (scripts/observer-gate.py): the UI-heavy classes (Compose, Espresso, UiAutomator, dialogs, popups,
+      # windows, rotation) and the FailureBundle* ones that fail on purpose, run plain and with every observer on (bundles
+      # of all tests, movies, the flight recorder's net and db channels, coverage): same tests, same outcomes, the
+      # observed run within 3x the plain one's time. A subset, as the whole suite twice more does not fit this leg.
+      - name: Observer gate
+        if: matrix.leg == 'tests'
+        run: |
+          p=dev.apksim.composeapp
+          classes=$p.MainActivityTest,$p.conformance.ComposeUiConformanceTest,$p.conformance.EspressoConformanceTest,$p.UiAutomatorTest,$p.DialogFocusTest,$p.PopupTouchTest,$p.CoveredWindowsTest,$p.WindowDrawTest,$p.ComposeEspressoIdleTest,$p.conformance.RotationConformanceTest,$p.StackWindowsTest,$p.conformance.Material3ConformanceTest,$p.conformance.ComposeFoundationConformanceTest,$p.FailureBundleTest,$p.FailureBundleEspressoTest,$p.FailureBundleAfterTest,$p.FailureBundleExpectedTest,$p.FailureBundleHandledTest
+          python3 scripts/observer-gate.py app.apk test.apk /work/observer-gate --time-factor 3 \
+            --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" --local tests/observer-gate \
+            -- -e timezone America/New_York -e failOnPurpose true -e class "$classes" -- --timezone America/New_York
       - uses: gradle/actions/setup-gradle@v4  # the Gradle cache, for affected-check's rebuilds of the test app
         if: matrix.leg == 'data'
       # Test impact (docs/affected-tests.md): record the suite, break a source file and rebuild it, and check that the
@@ -474,6 +486,7 @@ jobs:
             tests/junit-crash.xml
             tests/junit-sharded.xml
             tests/bundle-check
+            tests/observer-gate/*.xml
 
   # The required check (the ruleset names it): passes when `changes` (with the privacy check) passed and, for a code
   # change, the build and every leg did. A docs-only change needs only the privacy check.

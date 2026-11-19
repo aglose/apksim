@@ -571,7 +571,12 @@ Read README.md for results and limits; this file covers how to work on the code.
   image built with it: the HEVC clip and the Settings clip; CI runs it in both Linux
   images from `ci-smoke.sh`), `swipe-check.py` (a timed swipe flings, a held press does not scroll; `ci-smoke.sh`), `timer-check.py` (app timers
   against real time and onUserInteraction per input path, on the test app's `apksim://timer`), `idle-zoo-check.py` (`settle` against each source of "the app still has work" on `apksim://idle-zoo`, alone and in combinations, known failures in `idle-zoo-known.txt`; also against `--max-fps 10` with `--tag maxfps10`; by hand, not in CI), `bundle-check.py` (failure
-  bundles, see "Instrumentation tests"), `beam-check.py` (`apksim beam` and
+  bundles, see "Instrumentation tests"), `observer-gate.py` (a suite run plain and with every observer on, bundles
+  of all tests, movies, the flight recorder's net and db channels and coverage, compared test by test: same tests, same
+  outcomes, observed wall time within a factor (3); `--compare` runs the comparison on two XMLs; CI's `tests` leg runs it on a
+  subset: the UI-heavy classes and the FailureBundle* ones, run with `-e failOnPurpose true`; the whole test app's suite
+  is 488 tests, 64 s plain on the Mac, and passes the gate),
+  `beam-check.py` (`apksim beam` and
   `serve --allow-beam` started and driven as a page would, docs/beam.md), `beam-parity.py` (the app in its window
   against the same app beamed into Chrome, same input: new frames per display refresh, fps, CPU, latency),
   `beam-page-check.py` (the page's start on this Mac in Chrome: Stop while the agent has not answered, a full agent's
