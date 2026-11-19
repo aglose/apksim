@@ -283,8 +283,8 @@ Read README.md for results and limits; this file covers how to work on the code.
     mtime, never for the cap. File locks, not PIDs, as containers sharing a cache
     volume repeat PIDs. `scripts/apk-cache-check.sh` checks it (CI: `ci-smoke.sh`).
   - `ClassCache`: translated classes kept between launches in `work/cache/classes/<runtime hash>/<dex crc>.pack`.
-    An entry is used only while the "is X an interface?" answers it was translated with still hold (the
-    translator's only input from other classes). `<package>.classes` lists what the app loaded, so worker threads
+    An entry is used only while the "is X an interface?" answers it was translated with still hold, and the
+    hierarchy answers a retargeted super call used (the translator's only inputs from other classes). `<package>.classes` lists what the app loaded, so worker threads
     pre-translate the classes of changed DEX files once the app asks for its first class. The runtime hash covers
     every class in `apksim.jar`, so any rebuild starts with a cold cache. `--jvm -Dapksim.classCache=false` turns
     it off. It saves once translating pauses for 3 s, and again on the way out (`quit`, closing the window, Cmd+Q,

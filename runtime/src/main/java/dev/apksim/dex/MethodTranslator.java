@@ -2586,13 +2586,14 @@ final class MethodTranslator implements Opcodes {
   private String superclassReaching(String target, DexFile.MethodRef m) {
     int self = dex.classDefIndex(owner);
     if (self < 0) return null;
-    String sup = dex.superclassOf(self);
+    String direct = dex.superclassOf(self);
+    String sup = direct;
     for (int depth = 0; sup != null && depth < 32; depth++) {
       Hierarchy.Shape s = shape(sup, m);
       if (s == null) return null; // not the app's: its interfaces cannot be read.
       if (s.declares()) return null; // would run its own override, not the interface's default: not expressible.
       for (String d : s.interfaces()) {
-        if (d.equals(target) || reaches(d, target, m, 0)) return sup;
+        if (d.equals(target) || reaches(d, target, m, 0)) return direct;
       }
       sup = s.superclass();
     }

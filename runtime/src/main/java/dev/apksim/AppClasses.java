@@ -232,10 +232,10 @@ final class AppClasses {
     var sh = shape(cls, rest.substring(0, paren), rest.substring(paren));
     if (sh == null) return 0;
     int h = java.util.Objects.hash(sh.superclass(), java.util.Arrays.hashCode(sh.interfaces()), sh.declares());
-    return 1 + Math.floorMod(h, 255);
+    return 1 + Math.floorMod(h, 127); // 1..127: the cache keeps answers as signed bytes.
   }
 
-  /** What a translation learned about a class it calls; see {@link ClassCache}. */
+  /** What a translation learned about a class it calls, or (a key starting with NUL) about the hierarchy; see {@link ClassCache}. */
   private int answer(String owner) {
     if (!owner.isEmpty() && owner.charAt(0) == HIERARCHY) return shapeAnswer(owner);
     int[] at = find(owner);
