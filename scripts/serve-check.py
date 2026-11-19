@@ -833,6 +833,8 @@ def rejoin_check(url, token, app, device, first_frame_timeout):
         check(nt.status == 401, f"rejoin: without the server's token it is refused ({nt.status})")
         nt.s.close()
     check((session_state(url, token, sid) or {}).get("held") is True, "rejoin: refused tries leave it held")
+    status, lg = http(url, f"/api/sessions/{sid}/log", token)
+    check(status == 200 and b"touch up 400 900" in lg, f"rejoin: the finger left down was lifted ({status})")
 
     t0 = time.time()
     r = rejoin_ws(url, token, sid, hold, codec="h264")

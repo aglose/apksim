@@ -1910,7 +1910,7 @@ public final class Serve {
       Http.text(out, 400, "expected a WebSocket upgrade");
       return;
     }
-    if (x == null || x.ending() || !x.held()) {
+    if (x == null || x.ending()) {
       Http.text(out, 409, "no held session to rejoin (it has ended, or its hold lapsed)");
       return;
     }
@@ -1921,7 +1921,7 @@ public final class Serve {
       out.write(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
           + WebSocket.acceptKey(key) + "\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
       out.flush();
-    });
+    }, () -> info(x, x.viewers != null && allowShare ? x.viewers.key() : null, true));
     if (why != null) {
       Http.text(out, 409, why);
       return;
@@ -1931,8 +1931,6 @@ public final class Serve {
     // gives its own back, as a viewer's does.
     connections.release();
     permitFreed.set(true);
-    boolean shared = x.viewers != null && allowShare;
-    nw.sendText(info(x, shared ? x.viewers.key() : null, true));
     x.greetRejoined(nw);
     x.awaitSocketDone(nw);
   }

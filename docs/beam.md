@@ -945,7 +945,8 @@ readable by any origin. Requests to the server carry its token as everything els
 9. **Reloading the page** (issue 529, `rejoinS` in step 2's answer, 0 or absent: not offered): send `hold` on the
    session's socket, reload, and open `ws://127.0.0.1:PORT/ws?rejoin=ID&key=KEY&hold=TOKEN` within `rejoinS` seconds,
    with the same `Origin` (KEY: the session's `f KEY`). The rules are serve's (docs/serve.md, "Rejoining after a
-   reload"); the agent takes `--rejoin-grace SECONDS` as serve does. A detached session refuses a hold.
+   reload"); the agent takes `--rejoin-grace SECONDS` as serve does (a launchd-started agent, `apksim beam install`, uses the
+   default 15). A detached session refuses a hold.
 
 ## Skins (2026-11-12, issue 246)
 

@@ -1278,6 +1278,7 @@ final class Session {
     handingOff = true;
     Path slot = dataDir;
     if (slot == null || ended) {
+      handingOff = false;
       ws.sendText("h {\"error\":\"the app has no data yet\"}");
       return;
     }
@@ -1288,6 +1289,7 @@ final class Session {
     String why = handoffSlotProblem(slot);
     if (why != null) {
       logLine("[serve] no handoff: " + why);
+      handingOff = false;
       ws.sendText("h {\"error\":" + Http.q(why) + "}");
       return;
     }
@@ -1711,11 +1713,21 @@ final class Session {
   }
 
   /**
-   * A new socket presents the hold's token (`/ws?rejoin=ID&hold=TOKEN`): it becomes the controlling tab. Answers null
-   * when it did, else why not. The caller then greets it ({@link #greetRejoined}), and frames flow after that.
+   * A new socket presents the hold's token (`/ws?rejoin=ID&hold=TOKEN`): it becomes the controlling tab, its upgrade
+   * answer and `info` (the `i` message) written first. Answers null when it did, else why not (nothing written). The
+   * caller then greets it ({@link #greetRejoined}), and frames flow after that.
    */
-  String rejoin(WebSocket nw, String token, Upgrade upgrade) throws IOException {
+  String rejoin(WebSocket nw, String token, Upgrade upgrade, java.util.function.Supplier<String> info) throws IOException {
+    WebSocket old;
     synchronized (this) {
+      // The reloaded page may come before its old socket's close has been read (a proxy, a busy server): an armed hold
+      // is waited for, briefly, rather than answered "no hold" (the page would start a second session).
+      long until = System.currentTimeMillis() + 2000;
+      try {
+        while (!ended && !held && holdToken != null && System.currentTimeMillis() < until) wait(100);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
       if (ended) return "the session has ended";
       if (!held || holdToken == null) return "no hold to rejoin (it lapsed, or the tab did not ask for one)";
       if (token == null || !java.security.MessageDigest.isEqual(token.getBytes(StandardCharsets.US_ASCII),
@@ -1727,8 +1739,11 @@ final class Session {
         }
         return "not this session's hold";
       }
+      // The upgrade and the `i` message before the socket is the session's: from then on anything may write to it.
+      upgrade.write();  // a failure leaves the token, for the page's next try
       holdToken = null;
-      upgrade.write();  // before the socket is the session's: from then on anything may write to it
+      nw.sendText(info.get());
+      old = ws;
       ws = nw;
       nw.onPong = this::ponged;
       // A new tab: a new frame window, and nothing it cannot decode (an H.264 delta needs its keyframe).
@@ -1741,6 +1756,7 @@ final class Session {
       pacer = new Pacer();
       lastInput = System.currentTimeMillis();
     }
+    old.abort();  // closed by the browser already: its descriptor goes now, not when the session ends
     logLine("[serve] the tab rejoined");
     System.err.printf("[serve] session %s rejoined%n", id);
     return null;

@@ -374,7 +374,7 @@ function start() {
   if (moving) abandonMove(null);
   clearTimeout(retryTimer); retryTimer = 0;  // a busy-retry pending for an earlier session is dropped
   // The old socket's close must not touch the new session, which may open its socket only later (on this Mac).
-  if (ws) { const old = ws; ws = null; socketClosed(old); old.close(); }
+  if (ws) { const old = ws; ws = null; dropHold(old); socketClosed(old); old.close(); }
   ended = false; onHome = false; frameW = frameH = 0;
   startedApp = state.app;
   $("keepBox").hidden = true; $("macRow").hidden = true; $("moveDataBox").hidden = true;
@@ -482,6 +482,7 @@ let moving = null;  // { sock, to, texts, gen }
 function chip(text) { $("moveChip").hidden = !text; $("moveChip").textContent = text || ""; }
 async function moveSession(to) {
   if (moving) abandonMove(null);
+  dropHold(ws);  // the old side's session ends by the move: nothing to hold
   const gen = startGen, where = to === "mac" ? "this Mac" : "the server", q = sessionQuery();
   chip("Moving to " + where + "…");
   let url, data = null, handedOff = false;
@@ -582,7 +583,7 @@ function stop() {
   if (moving) abandonMove(null);
   const asking = startGen;  // a start still asking this Mac (no socket yet) is dropped too
   startGen++; clearTimeout(retryTimer); retryTimer = 0; fallbackTries = 0;
-  if (ws) { ended = true; socketClosed(ws); ws.close(); overlay("Stopped.", "Start again", start); refresh(); offerAppDevice(); }
+  if (ws) { dropHold(ws); ended = true; socketClosed(ws); ws.close(); overlay("Stopped.", "Start again", start); refresh(); offerAppDevice(); }
   else if (asking && !ended) { ended = true; overlay("Stopped.", "Start again", start); refresh(); }
 }
 $("start").onclick = start;
@@ -728,6 +729,11 @@ function held(d) {
   const w = holdWaiters; holdWaiters = [];
   for (const f of w) f(d);
 }
+// A close the page means (Stop, Start, a move): an armed hold would keep the session running for nothing.
+function dropHold(sock) {
+  holdStore(null);
+  if (sock && sock.readyState === 1 && !ended) sock.send("hold off");
+}
 window.apksimHold = (off) => new Promise(done => {
   if (!ws || ws.readyState !== 1 || ended) { done({ hold: null, reason: "no running session" }); return; }
   holdWaiters.push(done);
@@ -739,6 +745,7 @@ async function tryRejoin() {
   try { h = JSON.parse(sessionStorage.getItem(HOLD_STORE) || "null"); } catch (e) { h = null; }
   holdStore(null);  // one use, whatever happens
   if (!h || !h.id || !h.hold || viewer || Date.now() > h.until) return false;
+  if (params.get("app") && h.app && params.get("app") !== h.app) return false;  // the address asks for another app
   const q = new URLSearchParams({ rejoin: h.id, hold: h.hold });
   if (h.codec && h264Ok) q.set("codec", h.codec);
   let url;

@@ -12,7 +12,7 @@ This page is the spec, then how it is built, then what was measured.
 ### Command
 
 ```
-apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
+apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--rejoin-grace SECONDS] [--apps DIR|FILE]...
              [--max-upload MB] [--max-push MB] [--allow-rec] [--no-shell] [--issue-url TEMPLATE] [--inspect-network [optional]] [--inspect-max-rules N] [--inspect-forward-allow URL_PREFIX]... [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--in-flight N] [--no-network]
              [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--trust-proxy]
              [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]... [--skins DIR]...
@@ -34,6 +34,8 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
 - `--skins DIR` (repeatable): more folders of skins (docs/skins.md), searched after the store (`~/.apksim/skins`,
   `APKSIM_SKINS_DIR`) and `APKSIM_SKINS`. See "Skins" below.
 - `--idle SECONDS` (default 600): a session with no input for that long is stopped and its tab told so.
+- `--rejoin-grace SECONDS` (default 15, at most 120, 0 for none): how long a session whose tab armed a hold outlives
+  its closed socket for the reloaded page to take it back ("Rejoining after a reload"). `apksim beam` takes it too.
 - `--apps`: the catalog. A folder lists its `*.apk` files; a file lists one APK per line, a path or an `https://`
   URL (downloaded once, at first use), optionally followed by a display name and then ` -- ` and launch options of
   that app's own (below). Repeatable. For example:
@@ -119,7 +121,7 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   in order, and sent once it is.
 - Closing the tab while the APK downloads or the app launches ends the session too, and a stopping session counts
   against `--max` until its instance has exited.
-- A session ends when its tab closes (WebSocket closed), on `--idle`, or when the app exits (Back on its last
+- A session ends when its tab closes (WebSocket closed; after a grace period if the tab armed a hold, below), on `--idle`, or when the app exits (Back on its last
   activity). The instance is asked to `quit`; if it is still running 5 s later, it is killed.
 
 ### Rejoining after a reload (issue 529)
