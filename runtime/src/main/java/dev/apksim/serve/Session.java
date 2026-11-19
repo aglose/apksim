@@ -380,6 +380,10 @@ final class Session {
   }
 
   private void start() throws Exception {
+    // An agent whose release was replaced (`brew upgrade` removes the old cask) has no launcher to run: end this
+    // session with a reason; the agent exits once idle and launchd starts the new release at the next request (issue 524).
+    if (serve.releaseReplaced()) throw new IOException("apksim was upgraded; start again");
+    // First of all: a download or a cache warm-up would only fail later, on the same missing launcher.
     // Waits for an added app's download; a closed tab or the idle limit stops the wait (not the shared download).
     Path apk = serve.catalog.file(app, what -> ws.sendText("p " + what), () -> ended);
     if (ended) return;  // the tab left while the APK downloaded

@@ -840,7 +840,12 @@ First review:
   a page knows one will be refused before it starts a session; `GET /api/status` on a serve says `"apksim"`, its
   release. `apksim beam stop [--force]` ends the running agent (refused while sessions run unless `--force`; launchd
   starts the current release again at the next page's request), and a launchd agent with no session exits by itself
-  once `work/release` under its launcher names another release (`brew upgrade`). Not done: installing a chosen
+  once `work/release` under its launcher names another release (`brew upgrade`). A launchd agent whose launcher is gone (the old cask folder
+  removed) or whose release line changed starts no standby and ends a session it is asked to start with "apksim was upgraded; start again" (issue 524: before,
+  the reason was the spawn's "posix_spawn failed"), then exits within 5 s as above; a retry inside that time meets the
+  same answer. An agent started by hand (`apksim beam`) has no such check. The hang issue 524 reports was not
+  reproduced by removing the install folder under a running agent, with or without a saved session reopened.
+  Not done: installing a chosen
   release (versioned casks or an `apksim self use`).
 - **`apksim beam status`**: whether the agent runs (its lock and port), its sessions (app, site, device, kept or not,
   pid, idle time, from `GET /beam/status`, which answers only a request without an `Origin`: never a page), the sites
