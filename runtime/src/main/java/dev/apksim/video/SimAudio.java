@@ -4,7 +4,8 @@ import java.nio.ByteBuffer;
 
 /**
  * Sound (native/audio.m): AAC and MP3 decoding on AudioToolbox for MediaCodec, and AudioTrack's PCM played on the
- * Mac's default output. Mac only; elsewhere {@link #available} is false and Robolectric's silent AudioTrack stays.
+ * Mac's default output. Output is Mac only ({@link #available}; elsewhere Robolectric's silent AudioTrack stays, or the
+ * Linux image's {@code VirtualOut}). The decoders are also on Linux, in libavcodec (native/linux/avaudio_linux.c).
  * {@code --audio off} turns it off, {@code --audio mute} keeps the timing but plays silence ({@link dev.apksim.Features}:
  * read at each launch, so a standby that loaded the library still serves a launch without sound).
  */
@@ -12,9 +13,16 @@ public final class SimAudio {
   private SimAudio() {}
 
   static final int AAC = 0, MP3 = 1;
+  /** Whether libsimaudio loaded: on a Mac with its output too, on Linux only its AAC and MP3 decoders (libavcodec). */
   private static final boolean AVAILABLE = load();
 
+  /** Sound output (CoreAudio): Mac only. On Linux AudioTrack's clock is {@code VirtualOut}. */
   static boolean available() {
+    return AVAILABLE && dev.apksim.HostOs.MAC && dev.apksim.Features.audio() != dev.apksim.Features.Audio.OFF;
+  }
+
+  /** The AAC and MP3 MediaCodec decoders: AudioToolbox on a Mac, libavcodec in the Linux image. */
+  static boolean decodersAvailable() {
     return AVAILABLE && dev.apksim.Features.audio() != dev.apksim.Features.Audio.OFF;
   }
 
@@ -44,8 +52,11 @@ public final class SimAudio {
     try {
       // A launch without sound never loads the library (a standby loads it, and Features then turns it off).
       String option = System.getProperty("apksim.audio", "on");
-      if (!dev.apksim.HostOs.MAC || option.equals("off") || option.equals("false")) return false;
-      System.load(dev.apksim.HostOs.runtimeLib("libsimaudio").toString());
+      if (option.equals("off") || option.equals("false")) return false;
+      java.nio.file.Path lib = dev.apksim.HostOs.runtimeLib("libsimaudio");
+      // Linux: libsimaudio.so is the decoders alone (docker/Dockerfile), and an install without it just has no audio decoders.
+      if (!dev.apksim.HostOs.MAC && !java.nio.file.Files.exists(lib)) return false;
+      System.load(lib.toString());
       return true;
     } catch (Throwable t) {
       System.err.println("[apksim] no sound: " + t);

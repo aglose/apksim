@@ -81,7 +81,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       System.err.println("[apksim] MediaCodec video/avc, video/hevc: no decoder on this host (no VideoToolbox or libvtdecoder);"
           + " an app's video will not draw, its audio still plays");
     }
-    if (SimAudio.available()) {
+    if (SimAudio.decodersAvailable()) {
       try {
         audio(AAC_DECODER, MediaFormat.MIMETYPE_AUDIO_AAC, AAC, MediaCodecInfo.CodecProfileLevel.AACObjectLC,
             MediaCodecInfo.CodecProfileLevel.AACObjectHE, MediaCodecInfo.CodecProfileLevel.AACObjectHE_PS);
@@ -755,7 +755,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       int outRate = handle == 0 ? rate : SimAudio.nativeDecoderRate(handle);
       int outChannels = handle == 0 ? channels : SimAudio.nativeDecoderChannels(handle);
       System.err.println("[apksim] MediaCodec " + (mp3 ? MP3_DECODER : AAC_DECODER) + " configured: " + rate + " Hz, "
-          + channels + " ch" + (handle == 0 ? ", but AudioToolbox refused it"
+          + channels + " ch" + (handle == 0 ? ", but the decoder refused it"
           : outRate != rate || outChannels != channels ? "; the stream gives " + outRate + " Hz, " + outChannels + " ch (HE-AAC: SBR"
               + (outChannels != channels ? ", parametric stereo" : "") + ")" : ""));
       if (outRate != rate || outChannels != channels) outputFormat(format, outRate, outChannels);

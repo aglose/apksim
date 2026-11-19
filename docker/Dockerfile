@@ -10,6 +10,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev u
 # h264 by default: the published image ships no HEVC decoder (its patent licensing is the less settled of the two).
 # `--build-arg VIDEO_DECODERS=h264,hevc,vp9` adds HEVC and VP9 to an image you build yourself; MediaCodec lists what is there.
 ARG VIDEO_DECODERS=h264
+# AAC and MP3 decoding for MediaCodec (native/linux/avaudio_linux.c, libsimaudio.so below), from the same FFmpeg build:
+# `--build-arg AUDIO_DECODERS=aac,mp3float` (the default; mp3float is FFmpeg's name for its MP3 decoder). Empty leaves the
+# image with no audio decoders, as before. The parsers (aac, aac_latm, mpegaudio) are small and always built.
+ARG AUDIO_DECODERS=aac,mp3float
 ARG FFMPEG_VERSION=7.1.5
 ARG FFMPEG_SHA256=de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates xz-utils make $([ "$(uname -m)" = x86_64 ] && echo nasm) && \
@@ -21,7 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     ./configure --prefix=/opt/ffmpeg --disable-everything --disable-programs --disable-doc --disable-network \
       --disable-autodetect --disable-debug --disable-avdevice --disable-avformat --disable-avfilter --disable-swresample \
       --enable-pic --enable-static --disable-shared --enable-pthreads \
-      --enable-decoder="$VIDEO_DECODERS" --enable-parser="$VIDEO_DECODERS" --enable-bsf=vp9_superframe_split --enable-swscale && \
+      --enable-decoder="$VIDEO_DECODERS${AUDIO_DECODERS:+,$AUDIO_DECODERS}" --enable-parser="$VIDEO_DECODERS,aac,aac_latm,mpegaudio" --enable-bsf=vp9_superframe_split --enable-swscale && \
     make -j"$(nproc)" && make install && \
     cd / && rm -rf /tmp/ffmpeg
 WORKDIR /src
@@ -60,7 +64,26 @@ RUN FF=/opt/ffmpeg && L=/opt/apksim/work/runtime/libvtdecoder.so && \
     ! /tmp/avdecoder_check /tmp/media/clip.h264 h264 641 360 2>/dev/null && \
     ! ldd $L | grep -E 'libav|libsw' && \
     ! nm -D --defined-only $L | awk '{print $3}' | grep -vE '^(Java_dev_apksim_video_VideoToolbox_|_init$|_fini$|_edata$|_end$|__bss_start$)' && \
-    ls -l $L && rm -rf /tmp/media /tmp/avdecoder_check
+    ls -l $L && rm -rf /tmp/avdecoder_check
+# MediaCodec's audio decoders: libsimaudio.so, the Linux half of dev.apksim.video.SimAudio (the Mac's is native/audio.m).
+# Same static, private-symbol link as above, checked on a tone per codec (frames, rate, channels, pitch, a reset); a decoder
+# left out of AUDIO_DECODERS must not open, and with none the library is not built (SimAudio then lists no audio decoders).
+RUN FF=/opt/ffmpeg && L=/opt/apksim/work/runtime/libsimaudio.so && \
+    if [ -n "$AUDIO_DECODERS" ]; then \
+      gcc -O2 -shared -fPIC -fvisibility=hidden -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" -I$FF/include \
+        -o $L native/linux/avaudio_linux.c \
+        -Wl,--exclude-libs,ALL -Wl,-Bsymbolic -Wl,--gc-sections -Wl,-z,defs -Wl,-z,noexecstack \
+        $FF/lib/libavcodec.a $FF/lib/libavutil.a -lm -lpthread && \
+      strip --strip-unneeded $L && \
+      gcc -O2 -Wall -I$FF/include -o /tmp/avaudio_check native/linux/avaudio_check.c $FF/lib/libavcodec.a $FF/lib/libavutil.a -lm -lpthread && \
+      case ",$AUDIO_DECODERS," in *,aac,*) /tmp/avaudio_check /tmp/media/clip.aac aac 44100 2 ;; *) /tmp/avaudio_check --absent aac ;; esac && \
+      case ",$AUDIO_DECODERS," in *,mp3float,*|*,mp3,*) /tmp/avaudio_check /tmp/media/clip.mp3 mp3 44100 2 ;; *) /tmp/avaudio_check --absent mp3 ;; esac && \
+      ! /tmp/avaudio_check /tmp/media/clip.aac aac 48000 2 2>/dev/null && \
+      ! ldd $L | grep -E 'libav|libsw' && \
+      ! nm -D --defined-only $L | awk '{print $3}' | grep -vE '^(Java_dev_apksim_video_SimAudio_|_init$|_fini$|_edata$|_end$|__bss_start$)' && \
+      ls -l $L; \
+    fi; \
+    rm -rf /tmp/media /tmp/avaudio_check
 # Robolectric's native runtime (Android's HWUI, Skia, SQLite for Linux), fonts and ICU data, unpacked once.
 # The newest of each, should an older one be left in work/lib; the others go.
 RUN cd /opt/apksim/work && ALL="$(ls lib/android-all-instrumented-*.jar | sort -V | tail -1)" && \

@@ -411,10 +411,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     `limited`: one command, only `am start`, `am broadcast` and `settings get|put` and `cat` of one file in the app's own folders (issue 408) for the app's own package
     (`TabShell.refusal`; anything else is status 126); `full` (a beamed session that asked for adb while its Mac's owner allows
     it, `allow-adb on`, read at each use): the whole shell, nothing streaming, a minute at most. Only the server sends it: it is not a command a tab may type.
-  - `video/VirtualOut`: see `AudioTap` below.
+  - `video/VirtualOut`: see `AudioTap` below. In the Linux image MediaCodec's AAC and MP3 decoders are libavcodec's (`native/linux/avaudio_linux.c` → `libsimaudio.so`, the decoder half of `SimAudio`; `SimAudio.decodersAvailable()` vs `available()`, which is output and Mac only; `AUDIO_DECODERS` build arg; checked in the Dockerfile by `avaudio_check.c`: docs/linux-docker.md "Audio", issue 548).
   - `video/AudioTap` (`audiowatch`, issue 532): the app's AudioTrack output as 16-bit PCM `u PRESENTED_US TRACK RATE
     CHANNELS BASE64` lines for a serve tab that asked (`/ws?audio=stream`, `Session.watchAudio`; docs/serve.md "Sound";
-    `scripts/audio-tap-check.py`, `serve-audio-check.py`). On the Linux image the tracks run on `video/VirtualOut`, a clock with no sound device (issue 545): the head moves at the track's rate from `play()`, writes take what fits the buffer and a blocking one waits for room, so the tap and a player's pacing see the Mac's timing; running instances only (test runs and `--audio off` keep Robolectric's); `-Dapksim.virtualAudio=true` uses it on a Mac; `scripts/check-virtual-out.sh` (CI). The image has no AAC/MP3 decoder, so only PCM the app writes reaches the tap.
+    `scripts/audio-tap-check.py`, `serve-audio-check.py`). On the Linux image the tracks run on `video/VirtualOut`, a clock with no sound device (issue 545): the head moves at the track's rate from `play()`, writes take what fits the buffer and a blocking one waits for room, so the tap and a player's pacing see the Mac's timing; running instances only (test runs and `--audio off` keep Robolectric's); `-Dapksim.virtualAudio=true` uses it on a Mac; `scripts/check-virtual-out.sh` (CI). The image's AAC/MP3 decoders are libavcodec's (issue 548), so a player's compressed audio reaches the tap too.
   - `TabFiles`: `devpush DEVICE_PATH BASE64`, a file a browser tab sent (`apksim serve` and `beam`, issue 187), written
     where `adb push` could write it (the app's `files/`, `cache/`, `shared_prefs/`, `databases/`, `/sdcard`,
     `/data/local/tmp`) and moved into place whole. Only the server sends it: it is not a command a tab may type.
@@ -1363,7 +1363,7 @@ of stream and resets on flush (`nativeReset`). Every such branch is behind that 
 decoding thread (frame threads would add pictures of delay the 4 reserved buffers cannot carry); 1080p60 plays at 60
 with no drops in both images (docs/linux-docker.md "Video" has the numbers). `selftest`'s order check there is that
 every pts leaves once (it labels inputs in decode order). libwebrtc's H.264 stays Mac-only
-(`VideoToolbox.webrtcAvailable()`), and Linux has no AAC/MP3 decoder or audio output. The build stage runs
+(`VideoToolbox.webrtcAvailable()`), and Linux has AAC/MP3 decoders (libavcodec, docs/linux-docker.md "Audio") but no audio output. The build stage runs
 `native/linux/avdecoder_check.c` on `testapks/media-fixture/clip.h264` (B-frames, pts, size, colours, a reset; `.h265`
 too when HEVC is built, else it checks HEVC does not open).
 Control commands: `video` (decoded/drawn counts, surfaces, `codecsConfigured` (all video codecs so far), each view's own `pictures=N` and `no codec attached` until a codec (configured with it or moved to it) or a publisher reaches it; MediaCodec counters with decode/draw ms, the video decoders

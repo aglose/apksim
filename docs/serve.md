@@ -775,8 +775,9 @@ track's rate from `play()`, takes writes into the track's buffer and makes a blo
 player paced by the track (ExoPlayer's audio sink) sees the Mac's timing, listener or not, and nothing is played
 locally. `AudioTap` copies the writes as on the Mac, so pages change nothing. Running instances only (test runs keep
 Robolectric's AudioTrack); `--audio off` keeps it too; `-Dapksim.virtualAudio=true` uses it on a Mac, without CoreAudio. The
-image has no AAC or MP3 decoder, so an app's compressed audio still needs one (a clip's PCM, such as WAV, reaches the
-tap; `aac-lc.m4a` stays silent there until a decoder is built in).
+image's MediaCodec has AAC and MP3 decoders (libavcodec, issue 548: docs/linux-docker.md "Audio"), so a player's compressed audio is
+decoded and reaches the tap as on the Mac; an image built with `--build-arg AUDIO_DECODERS=` (empty) has none, and only PCM
+an app writes itself (WAV, say) reaches it.
 
 ### Not in scope (yet)
 
