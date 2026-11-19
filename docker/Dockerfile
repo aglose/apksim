@@ -82,7 +82,7 @@ RUN FF=/opt/ffmpeg && L=/opt/apksim/work/runtime/libsimaudio.so && \
       ! ldd $L | grep -E 'libav|libsw' && \
       ! nm -D --defined-only $L | awk '{print $3}' | grep -vE '^(Java_dev_apksim_video_SimAudio_|_init$|_fini$|_edata$|_end$|__bss_start$)' && \
       ls -l $L; \
-    fi; \
+    fi && \
     rm -rf /tmp/media /tmp/avaudio_check
 # Robolectric's native runtime (Android's HWUI, Skia, SQLite for Linux), fonts and ICU data, unpacked once.
 # The newest of each, should an older one be left in work/lib; the others go.

@@ -720,7 +720,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
     }
   }
 
-  /** One codec's AudioToolbox converter: an access unit in, 16-bit interleaved PCM out. */
+  /** One codec's decoder (AudioToolbox's converter on a Mac, libavcodec on Linux): an access unit in, 16-bit interleaved PCM out. */
   private static final class AudioDecoder implements CodecConfig.Codec {
     private final boolean mp3;
     private final ShadowSimMediaCodec codec;
@@ -730,6 +730,7 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
     /** The configured AudioSpecificConfig, rate and channels, and how many more frames to look into for SBR (0: none). */
     private byte[] config;
     private int rate, channels;
+    private int curRate, curChannels;  // the output format the app was last told
     private int sniffLeft;
     /** Frames looked into for SBR at most: one may say nothing (a low-rate stream's first frame can be too short). */
     private static final int SNIFF_FRAMES = 8;
@@ -758,6 +759,8 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
           + channels + " ch" + (handle == 0 ? ", but the decoder refused it"
           : outRate != rate || outChannels != channels ? "; the stream gives " + outRate + " Hz, " + outChannels + " ch (HE-AAC: SBR"
               + (outChannels != channels ? ", parametric stereo" : "") + ")" : ""));
+      curRate = outRate;
+      curChannels = outChannels;
       if (outRate != rate || outChannels != channels) outputFormat(format, outRate, outChannels);
       // A plain AAC-LC config at up to 24 kHz (its own rate, whatever the app's format says) may be HE-AAC signalled in
       // the stream alone (ADTS, MPEG-TS): its first frames say.
@@ -789,6 +792,8 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
       }
       SimAudio.nativeDecoderRelease(handle);
       handle = h;
+      curRate = outRate;
+      curChannels = outChannels;
       System.err.println("[apksim] MediaCodec " + AAC_DECODER + ": the stream carries SBR" + (k == 2 ? " and parametric stereo" : "")
           + " (HE-AAC signalled in its frames): " + outRate + " Hz, " + outChannels + " ch");
       codec.outputFormatChanged(outRate, outChannels);
@@ -858,6 +863,13 @@ public class ShadowSimMediaCodec extends ShadowMediaCodec {
         return;
       }
       STATS.addAndGet(8, bytes);
+      // libavcodec (Linux) learns an implicit HE-AAC stream's real rate and channels from its frames: tell the app before this PCM.
+      int r = SimAudio.nativeDecoderRate(handle), c = SimAudio.nativeDecoderChannels(handle);
+      if (bytes > 0 && (r != curRate || c != curChannels) && !dev.apksim.HostOs.MAC) {
+        curRate = r;
+        curChannels = c;
+        codec.outputFormatChanged(r, c);
+      }
       out.put(pcm.duplicate().position(0).limit(bytes));
     }
 
