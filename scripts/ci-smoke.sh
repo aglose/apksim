@@ -633,7 +633,7 @@ trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/
   docker rm -f "$SERVE_NAME" >/dev/null 2>&1 || true' EXIT
 for _ in $(seq 1 60); do curl -sf -H "Authorization: Bearer $(cat "$OUT/serve.token")" "http://127.0.0.1:$SERVE_PORT/api/health" >/dev/null && break; sleep 1; done
 python3 "$ROOT/scripts/serve-check.py" "http://127.0.0.1:$SERVE_PORT" --token "$OUT/serve.token" --max-upload-mb 64 \
-  --allow-origin https://dash.example --device-size hd720=1280x720@1.5 --h264 required | tee "$OUT/serve-check.log"
+  --allow-origin https://dash.example --device-size hd720=1280x720@1.5 --h264 required --rejoin | tee "$OUT/serve-check.log"
 # Issue 336: a web link the app opens (a browser sign-in) reaches the tab, and its final address comes back as `open URL`.
 python3 "$ROOT/scripts/serve-link-check.py" "http://127.0.0.1:$SERVE_PORT" --token "$OUT/serve.token" | tee "$OUT/serve-link-check.log"
 # Issue 397: a tab's `shell` message: am start, am broadcast and settings in its own session, everything else refused.

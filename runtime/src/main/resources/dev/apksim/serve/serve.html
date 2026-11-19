@@ -227,7 +227,7 @@ if (viewer) {
   const w = document.createElement("span"); w.id = "watching"; w.textContent = "Watching (view only)";
   document.querySelector("header").appendChild(w);
 }
-let shareKey = "", sessionId = "";
+let shareKey = "", sessionId = "", sessionKey = "";
 
 // ---------------------------------------------------------------- setup
 function log(line) {
@@ -331,6 +331,7 @@ async function loadApps() {
   await codecReady;
   await beamSetup();
   await loadMacSkins();
+  if (await tryRejoin()) return;
   if (state.app) start();
 }
 function refresh() {
@@ -373,7 +374,7 @@ function start() {
   if (moving) abandonMove(null);
   clearTimeout(retryTimer); retryTimer = 0;  // a busy-retry pending for an earlier session is dropped
   // The old socket's close must not touch the new session, which may open its socket only later (on this Mac).
-  if (ws) { const old = ws; ws = null; socketClosed(old); old.close(); }
+  if (ws) { const old = ws; ws = null; dropHold(old); socketClosed(old); old.close(); }
   ended = false; onHome = false; frameW = frameH = 0;
   startedApp = state.app;
   $("keepBox").hidden = true; $("macRow").hidden = true; $("moveDataBox").hidden = true;
@@ -460,6 +461,7 @@ function wire(sock, onMac) {
   if (onMac) loadMacSkins();  // a session on this Mac: the agent trusts this site now, so its skins can be listed
   sock.onmessage = e => { if (sock === ws) typeof e.data === "string" ? onText(e.data) : onFrame(e.data, sock); };
   sock.onclose = () => {
+    if (sock.rejoining) { socketClosed(sock); return; }  // a refused rejoin: the page starts a session instead
     if (sock === ws && macFallback(sock, "the session closed before its first frame")) return;
     socketClosed(sock);
     if (sock !== ws || sock.handedOff) return;  // a server session whose data went to this Mac ends by design
@@ -480,6 +482,7 @@ let moving = null;  // { sock, to, texts, gen }
 function chip(text) { $("moveChip").hidden = !text; $("moveChip").textContent = text || ""; }
 async function moveSession(to) {
   if (moving) abandonMove(null);
+  dropHold(ws);  // the old side's session ends by the move: nothing to hold
   const gen = startGen, where = to === "mac" ? "this Mac" : "the server", q = sessionQuery();
   chip("Moving to " + where + "…");
   let url, data = null, handedOff = false;
@@ -580,7 +583,7 @@ function stop() {
   if (moving) abandonMove(null);
   const asking = startGen;  // a start still asking this Mac (no socket yet) is dropped too
   startGen++; clearTimeout(retryTimer); retryTimer = 0; fallbackTries = 0;
-  if (ws) { ended = true; socketClosed(ws); ws.close(); overlay("Stopped.", "Start again", start); refresh(); offerAppDevice(); }
+  if (ws) { dropHold(ws); ended = true; socketClosed(ws); ws.close(); overlay("Stopped.", "Start again", start); refresh(); offerAppDevice(); }
   else if (asking && !ended) { ended = true; overlay("Stopped.", "Start again", start); refresh(); }
 }
 $("start").onclick = start;
@@ -669,6 +672,7 @@ function onText(t) {
       if (viewer) document.getElementById("watching").title = d.viewers + " watching";
       return;
     }
+    if ("hold" in d) { held(d); return; }
     if ("adb" in d) { log("adb device on this Mac: adb connect localhost:" + d.adb); adbPort = d.adb; return; }
     const said = { reopened: "it starts on its kept data", copied: "it starts on a copy of the data an earlier build kept",
       new: "nothing kept under this key yet: its data is kept when it ends", restored: "its data is kept when it ends",
@@ -676,6 +680,7 @@ function onText(t) {
       off: "this server keeps no sessions (--keep-max)" };
     log("kept session: " + (d.why || said[d.kept] || d.kept));
   }
+  else if (kind === "f") sessionKey = body;  // the agent's per-session key (its files, log, inspector, a rejoin)
   else if (kind === "s") stats(JSON.parse(body));
   else if (kind === "h") { const f = ws && ws.onHandoff; if (f) { ws.onHandoff = null; f(JSON.parse(body)); } }
   else if (kind === "r") log(body);
@@ -703,6 +708,73 @@ function stats(s) {
   $("mem").textContent = s.rssMb > 0 ? s.rssMb + " MB (heap " + s.heapMb + ")" : "–";
   const left = Math.max(0, s.idleLimitS - s.idleS);
   $("idle").textContent = left > 120 ? Math.round(left / 60) + " min" : left + " s";
+}
+
+// ---------------------------------------------------------------- rejoin after a reload (issue 529)
+// A page about to reload (a new deploy) asks for a hold first: window.apksimHold() resolves to {hold, graceS} (or
+// {hold: null, reason}). The session then outlives this socket for graceS seconds, and the reloaded page takes it back
+// with the one-time token kept in this tab's sessionStorage (per tab, survives a reload). A plain close ends it as before.
+const HOLD_STORE = "apksim.hold";
+let holdWaiters = [];
+function holdStore(v) { try { v ? sessionStorage.setItem(HOLD_STORE, JSON.stringify(v)) : sessionStorage.removeItem(HOLD_STORE); } catch (e) { /* storage off */ } }
+function held(d) {
+  if (d.hold && ws && sessionId) {
+    holdStore({ id: sessionId, hold: d.hold, onMac: !!ws.onMac, port: beam.port, key: sessionKey, app: startedApp,
+      codec: h264Ok ? "h264" : "", until: Date.now() + 60000 });  // an armed hold lapses after a minute unused
+    log("held: a reload within " + d.graceS + " s takes this session back");
+  } else {
+    holdStore(null);
+    if (d.reason) log("no hold: " + d.reason);
+  }
+  const w = holdWaiters; holdWaiters = [];
+  for (const f of w) f(d);
+}
+// A close the page means (Stop, Start, a move): an armed hold would keep the session running for nothing.
+function dropHold(sock) {
+  holdStore(null);
+  if (sock && sock.readyState === 1 && !ended) sock.send("hold off");
+}
+window.apksimHold = (off) => new Promise(done => {
+  if (!ws || ws.readyState !== 1 || ended) { done({ hold: null, reason: "no running session" }); return; }
+  holdWaiters.push(done);
+  send(off === false ? "hold off" : "hold");
+});
+// On load: a hold this tab armed before it reloaded, taken back if the session still waits. True when it did.
+async function tryRejoin() {
+  let h = null;
+  try { h = JSON.parse(sessionStorage.getItem(HOLD_STORE) || "null"); } catch (e) { h = null; }
+  holdStore(null);  // one use, whatever happens
+  if (!h || !h.id || !h.hold || viewer || Date.now() > h.until) return false;
+  if (params.get("app") && h.app && params.get("app") !== h.app) return false;  // the address asks for another app
+  const q = new URLSearchParams({ rejoin: h.id, hold: h.hold });
+  if (h.codec && h264Ok) q.set("codec", h.codec);
+  let url;
+  if (h.onMac) {
+    if (!h.port || !h.key) return false;
+    q.set("key", h.key);
+    url = "ws://127.0.0.1:" + h.port + "/ws?" + q;
+  } else url = serverSocketUrl(q);
+  const gen = ++startGen;
+  ended = false; frameW = frameH = 0; startedApp = h.app || state.app;
+  if (h.app) state.app = h.app;
+  mode = "jpeg"; closeDecoder();
+  $("empty").hidden = true; $("bezel").hidden = false;
+  overlay("Reconnecting…");
+  return await new Promise(done => {
+    let greeted = false;
+    openSocket(url, h.onMac);
+    const sock = ws;
+    sock.rejoining = true;
+    const fallback = () => {
+      if (greeted || gen !== startGen) return;
+      log("the held session was not there to rejoin: starting a new one");
+      if (sock === ws) { ws = null; socketClosed(sock); }
+      done(false);
+    };
+    sock.addEventListener("message", e => { if (!greeted && typeof e.data === "string" && e.data.startsWith("i ")) { greeted = true; sock.rejoining = false; log("rejoined session " + h.id); done(true); } });
+    sock.addEventListener("close", fallback);
+    sock.addEventListener("error", fallback);
+  });
 }
 
 // ---------------------------------------------------------------- frames

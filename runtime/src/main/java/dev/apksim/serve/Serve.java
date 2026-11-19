@@ -36,10 +36,10 @@ public final class Serve {
       usage: apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
                           [--max-upload MB] [--max-push MB] [--allow-rec] [--no-shell] [--issue-url TEMPLATE] [--inspect-network [optional]] [--inspect-max-rules N] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
                           [--inspect-forward-allow URL_PREFIX]... [--network-host-allow ADDR[:PORT]]... [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--in-flight N]
-                          [--allow-share] [--max-viewers N]
+                          [--allow-share] [--max-viewers N] [--rejoin-grace SECONDS]
                           [--trust-proxy] [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
                           [--skins DIR]... [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N]
-             apksim beam [--port N] [--max N] [--idle SECONDS] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg]
+             apksim beam [--port N] [--max N] [--idle SECONDS] [--rejoin-grace SECONDS] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg]
                          [--keep-days N] [--save-sessions on|off] [--keep-saved-days N|never]
              apksim beam trust [list | allow ORIGIN | deny ORIGIN | revoke ORIGIN]
              apksim beam saved | run ID [OPTIONS] | to-device ID [OPTIONS] | forget ID | sweep | status
@@ -59,6 +59,12 @@ public final class Serve {
   String token;
   int max = 4;
   int idleSeconds = 600;
+  /**
+   * Issue 529: how long a session whose tab armed a hold (`hold`) outlives its socket, for the reloaded page to rejoin
+   * (`/ws?rejoin=ID&hold=TOKEN`); 0 turns holds off. At most {@link #MAX_REJOIN_GRACE}.
+   */
+  int rejoinGraceSeconds = 15;
+  static final int MAX_REJOIN_GRACE = 120;
   int quality = 80;
   /** `--in-flight N`: the most frames in flight to a tab (the window is sized from the round trip, up to this). */
   int inFlightMax = 8;
@@ -247,6 +253,7 @@ public final class Serve {
           s.maxGiven = true;
         }
         case "--idle" -> s.idleSeconds = Integer.parseInt(need(a, v));
+        case "--rejoin-grace" -> s.rejoinGraceSeconds = Math.max(0, Math.min(MAX_REJOIN_GRACE, Integer.parseInt(need(a, v))));
         case "--apps" -> s.apps.add(need(a, v));
         case "--max-upload" -> s.maxUploadMb = Long.parseLong(need(a, v));
         case "--max-push" -> s.maxPushMb = Math.max(1, Math.min(32, Long.parseLong(need(a, v))));
@@ -481,7 +488,7 @@ public final class Serve {
       // catalog, proxy or framing of its own.
       if (!bind.equals("127.0.0.1") || token != null || !apps.isEmpty() || trustProxy || publicOrigin != null
           || !basePath.isEmpty() || !allowedOrigins.isEmpty() || allowBeam) {
-        System.err.println("apksim beam: takes only --port, --max, --idle, --quality, --bitrate, --codec, --in-flight,"
+        System.err.println("apksim beam: takes only --port, --max, --idle, --rejoin-grace, --quality, --bitrate, --codec, --in-flight,"
             + " --max-upload, --no-network, --launch-timeout, --keep-days, --save-sessions, --keep-saved-days, --launchd, --agent-idle (it listens"
             + " on 127.0.0.1 and asks before a site runs an app)");
         System.exit(2);
@@ -1033,6 +1040,7 @@ public final class Serve {
       case "GET /ws" -> {
         String ins = r.param("inspect");
         if (joining) joinSocket(r, s, in, out);
+        else if (r.param("rejoin") != null) rejoinSocket(r, s, in, out, sessions.get(r.param("rejoin")));
         else if (!beam && ins != null && ins.matches("[0-9a-f]{12}")) inspectorSocket(r, s, in, out, sessions.get(ins));
         else websocket(r, s, in, out);
       }
@@ -1863,21 +1871,68 @@ public final class Serve {
     if (session.viewers != null) session.viewers.info("\"app\":" + Http.q(app.name()) + ",\"device\":" + Http.q(session.device));
     boolean shareSaid = session.viewers != null && allowShare;
     String keySaid = shareSaid ? session.viewers.key() : null;
-    ws.sendText("i {\"id\":" + Http.q(session.id) + ",\"app\":" + Http.q(app.name()) + ",\"device\":" + Http.q(session.device)
-        + ",\"idleLimitS\":" + idleSeconds + (beam ? ",\"keep\":" + session.keep : "")
-        // What the page may offer: the report (a recording, needs --allow-rec) and the network inspector.
-        + (beam ? ",\"rec\":" + (session.recChannels() != null) + (session.recChannels() != null ? ",\"recChannels\":" + Http.q(session.recChannels()) : "")
-            : ",\"rec\":" + allowRec + (issueUrl != null ? ",\"issueUrl\":" + Http.q(issueUrl) : ""))
-        // Whether this session has the inspector, and whether a session could (a page offers the switch only where it works).
-        // What a `shell` message may run here (issue 397): "off", "limited" or "full"; and whether an adb device comes.
-        + ",\"maxBroadcasts\":" + dev.apksim.BroadcastSpec.COUNT_MAX + ",\"shell\":" + Http.q(session.shellMode()) + (beam ? ",\"adb\":" + session.wantsAdb() : "")
-        + ",\"inspect\":" + session.inspecting() + ",\"inspectAllowed\":" + session.inspectAllowed()
-        // --allow-share: the key of this session's view-only link (`?join=ID&key=KEY`), for its own tab alone.
-        + (shareSaid ? ",\"share\":" + Http.q(keySaid) + ",\"maxViewers\":" + maxViewers : "")
-        + (session.inspecting() ? ",\"inspectMaxRules\":" + inspectMaxRules : "") + "}");
+    ws.sendText(info(session, keySaid, false));
     // Sharing switched while that was put together: what it said of the link may be stale, so say it again.
     if (session.viewers != null && (allowShare != shareSaid || shareSaid && !keySaid.equals(session.viewers.key()))) session.shareChanged();
     session.run();
+  }
+
+  /**
+   * The `i` message a session's controlling tab gets first: its id and what the page may offer. `shareKey`: the
+   * view-only link's key to tell it, or null. Again for a tab that rejoins (issue 529), with `"rejoined":true`.
+   */
+  private String info(Session x, String shareKey, boolean rejoined) {
+    return "i {\"id\":" + Http.q(x.id) + ",\"app\":" + Http.q(x.app.name()) + ",\"device\":" + Http.q(x.device)
+        + ",\"idleLimitS\":" + idleSeconds + (beam ? ",\"keep\":" + x.keep : "")
+        // What the page may offer: the report (a recording, needs --allow-rec) and the network inspector.
+        + (beam ? ",\"rec\":" + (x.recChannels() != null) + (x.recChannels() != null ? ",\"recChannels\":" + Http.q(x.recChannels()) : "")
+            : ",\"rec\":" + allowRec + (issueUrl != null ? ",\"issueUrl\":" + Http.q(issueUrl) : ""))
+        // Whether this session has the inspector, and whether a session could (a page offers the switch only where it works).
+        // What a `shell` message may run here (issue 397): "off", "limited" or "full"; and whether an adb device comes.
+        + ",\"maxBroadcasts\":" + dev.apksim.BroadcastSpec.COUNT_MAX + ",\"shell\":" + Http.q(x.shellMode()) + (beam ? ",\"adb\":" + x.wantsAdb() : "")
+        + ",\"inspect\":" + x.inspecting() + ",\"inspectAllowed\":" + x.inspectAllowed()
+        // --allow-share: the key of this session's view-only link (`?join=ID&key=KEY`), for its own tab alone.
+        + ((shareKey != null) ? ",\"share\":" + Http.q(shareKey) + ",\"maxViewers\":" + maxViewers : "")
+        + (x.inspecting() ? ",\"inspectMaxRules\":" + inspectMaxRules : "")
+        // Issue 529: how long a hold keeps the session for a reloaded page (0: none), and whether this socket rejoined.
+        + ",\"rejoinS\":" + rejoinGraceSeconds + (rejoined ? ",\"rejoined\":true" : "") + "}";
+  }
+
+  /**
+   * `/ws?rejoin=ID&hold=TOKEN` (issue 529): the reloaded page takes its held session back, as its controlling tab.
+   * Authorized as the session's own socket was (serve: the token and origin rules; the agent: in its route, the
+   * session's key and its page's origin), then by the hold's one-time token. Refused before the upgrade (409) when the
+   * session is not held or the token is not its token, so a page can fall back to starting a new session.
+   */
+  private void rejoinSocket(Http.Request r, Socket s, InputStream in, OutputStream out, Session x) throws IOException {
+    String key = r.header("sec-websocket-key");
+    if (key == null || !"websocket".equalsIgnoreCase(r.header("upgrade"))) {
+      Http.text(out, 400, "expected a WebSocket upgrade");
+      return;
+    }
+    if (x == null || x.ending()) {
+      Http.text(out, 409, "no held session to rejoin (it has ended, or its hold lapsed)");
+      return;
+    }
+    // Decided and answered under the session's lock: a refusal is an HTTP status, and once the session has the socket
+    // anything may write to it (a viewer joining, the inspector), so the upgrade must be out by then.
+    WebSocket nw = new WebSocket(s, in, out);
+    String why = x.rejoin(nw, r.param("hold"), () -> {
+      out.write(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
+          + WebSocket.acceptKey(key) + "\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
+      out.flush();
+    }, () -> info(x, x.viewers != null && allowShare ? x.viewers.key() : null, true));
+    if (why != null) {
+      Http.text(out, 409, why);
+      return;
+    }
+    s.setSoTimeout(0);
+    // The session's first socket still holds a place among the connections (its thread runs the session): this one
+    // gives its own back, as a viewer's does.
+    connections.release();
+    permitFreed.set(true);
+    x.greetRejoined(nw);
+    x.awaitSocketDone(nw);
   }
 
   // ---------------------------------------------------------------- beam (docs/beam.md)
@@ -2306,7 +2361,7 @@ public final class Serve {
     if (r.method().equals("GET") && r.path().equals("/beam/hello")) {
       int[] pr = Beam.protocols();
       Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + ",\"trusted\":"
-          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"allowRequest\":[\"forward\",\"loopback\",\"host\"],\"forward\":" + (o != null && agent.trusted(o) ? forwardJson() : "[]") + ",\"adb\":" + store.allowAdbNow() + ",\"loopback\":" + (o != null && agent.trusted(o) ? store.loopbackNow(port) : List.of()) + ",\"hosts\":" + (o != null && agent.trusted(o) ? hostsJson() : "[]") + ",\"maxBroadcasts\":" + dev.apksim.BroadcastSpec.COUNT_MAX + ",\"options\":" + Catalog.optionsJson() + "}");
+          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"allowRequest\":[\"forward\",\"loopback\",\"host\"],\"forward\":" + (o != null && agent.trusted(o) ? forwardJson() : "[]") + ",\"adb\":" + store.allowAdbNow() + ",\"loopback\":" + (o != null && agent.trusted(o) ? store.loopbackNow(port) : List.of()) + ",\"hosts\":" + (o != null && agent.trusted(o) ? hostsJson() : "[]") + ",\"maxBroadcasts\":" + dev.apksim.BroadcastSpec.COUNT_MAX + ",\"rejoinS\":" + rejoinGraceSeconds + ",\"options\":" + Catalog.optionsJson() + "}");
       return;
     }
     // `apksim beam status` (docs/beam.md, phase 6): to a local tool only, never a page (a browser always sends Origin).
@@ -2511,6 +2566,19 @@ public final class Serve {
             return;
           }
           inspectorSocket(r, s, in, out, x);
+          return;
+        }
+        // Issue 529: the page that started a held session, reloaded: its origin, its key (`f KEY`) and the hold's token.
+        String rj = r.param("rejoin");
+        if (rj != null) {
+          Session x = rj.matches("[0-9a-f]{12}") ? sessions.get(rj) : null;
+          String key = r.param("key");
+          if (x == null || x.fileKey == null || key == null || !java.security.MessageDigest.isEqual(key.getBytes(StandardCharsets.UTF_8),
+              x.fileKey.getBytes(StandardCharsets.UTF_8)) || !o.equals(x.site)) {
+            Http.text(out, 404, "no such session (or it has ended)");
+            return;
+          }
+          rejoinSocket(r, s, in, out, x);
           return;
         }
         String why = Beam.protocolProblem(r.param("protocol"));
@@ -2990,7 +3058,7 @@ public final class Serve {
     StringBuilder b = new StringBuilder("{\"apksim\":").append(Http.q(Beam.version(root))).append(",\"max\":").append(max).append(",\"idleLimitS\":").append(idleSeconds)
         .append(",\"maxUploadMb\":").append(maxUploadMb).append(",\"uptimeS\":").append((System.currentTimeMillis() - startedAt) / 1000)
         .append(",\"warmLaunches\":").append(System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac"))
-        .append(",\"share\":").append(allowShare).append(",\"apps\":").append(catalogCaches()).append(",\"sessions\":[");
+        .append(",\"share\":").append(allowShare).append(",\"rejoinS\":").append(rejoinGraceSeconds).append(",\"apps\":").append(catalogCaches()).append(",\"sessions\":[");
     boolean first = true;
     for (Session s : sessions.values()) {
       if (!first) b.append(',');

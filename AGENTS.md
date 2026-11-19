@@ -1452,7 +1452,11 @@ its tab closes, after `--idle` seconds without input, or when the app exits; its
 run with `--no-autofill` (never the owner's saved sign-ins) and `--data-slots serve` (`Storage.dataDir`: slots
 `serve-N`, so `--fresh` never empties an ordinary launch's `default`), and the control log shows typed text only as its
 length.
-`/api/health` needs no token (503 with the reason when a session could not start). `--allow-origin ORIGIN` lets a
+A tab that sends `hold` before reloading gets a one-time token, and its session outlives the closed socket for
+`--rejoin-grace` seconds (15; 0 off) until `/ws?rejoin=ID&hold=TOKEN` takes it back with the app still running (issue
+529, docs/serve.md "Rejoining after a reload"; `Session.awaitRejoin`/`rejoin`, `Serve.rejoinSocket`; the agent's
+route also wants the session's origin and key; serve.html's `window.apksimHold()` and `tryRejoin`; `serve-check.py
+--rejoin`, `beam-check.py --only rejoin`). `/api/health` needs no token (503 with the reason when a session could not start). `--allow-origin ORIGIN` lets a
 trusted page frame it (`/?embed=1&app=ID&token=...`: screen and device controls only, the token kept in memory and sent
 as `?token=`, since a cross-site frame gets no SameSite cookie) and open its WebSockets. `POST /api/apps {"url",
 "headers", "options"}` downloads an APK in the background (adds of one URL and headers share a fetch in progress and
