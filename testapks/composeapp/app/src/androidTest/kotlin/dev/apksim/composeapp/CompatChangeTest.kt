@@ -90,12 +90,12 @@ class CompatChangeTest {
   fun chmodAppliesTheMode() {
     val f = java.io.File.createTempFile("chmod", ".txt")
     try {
-      android.system.Os.chmod(f.path, 0b110_100_000) // 0640
-      val p = java.nio.file.Files.getPosixFilePermissions(f.toPath())
-      assertEquals(p.toString(), setOf("OWNER_READ", "OWNER_WRITE", "GROUP_READ"), p.map { it.name }.toSet())
+      // Owner bits only: here group and other stay what the host gave (a device applies all nine).
+      fun owner() = java.nio.file.Files.getPosixFilePermissions(f.toPath()).map { it.name }.filter { it.startsWith("OWNER_") }.toSet()
+      android.system.Os.chmod(f.path, 0b100_100_000) // 0440
+      assertEquals(setOf("OWNER_READ"), owner())
       android.system.Os.chmod(f.path, 0b111_000_000) // 0700
-      assertEquals(setOf("OWNER_READ", "OWNER_WRITE", "OWNER_EXECUTE"),
-          java.nio.file.Files.getPosixFilePermissions(f.toPath()).map { it.name }.toSet())
+      assertEquals(setOf("OWNER_READ", "OWNER_WRITE", "OWNER_EXECUTE"), owner())
     } finally {
       f.delete()
     }

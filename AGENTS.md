@@ -260,8 +260,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     (read in a running instance: ENOENT=2, EACCES=13, O_RDONLY=0, S_IFMT=61440). `CameraMetadataNative.nativeGetBufferSize`
     (0; its only caller is the object's native-allocation accounting, where 0 is harmless) is left out for now, so `gaps`
     shows it once the camera screen is used; a plain test-app session shows none. The tripwire's first find, `Os.chmod`
-    (a no-op that the test app's launch calls), has a shadow now (`LocalSockets.ShadowSimLinux`: the mode's rwx bits to
-    the host file, ENOENT for a missing one; `CompatChangeTest.chmodAppliesTheMode`).
+    (a no-op that the test app's launch calls), has a shadow now (`LocalSockets.ShadowSimLinux`: the mode's owner rwx
+    bits to the host file, its group/other bits left to the host: they belong to the host's users and tools reading the slot,
+    and ContextImpl's 0771 applied whole made a root container's slot unlistable for CI's runner user; ENOENT for a
+    missing file; `CompatChangeTest.chmodAppliesTheMode`).
     Counts reset per launch (`AppInfo.load`) and per test (`SimRunner.resetState`; `CompatChangeTest.gapsCommandAnswers`).
     `ci-smoke.sh` (app part) prints `gaps` and warns about anything beyond the baseline and that one (`GAPS_CHECK=strict`
     fails; checked on the Mac only). `-Dapksim.gaps=false` (cold launches: a standby has read it) binds them all plainly;
