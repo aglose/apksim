@@ -30,6 +30,9 @@ final class Crash {
   static final int TAB_LINES = 50;
   /** How much of a JVM crash report is read (its header is a few hundred bytes). */
   static final int HEADER_BYTES = 16 * 1024;
+  /** How much of an hs_err report is read, and how many lines of its stacks reach the log. */
+  static final int REPORT_BYTES = 512 * 1024;
+  static final int MAX_STACK_LINES = 200;
 
   private Crash() {}
 
@@ -148,15 +151,36 @@ final class Crash {
       Path f = dir.resolve("hs_err_pid" + pid + ".log");
       if (!Files.isRegularFile(f)) continue;
       try (java.io.InputStream in = Files.newInputStream(f)) {
-        // Only the header is read: the first 16 KB, never the thread stacks and memory map after it.
-        String head = new String(in.readNBytes(HEADER_BYTES), StandardCharsets.ISO_8859_1);
-        for (String l : head.split("\n", -1)) {
+        // The header, then the crashing thread's own frames (issue 523): never the registers, memory map or environment.
+        String text = new String(in.readNBytes(REPORT_BYTES), StandardCharsets.ISO_8859_1);
+        String[] lines = text.split("\n", -1);
+        int i = 0;
+        for (; i < lines.length; i++) {
+          String l = lines[i];
           if (l.startsWith("#")) {
             if (out.size() < 20 && !l.equals("#")) out.add("[hs_err] " + clip(l));
           } else if (!out.isEmpty()) {
             break;  // the header ends at the first line that is not one of its comments
           }
         }
+        int kept = 0;
+        boolean inSection = false;
+        for (; i < lines.length && kept < MAX_STACK_LINES; i++) {
+          String l = lines[i];
+          if (l.startsWith("Native frames:") || l.startsWith("Java frames:") || l.startsWith("siginfo:")
+              || l.startsWith("Current thread") || l.startsWith("Stack:")) {
+            inSection = true;
+          } else if (l.isBlank() || l.startsWith("---") || l.startsWith("Registers:") || l.startsWith("Top of Stack")
+              || l.startsWith("Instructions:") || l.startsWith("Lock stack")) {
+            inSection = false;
+            continue;
+          }
+          if (inSection) {
+            out.add("[hs_err] " + clip(l));
+            kept++;
+          }
+        }
+        if (kept >= MAX_STACK_LINES) out.add("[hs_err] ... (more frames cut)");
       } catch (IOException e) {
         out.add("[hs_err] unreadable: " + e.getMessage());
       }
