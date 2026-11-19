@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Observer gate: turning every observer of a test run on must not change what the run reports.
 
-Usage: observer-gate.py APP.apk TEST.apk [OUT] [--apksim CMD] [--local PATH] [--time-factor F] [--no-rec] [--no-coverage]
+Usage: observer-gate.py APP.apk TEST.apk [OUT] [--apksim CMD] [--local PATH] [--time-factor F] [--min-tests N] [--no-rec] [--no-coverage]
                         [--record-format avi|mp4] [-- instrument.py options]
 
 Runs the suite twice through instrument.py, once plain and once with every observer a test run has: failure bundles
@@ -10,7 +10,7 @@ channels (--rec net,db: Main starts them in a test run too) and --coverage count
 test by test: the same tests, the same outcome (passed, failed, skipped) for each, and the observed run's wall time at
 most F times the plain run's (default 3: CI is noisy; --time-factor 0 prints it only). Tests whose own times differ
 most are listed and never fail the gate. Exit 0 when the runs agree, 1 with the differences, 2 when a run did not
-produce its XML.
+produce its XML or the plain run has fewer than N tests (default 1) or a "(run)" failure.
 
 Six bugs were an observer changing what it observed (failure bundles: issue 73, test movies: 144, 197 and 360, a
 descriptor a listener leaked: 115); this is the check that finds the next one. Everything after -- goes to
@@ -92,6 +92,7 @@ def main():
     p.add_argument("--apksim")
     p.add_argument("--local", help="with --apksim: OUT as seen here (the folder mounted into the container)")
     p.add_argument("--time-factor", type=float, default=3.0)
+    p.add_argument("--min-tests", type=int, default=1, help="fail (exit 2) when the plain run has fewer tests than this")
     p.add_argument("--no-rec", action="store_true", help="leave the flight recorder out")
     p.add_argument("--no-coverage", action="store_true", help="leave --coverage out")
     p.add_argument("--record-format", choices=["avi", "mp4"], default="avi",
@@ -144,6 +145,10 @@ def main():
     plain, seen = outcomes(l("plain.xml")), outcomes(l("observed.xml"))
     count = lambda m: ", ".join(f"{sum(1 for v in m.values() if v[0] == o)} {o}" for o in ("passed", "failed", "skipped"))
     print(f"observer-gate: plain {len(plain)} tests ({count(plain)}); observed {len(seen)} tests ({count(seen)})")
+    if len(plain) < a.min_tests or any(n == "(run)" for _, n in plain):
+        print(f"observer-gate: the plain run has {len(plain)} tests (at least {a.min_tests} wanted, no '(run)' failure): "
+              "a gate over nothing proves nothing", file=sys.stderr)
+        sys.exit(2)
     lines, failed = compare(plain, seen, t_plain, t_seen, a.time_factor)
     if rc_plain != rc_seen:
         failed = True

@@ -450,7 +450,7 @@ jobs:
         run: |
           p=dev.apksim.composeapp
           classes=$p.MainActivityTest,$p.conformance.ComposeUiConformanceTest,$p.conformance.EspressoConformanceTest,$p.UiAutomatorTest,$p.DialogFocusTest,$p.PopupTouchTest,$p.CoveredWindowsTest,$p.WindowDrawTest,$p.ComposeEspressoIdleTest,$p.conformance.RotationConformanceTest,$p.StackWindowsTest,$p.conformance.Material3ConformanceTest,$p.conformance.ComposeFoundationConformanceTest,$p.FailureBundleTest,$p.FailureBundleEspressoTest,$p.FailureBundleAfterTest,$p.FailureBundleExpectedTest,$p.FailureBundleHandledTest
-          python3 scripts/observer-gate.py app.apk test.apk /work/observer-gate --time-factor 3 \
+          python3 scripts/observer-gate.py app.apk test.apk /work/observer-gate --time-factor 3 --min-tests 60 \
             --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" --local tests/observer-gate \
             -- -e timezone America/New_York -e failOnPurpose true -e class "$classes" -- --timezone America/New_York
       - uses: gradle/actions/setup-gradle@v4  # the Gradle cache, for affected-check's rebuilds of the test app
