@@ -586,9 +586,12 @@ final class Session {
   private volatile Socket audiowatch;
   private static final java.util.regex.Pattern AUDIO_CHUNK = java.util.regex.Pattern.compile("u [0-9]{10,18} [0-9]{1,9} [0-9]{3,6} [1-8] [A-Za-z0-9+/=]{4,40000}");
 
-  /** What the `i` message says of sound: "stream" where the tab asked for it and the stream is up, "off" otherwise. */
+  /**
+   * What the `i` message says of sound: "stream" where this session's tab can have it (asked for with `audio=stream`
+   * at the start, or later with `audio stream on`), "off" where the instance has no sound to copy (not a Mac).
+   */
   String audioStreamState() {
-    return "1".equals(options.get("audiostream")) ? "stream" : "off";
+    return System.getProperty("os.name", "").startsWith("Mac") ? "stream" : "off";
   }
 
   /**
@@ -596,7 +599,8 @@ final class Session {
    * the instance's `audiowatch` connection (AudioTap) sends `u PRESENTED_US TRACK RATE CHANNELS BASE64` lines, passed on
    * as text messages while a tab holds the session. `audio stream off|on` from the tab stops and starts the copying.
    */
-  private void watchAudio(int port) {
+  private synchronized void watchAudio(int port) {
+    if (audiowatch != null || ended) return;
     try {
       Socket s = audiowatch = connect(port);
       s.getOutputStream().write("audiowatch\n".getBytes(StandardCharsets.US_ASCII));
@@ -608,7 +612,7 @@ final class Session {
             return;
           }
           for (String line; (line = r.readLine()) != null; ) {
-            if (held || ended || !AUDIO_CHUNK.matcher(line).matches()) continue;  // no tab: the sound has no one to reach
+            if (held() || ended || !AUDIO_CHUNK.matcher(line).matches()) continue;  // no tab: the sound has no one to reach
             ws.sendText(line);
           }
         } catch (IOException e) {
@@ -622,7 +626,12 @@ final class Session {
 
   private void audioStreamCommand(String text) {
     Socket s = audiowatch;
-    if (s == null) return;
+    if (s == null) {
+      // Not asked for at the start: the first `audio stream on` begins it (a new listener starts on).
+      int p = controlPort;
+      if (text.endsWith(" on") && p > 0 && audioStreamState().equals("stream")) watchAudio(p);
+      return;
+    }
     try {
       s.getOutputStream().write((text.substring(6) + "\n").getBytes(StandardCharsets.US_ASCII));
     } catch (IOException e) {

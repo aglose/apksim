@@ -25,7 +25,7 @@ public final class AudioTap {
     final PrintWriter out;
     volatile boolean on = true;
     // Chunks wait here for the sender thread, so a slow reader never blocks the app's audio thread; past the bound they are dropped.
-    final java.util.concurrent.ArrayBlockingQueue<String> queue = new java.util.concurrent.ArrayBlockingQueue<>(100);
+    final java.util.concurrent.ArrayBlockingQueue<String> queue = new java.util.concurrent.ArrayBlockingQueue<>(1000);  // 20 s: one large write (a static track) is hundreds of chunks at once
 
     Listener(PrintWriter out) {
       this.out = out;
@@ -84,13 +84,13 @@ public final class AudioTap {
 
   /**
    * One write of a track: [pcm16] holds [bytes] bytes of 16-bit PCM (little-endian, native order of a direct buffer),
-   * [queuedFrames] frames were still waiting to play when it was written.
+   * [queuedFrames] frames were still waiting to play at [atMicros] (epoch), just before it was written.
    */
-  static void offer(int track, int rate, int channels, ByteBuffer pcm16, int bytes, long queuedFrames) {
+  static void offer(int track, int rate, int channels, ByteBuffer pcm16, int bytes, long queuedFrames, long atMicros) {
     if (!active || rate <= 0 || channels <= 0) return;
     int frameBytes = channels * 2;
     int chunk = Math.max(1, rate / 50) * frameBytes;  // 20 ms
-    long presented = System.currentTimeMillis() * 1000L + queuedFrames * 1_000_000L / rate;
+    long presented = atMicros + queuedFrames * 1_000_000L / rate;
     byte[] raw = new byte[Math.min(chunk, bytes)];
     ByteBuffer src = pcm16.duplicate().order(ByteOrder.nativeOrder());
     for (int off = 0; off + frameBytes <= bytes; ) {

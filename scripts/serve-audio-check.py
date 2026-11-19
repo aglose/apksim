@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """A serve tab's sound (issue 532): /ws?audio=stream gets `u` messages while the app plays, `audio stream off` stops
-them, the `i` message says `"audio":"stream"`, and a session started without the option says "off" and gets none.
+them, the `i` message says `"audio":"stream"`, and a session started without the option gets none until it sends
+`audio stream on`.
 
   scripts/serve-audio-check.py URL APP_ID [--token FILE]
-The app must be able to play something on its own: the test app's `apksim://media` screen or, as here, a `selftest`
-sent through the page's own command channel is refused (the tab may not send it), so this plays the clip through
-`open apksim://video`'s sibling `apksim://mediaplayer?src=clip.wav`-style deep link given with --open.
+--open URL: a deep link that plays sound (default: the test app's apksim://media?sample=aac-lc.m4a).
 """
 import importlib.util, json, sys, time
 
@@ -46,5 +45,9 @@ refused = [t for t in s.texts if t.startswith("r refused")]
 sc.check(not refused, "audio stream on/off/mute are accepted (no refusal) %s" % refused[:2])
 s2, info2 = run(False)
 s2.pump(6)
-sc.check(info2.get("audio") == "off" and not [t for t in s2.texts if t.startswith("u ")], "a session that did not ask hears nothing")
+sc.check(not [t for t in s2.texts if t.startswith("u ")], "a session that did not ask hears nothing")
+s2.ws.send("audio stream on")  # asked for later: the sound starts with what plays from then on
+s2.ws.send("open " + open_url.replace("%3F", "?").replace("%3D", "="))
+s2.pump(15, until=lambda: any(t.startswith("u ") for t in s2.texts))
+sc.check(any(t.startswith("u ") for t in s2.texts), "audio stream on mid-session starts it")
 sys.exit(1 if sc.FAILED else 0)

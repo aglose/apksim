@@ -609,12 +609,13 @@ function shell(line) {
 window.apksimShell = shell;
 
 // ---- Sound (issue 532): the app's AudioTracks as 16-bit PCM chunks, `u PRESENTED_US TRACK RATE CHANNELS BASE64`.
-// Each track plays its chunks back to back through its own AudioBufferSourceNode chain, a short buffer ahead; a chunk
-// whose presentation time (the server's clock, as the screen frames carry it) is already well past is dropped rather
-// than played late, so sound that fell behind catches up instead of drifting from the picture.
+// A chunk plays when its presentation time says (the server's clock, as the screen frames carry it, turned into this
+// machine's with clockOffset), a fixed delay later to ride out jitter: so sound stays where the picture is, a lost
+// chunk leaves its gap, and a chunk that arrives after its time is dropped rather than played late. Chunks that
+// follow one another within a few ms are joined sample to sample, so clock rounding is not heard.
 let audioCtx = null;
-const audioTracks = new Map(), audioStats = { chunks: 0, dropped: 0, lastLateMs: 0 };
-const AUDIO_AHEAD = 0.08, AUDIO_LATE_MS = 150;
+const audioTracks = new Map(), audioStats = { chunks: 0, dropped: 0, resyncs: 0, lastLateMs: 0 };
+const AUDIO_DELAY = 0.12, AUDIO_JOIN = 0.03;
 function audioContext() {
   if (!audioCtx) { try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; } }
   if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});  // allowed once the page has had a gesture
@@ -628,8 +629,12 @@ function audioChunk(body) {
   const bin = atob(f[4]), frames = Math.floor(bin.length / (2 * ch));
   if (!frames) return;
   audioStats.chunks++;
-  audioStats.lastLateMs = Date.now() - presented;
-  if (audioStats.lastLateMs > AUDIO_LATE_MS + 1000 * AUDIO_AHEAD) { audioStats.dropped++; return; }
+  // Where its time falls on the context's clock.
+  const due = ctx.currentTime + (presented - now()) / 1000 + AUDIO_DELAY;
+  audioStats.lastLateMs = Math.round((ctx.currentTime - due) * 1000);
+  let t = audioTracks.get(track);
+  if (t === undefined || Math.abs(t - due) > AUDIO_JOIN) { if (t !== undefined) audioStats.resyncs++; t = due; }
+  if (t < ctx.currentTime) { audioStats.dropped++; audioTracks.delete(track); return; }  // late: never played late
   const buf = ctx.createBuffer(ch, frames, rate);
   for (let c = 0; c < ch; c++) {
     const d = buf.getChannelData(c);
@@ -638,8 +643,6 @@ function audioChunk(body) {
       d[i] = (v > 32767 ? v - 65536 : v) / 32768;
     }
   }
-  let t = audioTracks.get(track) || 0;
-  if (t < ctx.currentTime) t = ctx.currentTime + AUDIO_AHEAD;  // underran (or the first chunk): restart a buffer ahead
   const src = ctx.createBufferSource();
   src.buffer = buf; src.connect(ctx.destination); src.start(t);
   audioTracks.set(track, t + buf.duration);
@@ -672,7 +675,10 @@ function onText(t) {
   else if (kind === "i") {
     const i = JSON.parse(body); log("session " + i.id + ": " + i.app); if (i.device) setDevice(i.device);
     // --allow-share: this session's view-only link, for its own tab.
-    $("soundBox").hidden = !!i.viewer;  // a view-only link gets no sound (issue 532)
+    // Issue 532: a view-only link gets no sound, nor a session whose instance has none to copy; a session taken back
+    // after a reload hears from the box as it is now (the server would otherwise keep sending what the page drops).
+    $("soundBox").hidden = !!i.viewer || i.audio !== "stream";
+    if (i.rejoined && i.audio === "stream") send($("sound").checked ? "audio stream on" : "audio stream off");
     sessionId = i.id; shareKey = i.share || ""; $("shareRow").hidden = !shareKey; $("viewers").textContent = "";
     if (i.viewer) document.getElementById("watching").textContent = "Watching " + (i.app || "a session") + " (view only)";
     // Only the agent says it (docs/beam.md): a session on this Mac may keep its data when it ends.

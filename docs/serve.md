@@ -756,12 +756,14 @@ play on the Mac's output (`ShadowSimAudioTrack`), are also copied by `AudioTap` 
 instance's `audiowatch` control connection; nothing is copied otherwise, and a slow tab loses chunks, never the app's
 output) and sent to that tab alone as text messages `u PRESENTED_US TRACK RATE CHANNELS BASE64`: 16-bit little-endian
 PCM, at most 20 ms each, per AudioTrack. `PRESENTED_US` is epoch microseconds, the clock of the screen frames' header:
-when the chunk's first sample is expected to play (written, plus what the track still had queued). The page schedules
-each track's chunks back to back a short buffer ahead and drops one that is more than ~230 ms late rather than play it
-late (`window.apksimAudio()` counts chunks and drops). Browsers start sound only after a click or tap, so the
+when the chunk's first sample is expected to play (written, plus what the track still had queued). The page plays a chunk
+at that time on its own clock plus 120 ms (chunks within 30 ms of following one another are joined sample to sample),
+so a lost chunk leaves its gap and one that arrives after its time is dropped, never played late
+(`window.apksimAudio()` counts chunks, drops and resyncs). The copy is taken at the track's own volume
+(`AudioTrack.setVolume`), so a ducked or faded track is ducked in the tab too. Browsers start sound only after a click or tap, so the
 "Sound" box is that gesture: the page resumes its `AudioContext` when it is ticked. The `i` message says `"audio":
-"stream"` when the session streams it, else `"off"`. `audio stream off|on` stops and starts the copying without
-touching the app; `audio mute` still decides what the Mac plays, and the stream carries the sound either way. Viewers
+"stream"` when the session can stream it (a Mac's instance), else `"off"`. `audio stream off|on` stops and starts the
+copying without touching the app, and `on` also starts it in a session that did not ask at its start; `audio mute` still decides what the Mac plays, and the stream carries the sound either way. Viewers
 of a shared session never get sound. Not done: Opus (no encoder is linked, so 48 kHz stereo is ~1.5 Mbit/s before
 Base64; the line format leaves room for a codec field), a per-session switch for viewers, sound from the Linux
 image (its AudioTrack is Robolectric's, which plays nothing and has no output clock), a beam session in a tab (the
