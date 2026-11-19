@@ -177,6 +177,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     1") is checked in `ci-smoke.sh`.
   - `TimeTick`: ACTION_TIME_TICK (registered receivers only) from Host's loop at each minute of `SimClock`'s clock; not under `--snapshot` (issue 109).
   - `AudioFx`: `android.media.audiofx.Visualizer` (issue 514): Robolectric leaves its natives unshadowed, so `getCaptureSizeRange()` answered null and `getMaxCaptureRate()` 0, and an app sizing its capture from them died on the first play. They answer as AOSP's (128..1024, 20000 mHz, 44.1 kHz); a visualizer's setters return SUCCESS and only the capture size reads back (enabled and the modes read as defaults); it gets no data, and a size change while enabled is not refused. `VisualizerTest`.
+  - `Gaps`, `gaps-baseline.txt`: the gap tripwire, framework natives no shadow covers that were called (described under `InvokeDynamicSupport` below; `gaps` command, exit line).
   - `Crashes`: uncaught exceptions in running instances, as RuntimeInit's KillApplicationHandler (issue 104). The JVM
     had no default handler, so ThreadGroup printed "Exception in thread" and the app ran on: kotlinx.coroutines hands a
     coroutine's exception to the thread's handler itself (traced: `propagateExceptionFinalResort`, ThreadGroup, no
@@ -258,7 +259,9 @@ Read README.md for results and limits; this file covers how to work on the code.
     could mislead stays out. `OsConstants.initConstants` is in: Robolectric's `ShadowOsConstants` sets the constants itself
     (read in a running instance: ENOENT=2, EACCES=13, O_RDONLY=0, S_IFMT=61440). `CameraMetadataNative.nativeGetBufferSize`
     (0; its only caller is the object's native-allocation accounting, where 0 is harmless) is left out for now, so `gaps`
-    shows it once the camera screen is used; a plain test-app session shows none.
+    shows it once the camera screen is used; a plain test-app session shows none. The tripwire's first find, `Os.chmod`
+    (a no-op that the test app's launch calls), has a shadow now (`LocalSockets.ShadowSimLinux`: the mode's rwx bits to
+    the host file, ENOENT for a missing one; `CompatChangeTest.chmodAppliesTheMode`).
     Counts reset per launch (`AppInfo.load`) and per test (`SimRunner.resetState`; `CompatChangeTest.gapsCommandAnswers`).
     `ci-smoke.sh` (app part) prints `gaps` and warns about anything beyond the baseline and that one (`GAPS_CHECK=strict`
     fails; checked on the Mac only). `-Dapksim.gaps=false` (cold launches: a standby has read it) binds them all plainly;
@@ -738,6 +741,7 @@ last call, then what reached the screen per display vsync), `fps` (per-stage cos
 `audio [on|mute]` (sound or silence now, open AudioTracks included; off is launch only) and `video [on|blank]` (next codec),
 `maxfps [N]` (frame rate cap, 1-120; see "Per-instance costs" below), `animscale N` (animation speed, any time),
 `vsync [PERIOD_US SHIFT_US|off]` (pace to a viewer's display: see `Host`).
+`gaps` (`Gaps`, see Layout): framework natives with no shadow that this process called, outside the baseline of harmless ones.
 For screenshot tests (docs/snapshots.md): `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]` (answers once nothing is queued,
 dirty or wanting a frame and no main-thread message is due within HORIZON_MS, for QUIET_MS of real time with no frame
 drawn; else `error: not settled ...: REASON` ("a frame is wanted" says what wants it when it can: `: a spinning ProgressBar #id at X,Y`, or `: animators running: ...`); while the app is in the background (`home`, `lock`, Back on the root launcher activity) nothing draws and either answer ends `(app in background: ...)`: match the `settled`/`error:` prefix, as mcp.py does), `restart [URL]` (every activity destroyed, the start activity (launcher or

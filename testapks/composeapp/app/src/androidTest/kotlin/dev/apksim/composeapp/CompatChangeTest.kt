@@ -85,6 +85,28 @@ class CompatChangeTest {
     assertTrue(out, shell("apksim compat all").contains("target 36"))
   }
 
+  /** Os.chmod changes the file's mode (it was an unshadowed native: a no-op) and a missing file is ENOENT. */
+  @Test
+  fun chmodAppliesTheMode() {
+    val f = java.io.File.createTempFile("chmod", ".txt")
+    try {
+      android.system.Os.chmod(f.path, 0b110_100_000) // 0640
+      val p = java.nio.file.Files.getPosixFilePermissions(f.toPath())
+      assertEquals(p.toString(), setOf("OWNER_READ", "OWNER_WRITE", "GROUP_READ"), p.map { it.name }.toSet())
+      android.system.Os.chmod(f.path, 0b111_000_000) // 0700
+      assertEquals(setOf("OWNER_READ", "OWNER_WRITE", "OWNER_EXECUTE"),
+          java.nio.file.Files.getPosixFilePermissions(f.toPath()).map { it.name }.toSet())
+    } finally {
+      f.delete()
+    }
+    try {
+      android.system.Os.chmod(f.path, 0b110_100_100)
+      org.junit.Assert.fail("chmod of a missing file did not throw")
+    } catch (e: android.system.ErrnoException) {
+      assertEquals(android.system.OsConstants.ENOENT, e.errno)
+    }
+  }
+
   /** The gap tripwire's command answers in a test run (the baseline natives are not counted, so only its tail is fixed). */
   @Test
   fun gapsCommandAnswers() {

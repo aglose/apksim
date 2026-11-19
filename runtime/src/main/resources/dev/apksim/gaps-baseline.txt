@@ -52,4 +52,3 @@ dalvik.system.VMRuntime.notifyNativeAllocationsInternal()V
 dalvik.system.VMRuntime.registerNativeAllocation(J)V
 dalvik.system.VMRuntime.registerNativeFree(J)V
 dalvik.system.VMRuntime.setDedupeHiddenApiWarnings(Z)V
-libcore.io.Linux.chmod(Ljava/lang/String;I)V

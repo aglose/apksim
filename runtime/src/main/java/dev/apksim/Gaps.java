@@ -95,8 +95,9 @@ public final class Gaps {
 
   /** {@code gaps}: one "Class.method(desc): xN" per unshadowed native called, joined as every answer is. */
   public static String report() {
+    if (!ON) return "not counted (apksim.gaps=false)";
     List<Map.Entry<String, Long>> l = called();
-    String tail = " (" + baseline().size() + " baseline natives not counted)";    if (!ON) return "not counted (apksim.gaps=false)";
+    String tail = " (" + baseline().size() + " baseline natives not counted)";
     if (l.isEmpty()) return "no unshadowed framework natives called outside the baseline" + tail;
     StringBuilder sb = new StringBuilder();
     for (Map.Entry<String, Long> e : l) sb.append(sb.length() > 0 ? "\n" : "").append(e.getKey()).append(": x").append(e.getValue());
