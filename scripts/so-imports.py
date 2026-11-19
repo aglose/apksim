@@ -28,6 +28,7 @@ def parse(d):
                 while not struct.unpack_from('<I', d, chain + (last - so) * 4)[0] & 1: last += 1
                 n = last + 1
             else: n = so
+        else: raise ValueError("no DT_HASH or DT_GNU_HASH: the symbol count is unknown")
     und = []; defd = []; weak = set()
     for i in range(1, n):
         nm, info, oth, shndx, val, sz = struct.unpack_from('<IBBHQQ', d, symtab + i * 24)
@@ -42,7 +43,8 @@ def main():
         libs = {}
         for e in z.namelist():
             if e.startswith('lib/arm64-v8a/') and e.endswith('.so'):
-                libs[e.split('/')[-1]] = parse(z.read(e))
+                try: libs[e.split('/')[-1]] = parse(z.read(e))
+                except Exception as ex: print('  UNREADABLE', e, ex)
         provided = set(s for v in libs.values() for s in v[2])
         allimp = collections.Counter()
         for k, (need, und, defd, weak) in sorted(libs.items()):

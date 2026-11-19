@@ -113,6 +113,8 @@ jobs:
           retention-days: 1
       - name: Translator check (R8 and D8 fixtures)
         run: scripts/check-translator.sh
+      - name: Corpus check's own proof (the link check fails on the translator fixtures without the hierarchy)
+        run: python3 scripts/corpus.py --selftest
       - name: Call-site check (direct binding, re-binding after invalidation, the binding race)
         run: scripts/check-call-sites.sh
       - name: Compat-table check (changes by the app's targetSdk, no allocation)

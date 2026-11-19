@@ -24,19 +24,28 @@ jobs:
       - uses: ./.github/actions/linux-build
         with:
           test-app: 'false'
+      # Restore only; the cache is saved after the run, and only when every APK was fetched and verified.
       - name: Downloaded APKs
-        uses: actions/cache@v4
+        id: apks
+        uses: actions/cache/restore@v4
         with:
           path: work/corpus
           key: corpus-apks-${{ hashFiles('scripts/corpus.json') }}
       - name: The check's own proof (translator fixtures)
         run: python3 scripts/corpus.py --selftest
       - name: Corpus
+        shell: bash  # -o pipefail: a tool error (download, hash, the Java tool) fails the job through tee
         env:
           ONLY: ${{ github.event.inputs.only }}
         run: |
           mkdir -p out
           python3 scripts/corpus.py --json out/corpus.json ${ONLY:+--only "$ONLY"} | tee out/corpus.txt
+      - name: Keep the verified APKs
+        if: success() && steps.apks.outputs.cache-hit != 'true' && github.event.inputs.only == ''
+        uses: actions/cache/save@v4
+        with:
+          path: work/corpus
+          key: corpus-apks-${{ hashFiles('scripts/corpus.json') }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:

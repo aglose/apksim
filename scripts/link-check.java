@@ -364,7 +364,7 @@ public class LinkCheck {
     first = true;
     int shown = 0;
     for (Finding f : findings) {
-      if (shown++ >= 2000) break;
+      if (shown++ >= 200000) break;
       j.append(first ? "\n" : ",\n").append("{\"kind\":").append(esc(f.kind)).append(",\"class\":").append(esc(f.cls.replace('/', '.')))
           .append(",\"method\":").append(esc(f.method)).append(",\"insn\":").append(esc(f.insn)).append(",\"detail\":").append(esc(f.detail)).append('}');
       first = false;

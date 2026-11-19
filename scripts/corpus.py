@@ -24,6 +24,7 @@ import argparse, ctypes, hashlib, importlib.util, json, os, re, shutil, subproce
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UA = "apk-corpus/1.0"
+MAX_APK = 300 << 20  # bytes: the largest of the list is ~125 MB
 
 
 def java_bin():
@@ -68,15 +69,24 @@ def fetch(app, cache):
         return path, None
     os.makedirs(d, exist_ok=True)
     tmp = path + ".part"
-    r = subprocess.run(["curl", "-fsSL", "-A", UA, "-m", "900", "-o", tmp, app["url"]], capture_output=True, text=True)
-    if r.returncode != 0:
-        return None, "download failed: " + (r.stderr.strip().splitlines() or ["curl " + str(r.returncode)])[-1]
-    got = sha256(tmp)
-    if got != want:
-        os.unlink(tmp)
-        return None, "sha256 mismatch: got %s, list says %s" % (got, want)
-    os.replace(tmp, path)
-    return path, None
+    errs = []
+    # F-Droid moves a superseded build from /repo to /archive: each app lists every URL that has held it, tried in order.
+    for url in app.get("urls") or [app["url"]]:
+        r = subprocess.run(["curl", "-fsSL", "--proto", "=https", "--proto-redir", "=https", "--max-filesize", str(MAX_APK),
+                            "-A", UA, "-m", "900", "-o", tmp, url], capture_output=True, text=True)
+        if r.returncode != 0:
+            errs.append("%s: %s" % (url, (r.stderr.strip().splitlines() or ["curl " + str(r.returncode)])[-1]))
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            continue
+        got = sha256(tmp)
+        if got != want:
+            os.unlink(tmp)
+            errs.append("%s: sha256 mismatch: got %s, list says %s" % (url, got, want))
+            continue
+        os.replace(tmp, path)
+        return path, None
+    return None, "download failed: " + "; ".join(errs)
 
 
 # ---- native imports
@@ -176,6 +186,7 @@ def run_app(app, path, cp, platform, so, shim, tmp):
                translateFailures=rep["translateFailures"], invokes=rep["invokes"], unresolvedCalls=rep["unresolvedCalls"],
                linkKinds=rep["linkKinds"], linkErrors=rep["linkErrors"], unresolvedOwners=rep["unresolvedOwners"])
     nlibs, miss, errs = missing_imports(path, so, shim)
+    row["linkErrorsTruncated"] = len(rep["linkErrors"]) < sum(rep["linkKinds"].values())
     row.update(nativeLibs=nlibs, missingImports=miss, nativeErrors=errs, seconds=round(time.time() - t0, 1))
     return row
 
@@ -185,17 +196,18 @@ def count_missing(row):
 
 
 def table(rows):
-    head = ("APK", "classes", "translate failures", "link errors", "missing imports")
+    head = ("APK", "classes", "translate failures", "link errors", "missing imports", "unreadable libs")
     body = []
     for r in rows:
         if "error" in r:
-            body.append((r["name"], "-", "-", "-", "ERROR"))
+            body.append((r["name"], "-", "-", "-", "ERROR", "-"))
         else:
             kinds = ", ".join("%s %d" % kv for kv in sorted(r["linkKinds"].items()))
             body.append((r["name"], str(r["classes"]), str(len(r["translateFailures"])),
                          str(sum(r["linkKinds"].values())) + (" (%s)" % kinds if kinds else ""),
-                         "%d in %d libs" % (count_missing(r), len(r["missingImports"])) if r["nativeLibs"] else "no arm64 libs"))
-    w = [max(len(x[i]) for x in [head] + body) for i in range(5)]
+                         "%d in %d libs" % (count_missing(r), len(r["missingImports"])) if r["nativeLibs"] else "no arm64 libs",
+                         str(len(r["nativeErrors"]))))
+    w = [max(len(x[i]) for x in [head] + body) for i in range(6)]
     lines = ["  ".join(c.ljust(w[i]) for i, c in enumerate(x)).rstrip() for x in [head] + body]
     lines.insert(1, "  ".join("-" * x for x in w))
     return "\n".join(lines)
@@ -210,6 +222,8 @@ def keys(rows):
         k = set()
         k.update("translate %s" % f["class"] for f in r["translateFailures"])
         k.update("link %s %s.%s %s" % (f["kind"], f["class"], f["method"], f["insn"]) for f in r["linkErrors"])
+        k.update("unreadable %s" % e for e in r.get("nativeErrors", []))
+        k.update("link-errors-truncated" for _ in [0] if r.get("linkErrorsTruncated"))
         k.update("import %s %s" % (lib, s) for lib, syms in r["missingImports"].items() for s in syms)
         out[r["name"]] = k
     return out
@@ -229,8 +243,10 @@ def selftest(cp, platform):
             if r.returncode != 0:
                 print("selftest: tool error on %s: %s" % (name, r.stderr.strip()[-300:]))
                 return 1
-            n = len(json.load(open(out))["linkErrors"])
-            ok = (n == 0) if want_errors == 0 else (n > 0)
+            errs = json.load(open(out))["linkErrors"]
+            n = len(errs)
+            # The broken-hierarchy cases must show the very shape of issues 275, 299 and 522, not just any error.
+            ok = (n == 0) if want_errors == 0 else any(e["kind"] == "icce-indirect-super" for e in errs)
             print("selftest %-22s hierarchy=%-6s link errors %d: %s" % (name, mode or "all", n, "ok" if ok else "WRONG"))
             bad += not ok
     return 1 if bad else 0

@@ -11,7 +11,8 @@ scripts/corpus.py [--list FILE] [--cache DIR] [--only NAME[,NAME]] [--json OUT] 
 ```
 
 Needs `scripts/build.sh` (work/apksim.jar, work/lib) first. Downloads (curl, a generic user agent) go to
-`work/corpus/NAME/SHA256.apk`, are checked against the list and are only ever read as ZIP and DEX files, never
+`work/corpus/NAME/SHA256.apk` (https only, 300 MB at most per file; each app's `urls` are tried in order, F-Droid's `/repo/`
+then `/archive/`, where a superseded build moves), are checked against the list and are only ever read as ZIP and DEX files, never
 installed or launched. A full run takes ~1 minute after the downloads (~420 MB).
 
 ## What it checks
@@ -34,25 +35,32 @@ installed or launched. A full run takes ~1 minute after the downloads (~420 MB).
    `bionic_net.c`, `jnigraphics.c`, `alooper.c` on the Mac; `native/linux/bionic_linux.c` on Linux) and no host library
    has (dlsym through ctypes). The loader binds such an import to a stub that logs when it is called
    (`elfloader.c` `missing_stub`), so a symbol here is a crash or a silent no-op at run time only if the app reaches it.
-   The set depends on the OS that runs the check: glibc has `lseek64`, macOS does not.
+   The host half is the Python process's view (`dlsym` through ctypes: libc, libm, libz, libc++ where there is one) plus
+   the shim tables read as text, **not the JVM's**: inside the JVM `dlsym(RTLD_DEFAULT)` also sees libjvm, Conscrypt and
+   apksim's own natives, so a symbol only they define shows as missing here, and the real loader may bind it. The
+   set depends on the OS that runs the check (glibc has `lseek64`, macOS does not); the nightly runs on x86_64 Linux
+   against the APKs' arm64 libraries, using Linux's shim table, so its numbers differ from a Mac's and compare within
+   one OS only (`--fail-on-new` too). A library whose symbol count cannot be read (neither DT_HASH nor DT_GNU_HASH) or
+   that does not parse is an `unreadable libs` finding (the table's last column), not a clean one.
 
-Output: one table (APK, classes, translate failures, link errors, missing imports) and the first findings; `--json` writes
+Output: one table (APK, classes, translate failures, link errors, missing imports, unreadable libs) and the first findings; `--json` writes
 everything (per app: counts, every finding with class, method and instruction, unresolved owners, per library missing
-symbols). Exit 0 whatever was found, 1 on a tool error (no build, a download or hash failure, the Java tool failing),
+symbols; a finding list is capped at 200,000 per app and `linkErrorsTruncated` says when it was). Exit 0 whatever was found, 1 on a tool error (no build, a download or hash failure, the Java tool failing),
 3 when `--fail-on-new BASELINE.json` finds something a previous `--json` file (same OS) lacks.
 
 ## Proof the link check catches the 522 shape
 
-`corpus.py --selftest` runs it on `testapks/translator-fixture` as built (0 link errors in `fixture.dex`,
-`fixture-d8-debug.dex`, `multidex`), then with the translator's hierarchy knowledge taken away
-(`-Dlinkcheck.hierarchy=none`: no super-call retargeting, the translator before #275 and #299; `single`: each class
-sees only its own DEX file, before #522), where it must report `icce-indirect-super`: 2 in each of the first two
+`corpus.py --selftest` (also run by ci.yml's `build` job, a few seconds, no download) runs it on
+`testapks/translator-fixture` as built (0 link errors in `fixture.dex`, `fixture-d8-debug.dex`, `multidex`), then with
+the translator's hierarchy knowledge taken away (`-Dlinkcheck.hierarchy=none`: no super-call retargeting, the
+translator before #275 and #299; `single`: each class sees only its own DEX file, before #522), where it must report
+at least one `icce-indirect-super` (any other error would not do): 2 in each of the first two
 fixtures (`SuperCall$Impl`, `SuperCall2$Impl`) and 1 in `multidex` (`MultiImpl$Impl`, the 522 shape).
 
 ## Adding an app
 
-Choose one with a stack the list lacks, a stable URL (F-Droid's repo folder keeps old versions; one APK per ABI where
-the app splits, take the arm64 one) and a licence that allows reading it. Download it once, `shasum -a 256`, add the
+Choose one with a stack the list lacks, a URL that stays valid for that exact build (F-Droid moves a superseded build from `/repo/` to `/archive/`: list both
+in `urls`, `/repo/` first; one APK per ABI where the app splits, take the arm64 one) and a licence that allows reading it. Download it once, `shasum -a 256`, add the
 entry. Nothing else; the cache is keyed by hash.
 
 ## Findings (apksim at the time of writing, macOS, 2026-11-18)
