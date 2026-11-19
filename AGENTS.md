@@ -419,7 +419,8 @@ Read README.md for results and limits; this file covers how to work on the code.
     started: a shadow on AnimatedVectorDrawable itself made its natives, bound straight to libandroid_runtime, answer
     0. A ProgressBar stops its animation once not visible, so a stopped activity's spinner draws nothing. `settle`
     names what wants a frame when it can (`Host.frameWantedBy`: "a spinning ProgressBar #id at X,Y", else the
-    running animators). Test runs keep Robolectric's behaviour; `-Dapksim.uiVectorAnimations=false` turns it off.
+    running animators). Test runs keep Robolectric's behaviour; `-Dapksim.uiVectorAnimations=false` turns it off (launches cold).
+    `ci-smoke.sh` checks the spinner keeps `settle` from answering.
   - `ShadowRepeatingAnimator`: a ValueAnimator's `INFINITE` repeat count is kept in running instances and with
     `--realtime-clock`, where frames come at vsyncs. Robolectric's shadow makes it 1, so an endless View animation
     stopped after two cycles. Default test runs keep that cap: their unpaused Choreographer would never let the looper
@@ -704,7 +705,7 @@ last call, then what reached the screen per display vsync), `fps` (per-stage cos
 `vsync [PERIOD_US SHIFT_US|off]` (pace to a viewer's display: see `Host`).
 For screenshot tests (docs/snapshots.md): `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]` (answers once nothing is queued,
 dirty or wanting a frame and no main-thread message is due within HORIZON_MS, for QUIET_MS of real time with no frame
-drawn; else `error: not settled ...: REASON`; while the app is in the background (`home`, `lock`, Back on the root launcher activity) nothing draws and either answer ends `(app in background: ...)`: match the `settled`/`error:` prefix, as mcp.py does), `restart [URL]` (every activity destroyed, the start activity (launcher or
+drawn; else `error: not settled ...: REASON` ("a frame is wanted" says what wants it when it can: `: a spinning ProgressBar #id at X,Y`, or `: animators running: ...`); while the app is in the background (`home`, `lock`, Back on the root launcher activity) nothing draws and either answer ends `(app in background: ...)`: match the `settled`/`error:` prefix, as mcp.py does), `restart [URL]` (every activity destroyed, the start activity (launcher or
 `--activity`) or the URL's started fresh: no saved state, ViewModels cleared), `diff GOLDEN ACTUAL [MAP] [DELTA]` (pixels differing by more
 than DELTA, and a difference map), `clock [ISO|epoch-ms|real]` (the app's wall clock starts there and runs on).
 `back` on the last activity finishes it and the process exits a second later (`[apksim] exit 0: the last activity,

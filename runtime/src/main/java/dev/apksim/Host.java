@@ -369,6 +369,7 @@ public class Host {
             }
           }
         }
+        if (settle != null) settle.roots = roots;
         if (settle != null && settle.check(firstFrame ? "no first frame yet" : busy(looper, roots))) settle = null;
         // Nothing to do until a message is due or something arrives: sleep (idleWait) rather than poll every 2 ms.
         boolean still = !firstFrame && settle == null && drag == null && pendingScript.isEmpty()
@@ -409,6 +410,8 @@ public class Host {
     long quietSince;
     long framesAtQuiet;
     String reason = "";
+    /** The windows of the last loop turn, to name what wants a frame when the answer is given. */
+    List<View> roots = List.of();
 
     Settle(Control.Pending p) {
       pending = p;
@@ -435,7 +438,7 @@ public class Host {
       }
       if (now - start > maxNanos) {
         // Nothing was busy, but the quiet window did not fit before MAX_MS: say so rather than an empty reason.
-        String why = !reason.isEmpty() ? reason : "quiet for " + (quietSince == 0 ? 0 : (now - quietSince) / 1_000_000)
+        String why = FRAME_WANTED.equals(reason) ? reason + frameWantedBy(roots) : !reason.isEmpty() ? reason : "quiet for " + (quietSince == 0 ? 0 : (now - quietSince) / 1_000_000)
             + " of " + quietNanos / 1_000_000 + " ms";
         pending.finish("error: not settled after " + (now - start) / 1_000_000 + " ms: " + why
             + (controls.hidden() ? " (app in background: `resume` brings it back)" : ""));
@@ -445,10 +448,12 @@ public class Host {
     }
   }
 
+  private static final String FRAME_WANTED = "a frame is wanted";
+
   /** What keeps the UI from being quiet for a screenshot, or null. */
   private String busy(ShadowLooper looper, List<View> roots) {
     if (!pendingScript.isEmpty() || drag != null) return "input queued";
-    if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) return "a frame is wanted" + frameWantedBy(roots);
+    if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) return FRAME_WANTED;
     // Behind the home screen nothing is drawn (the loop makes no frames), so a window that differs from the last
     // frame's would stay "needing drawing" until a `resume` (issue 489).
     if (!controls.hidden() && needsFrame(roots)) return "a window needs drawing";
@@ -463,7 +468,8 @@ public class Host {
   /**
    * What asks for the next frame, as far as it can be named, for `settle`'s answer: an indeterminate ProgressBar
    * spinning on a shown window, else the running animators (AnimationHandler's callbacks); "" when neither is found
-   * (a View animation, a Scroller, Compose's frame clock). Called only while a `settle` waits.
+   * (a View animation, a Scroller, Compose's frame clock). What is named may be one of several asking. Called once,
+   * when a `settle` gives up.
    */
   private static String frameWantedBy(List<View> roots) {
     StringBuilder spinners = new StringBuilder();
