@@ -600,6 +600,13 @@ Read README.md for results and limits; this file covers how to work on the code.
   `gen-gles-shadows.py` (writes `gl/ShadowSimGLES20/30`), `jdi/Trace.java` and `jdi/Ret.java` (breakpoints and return
   values over JDWP), `translate-class.java` (one class's translation, for javap), `translate-all.java` (every class of
   an APK: time per pass and a hash per class, to profile the translator and check a change leaves output identical),
+  `corpus.py` + `corpus.json` + `link-check.java` (the app corpus, offline half, docs/corpus.md: ten open-source APKs
+  by URL and SHA-256, never run; each class translated, the translated output's every invoke resolved as HotSpot would
+  at its first run (IncompatibleClassChangeError, NoSuchMethodError, IllegalAccessError, AbstractMethodError: the shape
+  of issues 275, 299, 522), and the arm64 libraries' imports no library, shim table or host provides; `--json`,
+  `--fail-on-new BASELINE`, `--selftest` runs the link check on `translator-fixture` with the translator's hierarchy
+  knowledge removed, which must fail; a translator change that adds a shape the fixtures lack should add it there
+  *and* be run through `corpus.py`; `.github/workflows/corpus.yml`, nightly, not required),
   `api-refs.py` (which framework classes, methods and fields apksim.jar uses that another level's android-all jar lacks,
   and which shadow methods stop binding there; docs/api-levels.md),
   `stub-census.sh` (`stub-census.java`; CI's quick checks: `docs/stub-census.tsv`, every native method of the
@@ -636,7 +643,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   documented behaviour here against an emulator, `scripts/conformance.py`: the table per library, causes fixed and left),
   `api-levels.md` (a spike that ran the API 30 framework: how far it got, what broke, what `--api 30` would cost),
   `uiautomator-engine.md` (`--uia engine`: UiAutomator's idle waits, gesture time and accessibility events decided
-  in-process; a prototype), `stub-census.tsv` and `stub-census-registered.txt` (generated: every framework native and what
+  in-process; a prototype), `corpus.md` (the offline app corpus: what it checks, how to add an app, the findings and
+  which are real), `stub-census.tsv` and `stub-census-registered.txt` (generated: every framework native and what
   covers it; `scripts/stub-census.sh`).
 - `.github/workflows/ci.yml`: `build` (the runtime, the test app and the Linux image, once, plus the quick checks),
   then five `linux` legs side by side on that image (`app`, `data`, `replay`, `crawl`, `tests`: `scripts/ci-smoke.sh`
@@ -649,6 +657,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   touches only Markdown, `.txt`, `docs/`, `.claude/`, LICENSE or NOTICE, and `startup-gate` for one that touches
   nothing a packaged Mac launch is built from (only the test app, `docker/`, `native/linux/`, CI's check scripts or
   Python tools; skipped jobs count as passed for the required checks, which a workflow path filter would leave pending).
+  `.github/workflows/corpus.yml`: nightly and by hand, `linux-build` (no test app), `corpus.py --selftest`, then
+  `corpus.py --json` over `scripts/corpus.json`; the report is the artifact. Not required, and green whatever it finds.
 - `testapks/composeapp`: the test app. It has a list, Trips (SQLite rename: "Italian vacation" ↔ "Roman vacation"),
   Settings, and a **Shader** tab, a full-screen unthrottled noise shader used as the 120 fps stress test. It is
   adaptive (material3-adaptive window size classes): below 600 dp of width a bottom bar and a list, from 600 dp a

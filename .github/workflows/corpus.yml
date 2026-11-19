@@ -1,0 +1,54 @@
+# The app corpus, offline half (scripts/corpus.py, docs/corpus.md): every APK of scripts/corpus.json translated, its
+# translated output link-checked and its native imports compared with the loader's shim, nothing launched. Findings are
+# the product, so the job passes whatever it finds; it fails only when the tool does (a build, a download or a hash).
+# Not a required check: it runs nightly and by hand, and the JSON report is the artifact (diff two with --fail-on-new).
+name: corpus
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      only:
+        description: Comma-separated app names (default all)
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  corpus:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/linux-build
+        with:
+          test-app: 'false'
+      # Restore only; the cache is saved after the run, and only when every APK was fetched and verified.
+      - name: Downloaded APKs
+        id: apks
+        uses: actions/cache/restore@v4
+        with:
+          path: work/corpus
+          key: corpus-apks-${{ hashFiles('scripts/corpus.json') }}
+      - name: The check's own proof (translator fixtures)
+        run: python3 scripts/corpus.py --selftest
+      - name: Corpus
+        shell: bash  # -o pipefail: a tool error (download, hash, the Java tool) fails the job through tee
+        env:
+          ONLY: ${{ github.event.inputs.only }}
+        run: |
+          mkdir -p out
+          python3 scripts/corpus.py --json out/corpus.json ${ONLY:+--only "$ONLY"} | tee out/corpus.txt
+      - name: Keep the verified APKs
+        if: success() && steps.apks.outputs.cache-hit != 'true' && github.event.inputs.only == ''
+        uses: actions/cache/save@v4
+        with:
+          path: work/corpus
+          key: corpus-apks-${{ hashFiles('scripts/corpus.json') }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: corpus-report
+          path: out/
+          retention-days: 30
