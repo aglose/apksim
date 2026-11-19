@@ -762,18 +762,25 @@ so a lost chunk leaves its gap and one that arrives after its time is dropped, n
 (`window.apksimAudio()` counts chunks, drops and resyncs). The copy is taken at the track's own volume
 (`AudioTrack.setVolume`), so a ducked or faded track is ducked in the tab too. Browsers start sound only after a click or tap, so the
 "Sound" box is that gesture: the page resumes its `AudioContext` when it is ticked. The `i` message says `"audio":
-"stream"` when the session can stream it (a Mac's instance), else `"off"`. `audio stream off|on` stops and starts the
+"stream"` when the session can stream it (a Mac's or the Linux image's instance), else `"off"` (`--audio off`). `audio stream off|on` stops and starts the
 copying without touching the app, and `on` also starts it in a session that did not ask at its start; `audio mute` still decides what the Mac plays, and the stream carries the sound either way. Viewers
 of a shared session never get sound. Not done: Opus (no encoder is linked, so 48 kHz stereo is ~1.5 Mbit/s before
-Base64; the line format leaves room for a codec field), a per-session switch for viewers, sound from the Linux
-image (its AudioTrack is Robolectric's, which plays nothing and has no output clock), a beam session in a tab (the
+Base64; the line format leaves room for a codec field), a per-session switch for viewers, a beam session in a tab (the
 agent's route is not checked), and a seekable resync beyond dropping late chunks. `scripts/audio-tap-check.py PORT
 CLIP.aac` (an instance) and `scripts/serve-audio-check.py URL APP_ID` (a running serve, with the test app's
 `apksim://media?sample=aac-lc.m4a`) check it; by hand, no CI.
 
+On Linux (issue 545) a track has no sound device: `VirtualOut` is its output, a clock that moves the playback head at the
+track's rate from `play()`, takes writes into the track's buffer and makes a blocking write wait for room, so a
+player paced by the track (ExoPlayer's audio sink) sees the Mac's timing, listener or not, and nothing is played
+locally. `AudioTap` copies the writes as on the Mac, so pages change nothing. Running instances only (test runs keep
+Robolectric's AudioTrack); `--audio off` keeps it too; `-Dapksim.virtualAudio=true` uses it on a Mac, without CoreAudio. The
+image has no AAC or MP3 decoder, so an app's compressed audio still needs one (a clip's PCM, such as WAV, reaches the
+tap; `aac-lc.m4a` stays silent there until a decoder is built in).
+
 ### Not in scope (yet)
 
-- Sound as Opus, sound from a Linux image's AudioTracks (see "Sound"), a mix of viewers' hearing it, the tab's microphone, the Mac's own camera (an app launch option `--camera fake` gives a session the test pattern, and a tab may
+- Sound as Opus, a mix of viewers' hearing it, the tab's microphone, the Mac's own camera (an app launch option `--camera fake` gives a session the test pattern, and a tab may
   send `camera pattern` or `camera off`; never `camera image`, which names a host file), `sysfs /sys/PATH VALUE` and `sysfs clear /sys/PATH` (a hardware state file under `/sys`: a plain path, a value of at most 128 characters), the soft keyboard (a hardware keyboard counts as connected, as in the Mac window), two-finger
   gestures from the browser, file pickers (`pick`), multiple tabs sharing one session.
 - A pool of more than one warm standby (one per apksim folder today, refilled ~2 s after each launch: a second

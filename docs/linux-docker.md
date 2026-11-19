@@ -111,7 +111,7 @@ macOS-only).
 | AGSL shaders | Metal | CPU (correct, slower) |
 | H.264 (WebRTC) | VideoToolbox | None yet (libwebrtc's own software codecs only) |
 | MediaCodec video | VideoToolbox: H.264, HEVC | libavcodec, software, one thread per codec: H.264; HEVC only in an image built with it (see "Video" below) |
-| MediaCodec audio (AAC, MP3), AudioTrack | AudioToolbox, CoreAudio | None yet: a player plays a clip's picture without its sound |
+| MediaCodec audio (AAC, MP3), AudioTrack | AudioToolbox, CoreAudio | None for decoders: a player plays a clip's picture without its sound. AudioTrack: a virtual clock (`VirtualOut`) that times writes and feeds serve's sound tap, nothing played |
 | GLES (test runs, offscreen) | ANGLE on Metal | Mesa llvmpipe (software), EGL's surfaceless platform (`EGL_PLATFORM=surfaceless`): pbuffers; a window surface is a pbuffer of its size, as on the Mac |
 | App native code | `lib/arm64-v8a` | `lib/x86_64` on amd64, `lib/arm64-v8a` on arm64 (most APKs ship both); 4 KB-aligned libraries load too |
 | Sandbox | `sandbox-exec` | The container |
@@ -156,7 +156,7 @@ Not measured: a Linux host, 4K. The image is about 3 to 4 MB bigger for it (`lib
 ExoPlayer plays the Settings tab's HEVC clip to its end.
 
 Limits: a stream whose decoder holds back more than five pictures loses the ones past that at its very end (the Mac
-has the same limit); no sound (no AAC or MP3 decoder, no audio output); libwebrtc's H.264 is not hooked up, so WebRTC
+has the same limit); no local sound (no AAC or MP3 decoder, no audio output; an AudioTrack's PCM still reaches a serve tab); libwebrtc's H.264 is not hooked up, so WebRTC
 video uses whatever software codecs the APK's libwebrtc has; VP9 only in an image built with `VIDEO_DECODERS=h264,vp9` (the published one logs `no decoder here` at start), no AV1. `--video blank|off` work as on the Mac.
 
 ## Measured (M4 Pro, Colima 4 vCPU)

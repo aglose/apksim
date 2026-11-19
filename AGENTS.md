@@ -411,9 +411,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     `limited`: one command, only `am start`, `am broadcast` and `settings get|put` and `cat` of one file in the app's own folders (issue 408) for the app's own package
     (`TabShell.refusal`; anything else is status 126); `full` (a beamed session that asked for adb while its Mac's owner allows
     it, `allow-adb on`, read at each use): the whole shell, nothing streaming, a minute at most. Only the server sends it: it is not a command a tab may type.
+  - `video/VirtualOut`: see `AudioTap` below.
   - `video/AudioTap` (`audiowatch`, issue 532): the app's AudioTrack output as 16-bit PCM `u PRESENTED_US TRACK RATE
     CHANNELS BASE64` lines for a serve tab that asked (`/ws?audio=stream`, `Session.watchAudio`; docs/serve.md "Sound";
-    `scripts/audio-tap-check.py`, `serve-audio-check.py`). Mac only (the Linux image's AudioTrack plays nothing).
+    `scripts/audio-tap-check.py`, `serve-audio-check.py`). On the Linux image the tracks run on `video/VirtualOut`, a clock with no sound device (issue 545): the head moves at the track's rate from `play()`, writes take what fits the buffer and a blocking one waits for room, so the tap and a player's pacing see the Mac's timing; running instances only (test runs and `--audio off` keep Robolectric's); `-Dapksim.virtualAudio=true` uses it on a Mac; `scripts/check-virtual-out.sh` (CI). The image has no AAC/MP3 decoder, so only PCM the app writes reaches the tap.
   - `TabFiles`: `devpush DEVICE_PATH BASE64`, a file a browser tab sent (`apksim serve` and `beam`, issue 187), written
     where `adb push` could write it (the app's `files/`, `cache/`, `shared_prefs/`, `databases/`, `/sdcard`,
     `/data/local/tmp`) and moved into place whole. Only the server sends it: it is not a command a tab may type.
@@ -1333,7 +1334,7 @@ every picture): a 640x360 clip in a 1600x900 view had Skia's upscale at ~40% of 
 `apksim://bitmaps?video=1` on `--device tablet`; `-Dapksim.videoAtViewSize=false` keeps the picture's size when
 smaller); audio ones
 carry 16-bit PCM. `ShadowSimAudioTrack` plays AudioTrack PCM (16-bit, 8-bit, float) on the Mac's default output
-through a CoreAudio AudioUnit, and its playback head moves only as frames are played: Robolectric's counts everything
+through a CoreAudio AudioUnit (on Linux a `VirtualOut` clock, nothing played), and its playback head moves only as frames are played: Robolectric's counts everything
 written as played at once, which would let ExoPlayer's audio clock race. `--jvm -Dapksim.mute=true` keeps the timing
 and plays silence; `--audio off` turns sound and the audio decoders off (`--audio mute`, `--jvm -Dapksim.mute=true` and
 `-Dapksim.audio=false` still work). `--video blank|off` and `video on|blank`: see "Per-instance costs". Bitmaps here are BGRA in memory (Skia's macOS order),

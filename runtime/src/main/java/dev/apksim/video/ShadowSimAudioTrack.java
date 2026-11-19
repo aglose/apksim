@@ -14,7 +14,8 @@ import org.robolectric.util.ReflectionHelpers;
  * AudioTrack that plays: PCM goes to the Mac's default output (native/audio.m) and the playback head moves only as
  * CoreAudio plays it. Robolectric's own AudioTrack counts everything written as played at once, so a media player
  * that follows the audio clock (ExoPlayer does) would race through its content. Non-PCM encodings, and hosts
- * without {@link SimAudio}, keep Robolectric's behaviour.
+ * without {@link SimAudio} keep Robolectric's behaviour, except running instances on a host with no sound device,
+ * whose tracks run on a {@link VirtualOut} clock (issue 545).
  */
 @Implements(AudioTrack.class)
 public class ShadowSimAudioTrack extends ShadowAudioTrack {
@@ -35,29 +36,48 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
   private final int trackId = NEXT_ID.incrementAndGet();
   private static final java.util.concurrent.atomic.AtomicInteger NEXT_ID = new java.util.concurrent.atomic.AtomicInteger();
   private ByteBuffer tapScratch;
+  /** Set for a track with no sound device (the Linux image): its head is a clock, {@link VirtualOut}. [out] is then 1. */
+  private VirtualOut virt;
+
+  /**
+   * Whether tracks here get a virtual output (issue 545): hosts with no sound device, in running instances (test runs
+   * keep Robolectric's, which plays all at once), unless --audio off. {@code -Dapksim.virtualAudio=true} forces it
+   * on any host, to check it where a sound device exists.
+   */
+  static boolean virtualOutput() {
+    if (dev.apksim.Features.audio() == dev.apksim.Features.Audio.OFF || System.getProperty("apksim.instrument") != null) return false;
+    return Boolean.getBoolean("apksim.virtualAudio") || !dev.apksim.HostOs.MAC;
+  }
 
   /** The CoreAudio stream, made on first use, or 0 when this track stays with Robolectric. */
   private long out() {
     if (tried) return out;
     tried = true;
     int encoding = real.getAudioFormat();
-    if (!SimAudio.available() || (encoding != AudioFormat.ENCODING_PCM_16BIT && encoding != AudioFormat.ENCODING_PCM_8BIT
+    boolean virtual = virtualOutput();
+    if (!virtual && !SimAudio.available() || (encoding != AudioFormat.ENCODING_PCM_16BIT && encoding != AudioFormat.ENCODING_PCM_8BIT
         && encoding != AudioFormat.ENCODING_PCM_FLOAT)) {
       return 0;
     }
     this.encoding = encoding;
     int channels = real.getChannelCount();
     int bufferBytes = ReflectionHelpers.getField(real, "mNativeBufferSizeInBytes");
-    out = SimAudio.nativeOutCreate(real.getSampleRate(), channels, encoding, bufferBytes);
+    int bytesPerFrame = channels * (encoding == AudioFormat.ENCODING_PCM_FLOAT ? 4 : encoding == AudioFormat.ENCODING_PCM_8BIT ? 1 : 2);
+    if (virtual) {
+      virt = new VirtualOut(real.getSampleRate(), bytesPerFrame, bufferBytes);
+      out = 1;
+    } else {
+      out = SimAudio.nativeOutCreate(real.getSampleRate(), channels, encoding, bufferBytes);
+    }
     if (out == 0) {
       System.err.println("[apksim] CoreAudio refused an AudioTrack (" + real.getSampleRate() + " Hz, " + channels + " ch); it plays silently");
       return 0;
     }
-    frameBytes = channels * (encoding == AudioFormat.ENCODING_PCM_FLOAT ? 4 : encoding == AudioFormat.ENCODING_PCM_8BIT ? 1 : 2);
+    frameBytes = bytesPerFrame;
     // Registered before the mute state is read, all under [lock]: a concurrent `audio mute` either finds this track
     // (and waits for the lock) or ran before the read below, which then sees it.
     SimAudio.track(this, true);
-    SimAudio.nativeOutVolume(out, volume, SimAudio.muted());
+    oVolume(out, volume);
     STATS.incrementAndGet(0);
     return out;
   }
@@ -77,6 +97,31 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
     }
   }
 
+  // The stream's calls, to CoreAudio or to the virtual clock.
+  private int oWrite(long o, ByteBuffer direct, int offset, int bytes, boolean blocking) {
+    return virt != null ? virt.write(bytes / frameBytes, blocking) * frameBytes : SimAudio.nativeOutWrite(o, direct, offset, bytes, blocking);
+  }
+
+  private void oPlay(long o, boolean on) {
+    if (virt != null) virt.play(on); else SimAudio.nativeOutPlay(o, on);
+  }
+
+  private void oFlush(long o) {
+    if (virt != null) virt.flush(); else SimAudio.nativeOutFlush(o);
+  }
+
+  private long oPlayed(long o) {
+    return virt != null ? virt.played() : SimAudio.nativeOutPlayed(o);
+  }
+
+  private long oPending(long o) {
+    return virt != null ? virt.pending() : SimAudio.nativeOutPending(o);
+  }
+
+  private void oVolume(long o, float v) {
+    if (virt == null) SimAudio.nativeOutVolume(o, v, SimAudio.muted());
+  }
+
   private ByteBuffer scratch(int bytes) {
     if (scratch == null || scratch.capacity() < bytes) scratch = ByteBuffer.allocateDirect(Math.max(bytes, 1 << 16)).order(ByteOrder.nativeOrder());
     scratch.clear();
@@ -86,9 +131,9 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
   /** Writes bytes already in a direct buffer to stream [o] (taken with use()); returns the bytes taken. */
   private int write(long o, ByteBuffer direct, int offset, int bytes, boolean blocking) {
     boolean tap = AudioTap.wanted();  // muted or not: a tab hears what the Mac would play
-    long queued = tap ? SimAudio.nativeOutPending(o) : 0;  // before the write: what plays ahead of it
+    long queued = tap ? oPending(o) : 0;  // before the write: what plays ahead of it
     long at = tap ? System.currentTimeMillis() * 1000L : 0;  // before a write that may block for room
-    int n = SimAudio.nativeOutWrite(o, direct, offset, bytes - bytes % frameBytes, blocking);
+    int n = oWrite(o, direct, offset, bytes - bytes % frameBytes, blocking);
     STATS.addAndGet(1, n / frameBytes);
     if (tap && n > 0) tap(direct, offset, n, queued, at);
     return n;
@@ -183,7 +228,7 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
   @Implementation
   protected void native_start() {
     synchronized (lock) {
-      if (out() != 0) SimAudio.nativeOutPlay(out, true);
+      if (out() != 0) oPlay(out, true);
     }
   }
 
@@ -197,7 +242,7 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
   @Implementation
   protected void native_pause() {
     synchronized (lock) {
-      if (out() != 0) SimAudio.nativeOutPlay(out, false);
+      if (out() != 0) oPlay(out, false);
     }
   }
 
@@ -208,7 +253,7 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
   @Implementation
   protected void native_flush() {
     synchronized (lock) {
-      if (out() != 0) SimAudio.nativeOutFlush(out);
+      if (out() != 0) oFlush(out);
     }
   }
 
@@ -225,7 +270,7 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
     long o = use();
     if (o == 0) return super.getPlaybackHeadPosition();
     try {
-      return (int) SimAudio.nativeOutPlayed(o);
+      return (int) oPlayed(o);
     } finally {
       done();
     }
@@ -238,7 +283,7 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
     if (o == 0) return AudioTrack.ERROR;
     long played;
     try {
-      played = SimAudio.nativeOutPlayed(o);
+      played = oPlayed(o);
     } finally {
       done();
     }
@@ -251,7 +296,7 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
   /** Applies the mute state in force to this track's stream, if it has one. */
   void remute() {
     synchronized (lock) {
-      if (out != 0) SimAudio.nativeOutVolume(out, volume, SimAudio.muted());
+      if (out != 0) oVolume(out, volume);
     }
   }
 
@@ -261,7 +306,7 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
     // `audio mute` has updated the stream (release clears [out] under the same lock).
     synchronized (lock) {
       volume = Math.max(left, right);
-      if (out() != 0) SimAudio.nativeOutVolume(out, volume, SimAudio.muted());
+      if (out() != 0) oVolume(out, volume);
     }
   }
 
@@ -278,7 +323,7 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
       if (o == 0) return;
       out = 0;
       SimAudio.track(this, false);
-      SimAudio.nativeOutPlay(o, false);
+      oPlay(o, false);
     }
     synchronized (lock) {
       boolean interrupted = false;
@@ -291,8 +336,13 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
       }
       if (interrupted) Thread.currentThread().interrupt();
     }
-    STATS.addAndGet(2, SimAudio.nativeOutUnderruns(o));
-    SimAudio.nativeOutRelease(o);
+    if (virt != null) {
+      STATS.addAndGet(2, virt.underruns());
+      virt.close();
+    } else {
+      STATS.addAndGet(2, SimAudio.nativeOutUnderruns(o));
+      SimAudio.nativeOutRelease(o);
+    }
   }
 
   @Implementation
