@@ -571,7 +571,12 @@ Read README.md for results and limits; this file covers how to work on the code.
   image built with it: the HEVC clip and the Settings clip; CI runs it in both Linux
   images from `ci-smoke.sh`), `swipe-check.py` (a timed swipe flings, a held press does not scroll; `ci-smoke.sh`), `timer-check.py` (app timers
   against real time and onUserInteraction per input path, on the test app's `apksim://timer`), `idle-zoo-check.py` (`settle` against each source of "the app still has work" on `apksim://idle-zoo`, alone and in combinations, known failures in `idle-zoo-known.txt`; also against `--max-fps 10` with `--tag maxfps10`; by hand, not in CI), `bundle-check.py` (failure
-  bundles, see "Instrumentation tests"), `beam-check.py` (`apksim beam` and
+  bundles, see "Instrumentation tests"), `observer-gate.py` (a suite run plain and with every observer on, bundles
+  of all tests, movies, the flight recorder's net and db channels and coverage, compared test by test: same tests, same
+  outcomes, observed wall time within a factor (3); `--compare` runs the comparison on two XMLs; CI's `tests` leg runs it on a
+  subset: the UI-heavy classes and the FailureBundle* ones, run with `-e failOnPurpose true`; the whole test app's suite
+  is 488 tests, 64 s plain on the Mac, and passes the gate),
+  `beam-check.py` (`apksim beam` and
   `serve --allow-beam` started and driven as a page would, docs/beam.md), `beam-parity.py` (the app in its window
   against the same app beamed into Chrome, same input: new frames per display refresh, fps, CPU, latency),
   `beam-page-check.py` (the page's start on this Mac in Chrome: Stop while the agent has not answered, a full agent's
@@ -635,7 +640,7 @@ Read README.md for results and limits; this file covers how to work on the code.
   covers it; `scripts/stub-census.sh`).
 - `.github/workflows/ci.yml`: `build` (the runtime, the test app and the Linux image, once, plus the quick checks),
   then five `linux` legs side by side on that image (`app`, `data`, `replay`, `crawl`, `tests`: `scripts/ci-smoke.sh`
-  split by `SMOKE_PARTS`, the androidTest runs, affected-check), and `linux-smoke`, the check every pull request must
+  split by `SMOKE_PARTS`, the androidTest runs, affected-check, the observer gate on a subset of UI-heavy classes), and `linux-smoke`, the check every pull request must
   pass (see "Git and pull requests"), which passes when they all did; ~15 min where one runner took ~38. Add a new
   image check to the leg whose time it fits (each is ~5-8 min; the crawler's alone is ~7).
   `linux-smoke-arm64` (the arm64 image on an arm64 runner, with the test APKs `build` makes; on pull requests only
@@ -1724,7 +1729,7 @@ unfinished (index-less) AVI.
 `[[ATTACHMENT|...]]` in `system-out`) and writes `DIR/index.html`; with `--apksim` it reads them from
 `--bundles-local`. The sandbox allows writes to DIR. As root (the image) the folders are made writable by everyone,
 for the host's `instrument.py`. `scripts/bundle-check.py` (CI) checks it with the test app's `FailureBundle*Test`
-classes, which fail only with `-e failOnPurpose true` (`watchdog` for the one that ends the process). Two things this needed in `SimRunner`: one shared injector (so one sandbox: a second
+classes, which fail only with `-e failOnPurpose true` (`watchdog` for the one that ends the process). `scripts/observer-gate.py` (CI) runs a suite plain and with every observer on (bundles of all tests, movies, `--rec net,db`, coverage) and fails when a test's outcome or the set of tests differs: an observer must never change what it observes. Two things this needed in `SimRunner`: one shared injector (so one sandbox: a second
 sandbox brought a second main thread to a main Looper already bound to the first), and `SimTestEnvironment`, whose
 reset between tests asks the JVM's loader which classes are loaded (Robolectric casts its own loader to
 `ClassTracker`, which `FlatLoader` bypasses). Every test runs on API 36 whatever the APK targets (`SimRunner.OneSdk`:
