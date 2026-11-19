@@ -243,6 +243,15 @@ Read README.md for results and limits; this file covers how to work on the code.
     cleaned where apksim reports them (`StackTraces`: crashes, test failures, bundles); one the app prints itself shows
     `$$robo$$` frames. `-Dapksim.directCallSites=false` is Robolectric's binding (docs/perf-plan.md, B1).
     `scripts/check-call-sites.sh` (CI) checks re-binding and a binding racing an invalidation (`CallSiteCheck`).
+    The gap tripwire (`Gaps`): a site bound with no shadow whose method is native (`bindCallSite`: Robolectric's
+    handler found none and `isNative`) runs the instrumenter's default body (0/false/null), the class of bug behind
+    issue 514 (Visualizer). Only those sites get a counting handle in front (`foldArguments`, one `AtomicLong` per
+    "Class.method(desc)"); every other site is bound as before. `gaps` (control, `adb shell apksim gaps`, `executeShellCommand("apksim gaps")`)
+    lists them, most called first, one per line (joined `; `); `Exits.log` (every exit, crashes too) adds `[apksim] gaps: N unshadowed
+    framework natives called: A xN, ... (apksim gaps)` when N > 0; `AppInfo.load` resets the counts per launch.
+    Step one only: the list includes natives that are harmless as defaults (the test app after start: 43, e.g.
+    `Trace.nativeIsTagEnabled`, `Binder.*`, `SurfaceControl.*`; no allow-list yet). `-Dapksim.gaps=false` (cold launches:
+    a standby has read it) binds them plainly; `CallSiteCheck` covers it.
   - `org.robolectric.android.controller.ActivityController` (apksim's copy of Robolectric 4.17's, ahead of it on the
     class path): a configuration change that recreates an activity no longer calls `System.gc()` in a running
     instance. Robolectric collects there after destroying the old activity (its activities share one base context, and

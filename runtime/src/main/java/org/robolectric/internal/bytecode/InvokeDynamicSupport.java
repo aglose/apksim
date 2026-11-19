@@ -132,6 +132,10 @@ public class InvokeDynamicSupport {
         site.isStatic(), site.isNative());
     if (mh == null) {
       mh = site.getOriginal();
+      // A native with no shadow runs Robolectric's default body: counted (dev.apksim.Gaps), the one binding that is.
+      if (site.isNative() && dev.apksim.Gaps.ON) {
+        mh = dev.apksim.Gaps.count(site.getTheClass(), site.getName(), site.type(), site.isStatic(), mh);
+      }
     } else if (!site.isStatic()) {
       Class<?> shadowType = mh.type().parameterType(0);
       if (!shadowType.equals(site.getTheClass())) {

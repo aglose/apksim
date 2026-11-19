@@ -1929,6 +1929,9 @@ final class AdbShell {
       case "compat" -> {
         return CompatTable.report(a.length > 1 && a[1].equals("all"));
       }
+      case "gaps" -> {
+        return Gaps.report();
+      }
       case "health" -> {
         return dev.apksim.health.Health.command(a);  // until the next test's setup, which starts from --health again
       }

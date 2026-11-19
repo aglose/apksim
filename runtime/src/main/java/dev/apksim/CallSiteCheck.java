@@ -33,6 +33,15 @@ public final class CallSiteCheck {
     public static String shout() {
       return "original-shout";
     }
+
+    /** A native without a shadow, as the instrumenter leaves it: a body that answers the default. */
+    public String nat(int x) {
+      return null;
+    }
+
+    public static int snat() {
+      return 0;
+    }
   }
 
   /** Another class, whose sites an invalidation of Target must leave alone. */
@@ -92,6 +101,7 @@ public final class CallSiteCheck {
     @Override
     public MethodHandle findShadowMethodHandle(Class<?> theClass, String name, MethodType type, boolean isStatic,
         boolean isNative) {
+      if (name.equals("nat") || name.equals("snat")) return null;  // no shadow
       String seen = config;
       MethodHandle mh = theClass == Other.class ? find("other" + seen, MethodType.methodType(String.class, Other.class))
           : isStatic ? find("shout" + seen, MethodType.methodType(String.class))
@@ -217,6 +227,29 @@ public final class CallSiteCheck {
     handler.config = "A";
     invalidator.invalidateClasses(List.of(Target.class.getName()));
     expect("and is invalidated with its class afterwards", (String) raced[0].dynamicInvoker().invokeExact(t), "A-hello");
+
+    // The gap tripwire: a native with no shadow is counted; the same method not marked native is not.
+    MethodHandles.Lookup in = MethodHandles.privateLookupIn(Target.class, MethodHandles.lookup());
+    MethodType natType = MethodType.methodType(String.class, Target.class, int.class);
+    MethodHandle natOriginal = in.findVirtual(Target.class, "nat", MethodType.methodType(String.class, int.class));
+    CallSite nat = InvokeDynamicSupport.bootstrap(in, "nat", natType, natOriginal, 1);
+    CallSite snat = InvokeDynamicSupport.bootstrapStatic(in, "snat", MethodType.methodType(int.class),
+        in.findStatic(Target.class, "snat", MethodType.methodType(int.class)), 1);
+    CallSite plain = InvokeDynamicSupport.bootstrap(in, "nat", natType, natOriginal, 0);
+    Gaps.reset();
+    expect("an unshadowed native answers its default body", (String) nat.dynamicInvoker().invokeExact(t, 5) == null, true);
+    String ignored = (String) nat.dynamicInvoker().invokeExact(t, 6);
+    expect("a static one too", (int) snat.dynamicInvoker().invokeExact(), 0);
+    ignored = (String) plain.dynamicInvoker().invokeExact(t, 7);
+    String gaps = Gaps.report();
+    System.out.println(gaps);
+    String cls = Target.class.getName();
+    expect("gaps names the instance native, twice", gaps.contains(cls + ".nat(I)Ljava/lang/String;: x2"), true);
+    expect("gaps names the static native, once", gaps.contains(cls + ".snat()I: x1"), true);
+    expect("most called first", gaps.indexOf(".nat(") < gaps.indexOf(".snat("), true);
+    expect("the exit line", String.valueOf(Gaps.exitLine()).startsWith("[apksim] gaps: 2 unshadowed framework natives called: "), true);
+    Gaps.reset();
+    expect("reset forgets the counts", Gaps.report().startsWith("no unshadowed"), true);
 
     System.out.println(failures == 0 ? "call sites: all checks pass" : "call sites: " + failures + " failed");
     System.exit(failures == 0 ? 0 : 1);

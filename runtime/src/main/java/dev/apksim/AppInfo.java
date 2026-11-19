@@ -74,6 +74,7 @@ final class AppInfo {
     int target = usesSdk(doc, "targetSdkVersion");
     if (target <= 0) target = usesSdk(doc, "minSdkVersion");  // no target: the minimum, else 1
     CompatTable.configure(pkg, target > 0 ? target : 1);
+    Gaps.reset();
     if (launcher != null) System.setProperty("apksim.launcher", fullName(pkg, launcher.getAttribute(NS + "name")));
     StringBuilder aliases = new StringBuilder(",");
     for (Map.Entry<String, Element> e : activities.entrySet()) {
