@@ -588,10 +588,13 @@ final class Session {
 
   /**
    * What the `i` message says of sound: "stream" where this session's tab can have it (asked for with `audio=stream`
-   * at the start, or later with `audio stream on`), "off" where the instance has no sound to copy (not a Mac).
+   * at the start, or later with `audio stream on`), "off" where the app was launched with `--audio off`.
    */
   String audioStreamState() {
-    return System.getProperty("os.name", "").startsWith("Mac") ? "stream" : "off";
+    // A Mac's tracks play on CoreAudio, the Linux image's run on a virtual clock (issue 545): both are copied. Not with --audio off.
+    List<String> l = app.launch();
+    int i = l.indexOf("--audio");
+    return i >= 0 && i + 1 < l.size() && l.get(i + 1).equals("off") ? "off" : "stream";
   }
 
   /**
