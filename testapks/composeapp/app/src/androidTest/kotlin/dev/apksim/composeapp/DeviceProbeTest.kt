@@ -34,7 +34,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * The device-difference probe (docs/conformance.md "Device-difference probe"): about two hundred simple framework getters
+ * The device-difference probe (docs/conformance.md "Device-difference probe"): about 300 values (295) from simple framework getters
  * an app commonly reads, each normalised to a class of value (`>0`, `non-null`, `1..100`, a boolean) so that two devices
  * agree and the table is about behaviour, not about one emulator. A getter that throws records `EXCEPTION:ClassName`.
  * Prints one `probe.KEY=VALUE` line per observation as instrumentation status and on stdout, as `Target28Test#probe` does,

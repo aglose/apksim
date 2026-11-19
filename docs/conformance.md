@@ -387,6 +387,7 @@ KeyguardManager, ActivityManager, UiModeManager, locale, accessibility, notifica
   by design), for a known one whose value moved and for a known one that no longer differs, so a fix removes its line. A reason
   starting `linux:` or `mac:` binds a line to one OS (none today: the Mac and the Linux image gave the same 117). CI's `tests`
   leg runs it against the image (16 s under Rosetta).
+- The check expects the host to have a network interface: the `conn.*` and `wifi.*` keys come from the host's networks.
 - A new probe: add it to the test, regenerate the table on an emulator, run the check and classify what it shows.
 
 Today, in a test run: 117 of 295 differ, 73 of them (a). Not fixed here, recorded.

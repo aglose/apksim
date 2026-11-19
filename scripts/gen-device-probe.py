@@ -3,7 +3,9 @@
 
 One line per probed value, KEY and VALUE tab separated, sorted by KEY so a regeneration diffs cleanly. Values are
 already normalised by the test (`>0`, `non-null`, `1..100`, a boolean, `EXCEPTION:ClassName`), so the table says what a
-device of this API level does, not which device it was. Installs nothing: install the test app and its test APK first
+device of this API level does, not which device it was.
+Generate it from a freshly booted, idle emulator on AC power with the test app freshly installed (notifications permission
+untouched): `battery.charging`, `conn.defaultNetworkActive`, `notif.enabled`, `power.*` and the battery health depend on its state. Installs nothing: install the test app and its test APK first
 (`adb -s SERIAL install -r app-debug.apk app-debug-androidTest.apk`) and uninstall them afterwards.
 
   scripts/gen-device-probe.py [-s SERIAL] [--from FILE] [-o OUT]
