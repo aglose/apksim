@@ -15,9 +15,10 @@ produce its XML.
 Six bugs were an observer changing what it observed (failure bundles: issue 73, test movies: 144, 197 and 360, a
 descriptor a listener leaked: 115); this is the check that finds the next one. Everything after -- goes to
 instrument.py for both runs, so give it the suite's usual arguments (-e class ..., -e timezone ..., and its own --
-APKSIM_OPTS). OUT (default work/observer-gate) is emptied first and gets plain.xml, observed.xml and the observers'
+APKSIM_OPTS). OUT (default work/observer-gate) gets plain.xml, observed.xml and the observers'
 output. With --apksim (the Linux image), OUT is as the container sees it (a folder mounted into it) and --local is
-that folder as seen here (as bundle-check.py).
+that folder as seen here (as bundle-check.py); the XMLs are written by instrument.py on this side.
+Only plain.xml, observed.xml, bundles/, movies/ and coverage/ in it are removed first.
 """
 import argparse, os, shutil, subprocess, sys, time
 import xml.etree.ElementTree as ET
@@ -108,8 +109,12 @@ def main():
     if a.apksim and not a.local:
         p.error("--apksim needs --local: OUT as seen from here")
     here = a.local if a.apksim else a.out
-    shutil.rmtree(here, ignore_errors=True)
-    os.makedirs(here)
+    os.makedirs(here, exist_ok=True)
+    for name in ("plain.xml", "observed.xml"):  # only what this script writes: OUT may be a folder with other things in it
+        if os.path.exists(os.path.join(here, name)):
+            os.remove(os.path.join(here, name))
+    for name in ("bundles", "movies", "coverage"):
+        shutil.rmtree(os.path.join(here, name), ignore_errors=True)
     inst = [sys.executable, os.path.join(ROOT, "scripts/instrument.py"), a.app, a.test]
     if a.apksim:
         inst += ["--apksim", a.apksim]
@@ -117,8 +122,8 @@ def main():
     own, passthrough = (rest[:rest.index("--")], rest[rest.index("--") + 1:]) if "--" in rest else (rest, [])
     d = lambda name: os.path.join(a.out, name)       # as apksim sees it
     l = lambda name: os.path.join(here, name)        # as this script does
-    plain_cmd = inst + own + ["--xml", d("plain.xml")] + (["--"] + passthrough if passthrough else [])
-    obs = ["--xml", d("observed.xml"), "--bundles", d("bundles"), "--record", "all", "--record-dir", d("movies"),
+    plain_cmd = inst + own + ["--xml", l("plain.xml")] + (["--"] + passthrough if passthrough else [])
+    obs = ["--xml", l("observed.xml"), "--bundles", d("bundles"), "--record", "all", "--record-dir", d("movies"),
            "--record-format", a.record_format]
     if a.apksim:
         obs += ["--bundles-local", l("bundles"), "--record-local", l("movies")]
