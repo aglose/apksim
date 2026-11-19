@@ -16,8 +16,9 @@ STATE = os.environ.get("APKSIM_HOME") or (
 MODERN, LEGACY = "2026-07-28", ["2025-11-25", "2025-06-18"]
 SERVER_INFO = {"name": "apksim", "title": "apksim", "version": "1"}
 
-# Launch options an agent may pass: the same as serve's Catalog.LAUNCH_OPTIONS (nothing that names files, ports or the
-# JVM) and its flags. --sdcard-file takes inline contents only.
+# Launch options an agent may pass (nothing that names files, ports or the JVM), and flags. Not the same list as serve's
+# Catalog.LAUNCH_OPTIONS: scripts/launch-options.tsv says what each surface takes and why, checked by
+# scripts/check-launch-options.py. --sdcard-file takes inline contents only.
 LAUNCH_OPTIONS = {"--activity", "--build", "--setting", "--feature", "--timezone", "--clock", "--anim-scale", "--serial",
                   "--bluetooth", "--status-bar", "--nav-bar", "--max-fps", "--video", "--audio", "--biometrics", "--camera",
                   "--network-profile", "--device", "--sdcard-file", "--appearance", "--locale", "--font-scale",

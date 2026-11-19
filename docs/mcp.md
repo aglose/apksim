@@ -63,7 +63,8 @@ nav item or list row is one line; more than 30 changes end with a pointer to `no
 ## Safety
 
 - The sandbox stays on: instances are ordinary launches. `launch` options come from an allow-list (the options of
-  `serve`'s catalogue, `--appearance`, `--locale`, `--font-scale`, `--permissions`, `--soft-keyboard`); `--jvm`,
+  `serve`'s catalogue less some it lacks, plus `--appearance`, `--locale`, `--font-scale`, `--permissions`; the
+  per-option list is `scripts/launch-options.tsv`); `--jvm`,
   `--adb`, `--control-bind`, file options and the rest are refused. No raw control commands pass through (`shot FILE`,
   `record`, `rec save FILE` write paths); every tool builds its own command from validated values.
 - Files: the APK is read from `--apps`, the server writes under `--out` only, with names checked against

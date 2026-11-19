@@ -43,6 +43,8 @@ final class Catalog {
    * The launch options an app may carry (catalog lines, URL adds): what an app needs to start (an activity, Build
    * fields, Settings seeds, features...). Never options that read or write files, open ports or change the JVM
    * (`--jvm`, `--network record`, `--adb`, `--no-sandbox`, ...). Each takes one value, except the flags below.
+   * Other surfaces' lists differ (the MCP server's, the beam agent's own additions): scripts/launch-options.tsv, checked
+   * by scripts/check-launch-options.py, records each option for each surface.
    */
   static final Set<String> LAUNCH_OPTIONS = Set.of("--activity", "--build", "--setting", "--feature", "--timezone",
       "--clock", "--anim-scale", "--serial", "--bluetooth", "--status-bar", "--nav-bar", "--max-fps", "--video",

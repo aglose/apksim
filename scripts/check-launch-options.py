@@ -5,11 +5,18 @@ The lists live apart: the launcher `apksim` (its option parsing), serve's `Catal
 agent takes the same list, adding a few options itself), and `scripts/mcp.py`'s allow-list. Four past issues (161, 393,
 422, 429) were an option the command line took and a surface could not pass, found when someone needed it.
 `scripts/launch-options.tsv` has one row per launcher option and a cell per surface:
-  yes          the surface accepts it from a user (serve and beam: a catalog line, URL add or start; mcp: `options`)
-  server-only  the surface passes it to the instance itself and a user cannot name it
+  yes          the surface accepts it from a user (serve and beam: a catalog line, URL add or start, or a session option
+               for --appearance/--locale/--font-scale/--permissions; mcp: `options`)
+  server-only  the server adds it itself; a page cannot name it
   no: REASON   a deliberate refusal (touches files, ports or the JVM, ...); `no: undecided` is a gap nobody ruled on
 `scripts/launch-options-undecided.txt` lists the undecided cells known today ("OPTION SURFACE" per line); a new one
 fails the check, so a new option is decided where it is added. Fix a failure by editing the file the message names.
+serve and beam are separate surfaces. They share Catalog's list and Session.java's launch code, so what the server adds is
+found by line (a literal on a line with `.add(`, `.addAll(`, `.append(` or `cmd =`), and the few adds that sit in a
+`serve.beam` or `!serve.beam` branch are named in ONLY_SERVE/ONLY_BEAM below with the line they come from. Because adds
+are found by line, a conditional add on another line than its literal, or a literal split over lines, is not seen: a
+refactor may need a table or exceptions edit. An option in Catalog's or mcp.py's sets that the launcher does not parse
+(a typo) fails too.
 Usage: scripts/check-launch-options.py [--list]   (--list prints what each source accepts)
 """
 import os
@@ -97,6 +104,20 @@ def mcp_sets(launcher):
     return allowed, added_literals(text[a:b], launcher)
 
 
+# Session.java's adds that only one of serve and beam makes (a `serve.beam` branch), by the line they are on today.
+ONLY_SERVE = {"--headless",        # ~422: `serve.beam ? --window hidden : --headless`
+              "--rec-window",      # ~440: `serve.allowRec && !serve.beam`
+              "--rec-crash-dir"}   # ~456: `if (!serve.beam)`
+ONLY_BEAM = {"--window",           # ~422
+             "--jvm",              # ~445: the beam build cache
+             "--adb",              # ~476: for ADB_MARKER (a beam start with "adb": true) while the owner allows it
+             "--tab-relay",        # Serve.java ~2711: a beam start with "relay": true
+             "--forward-link",     # Session ~437: `inspecting() && serve.beam`
+             "--no-network-inspect"}  # Serve.java ~2719: a beam start with "inspect": false
+# A tab's session options, passed on as these (Session.java ~427-434): `yes` for serve and beam, as a session option.
+SESSION_OPTIONS = {"--appearance", "--locale", "--font-scale", "--permissions"}
+
+
 def load_table():
     rows = {}
     with open(TABLE, encoding="utf-8") as f:
@@ -125,6 +146,15 @@ def main():
     header, rows = load_table()
     problems = []
     t = rel(TABLE)
+    exceptions = ONLY_SERVE | ONLY_BEAM | SESSION_OPTIONS
+    for name, src, path in (("Catalog's LAUNCH_OPTIONS/LAUNCH_FLAGS", serve, CATALOG),
+                            ("mcp.py's LAUNCH_OPTIONS/LAUNCH_FLAGS", mcp_allowed, MCP),
+                            ("the exceptions sets", exceptions, os.path.abspath(__file__))):
+        for o in sorted(src - set(launcher)):
+            problems.append("%s: %s names %s, which the launcher does not parse: fix the spelling or remove it" % (rel(path), name, o))
+    for o in sorted(exceptions - server_added):
+        problems.append("%s: %s is in an exceptions set but no line of Session.java/Serve.java adds it any more: update the set" % (
+            rel(os.path.abspath(__file__)), o))
     for o in sorted(launcher):
         if o not in rows:
             problems.append("%s: the launcher parses %s but the table has no row: add one to %s (cli yes; for each of "
@@ -139,11 +169,15 @@ def main():
         if r["value"] != launcher[o]:
             problems.append("%s:%d: %s takes %s in the launcher, the table says %s" % (t, r["line"], o, launcher[o], r["value"]))
         # What each surface's code does with the option.
+        def server_side(other_only):
+            if o in serve or o in SESSION_OPTIONS:
+                return "yes"
+            return "server-only" if o in server_added and o not in other_only else "no"
         actual = {
-            "serve": ("yes" if o in serve else "server-only" if o in server_added else "no"),
+            "serve": server_side(ONLY_BEAM),
+            "beam": server_side(ONLY_SERVE),  # the agent takes Catalog's list and Session's additions
             "mcp": ("yes" if o in mcp_allowed else "server-only" if o in mcp_added else "no"),
         }
-        actual["beam"] = actual["serve"]  # the agent takes Catalog's list and Session's additions
         files = {"serve": rel(CATALOG) + " (LAUNCH_OPTIONS) or " + rel(SESSION) + "/" + rel(SERVE), "beam": rel(CATALOG) + " or " + rel(SESSION) + "/" + rel(SERVE),
                  "mcp": rel(MCP)}
         for s in SURFACES:
