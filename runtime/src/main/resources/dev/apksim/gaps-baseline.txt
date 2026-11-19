@@ -1,0 +1,53 @@
+# Framework natives with no shadow that run Robolectric's default body (0, false, null, nothing) and are known to be
+# harmless as defaults: handles, finalizers, tracing, binder identity, SurfaceControl transactions (nothing composites
+# here), allocation bookkeeping. Bound as if not a gap and never counted (dev.apksim.Gaps). One Class.method(desc) a
+# line, sorted. Added by looking at each entry; a native whose default could mislead an app (a getter) stays out and
+# shows in `gaps`: OsConstants.initConstants (every errno/flag constant stays 0) and
+# CameraMetadataNative.nativeGetBufferSize (0).
+android.app.Activity.getDlWarning()Ljava/lang/String;
+android.content.res.ApkAssets.nativeDestroy(J)V
+android.content.res.AssetManager.nativeGetThemeFreeFunction()J
+android.hardware.camera2.impl.CameraMetadataNative.nativeClose(J)V
+android.hardware.camera2.impl.CameraMetadataNative.nativeSwap(JJ)V
+android.media.MediaCodec.native_init()V
+android.os.Binder.clearCallingIdentity()J
+android.os.Binder.getNativeBBinderHolder()J
+android.os.Binder.getNativeFinalizer()J
+android.os.Binder.isDirectlyHandlingTransactionNative()Z
+android.os.Binder.restoreCallingIdentity(J)V
+android.os.MessageQueue.nativeInit()J
+android.os.Parcel.nativeHasFileDescriptors(J)Z
+android.os.Parcel.nativePushAllowFds(JZ)Z
+android.os.Parcel.nativeRestoreAllowFds(JZ)V
+android.os.PerfettoTrace$Category.native_delete()J
+android.os.PerfettoTrace$Category.native_get_extra_ptr(J)J
+android.os.PerfettoTrace$Category.native_init(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)J
+android.os.PerfettoTrackEventExtra.native_delete()J
+android.os.SystemProperties.native_add_change_callback()V
+android.os.Trace.nativeIsTagEnabled(J)Z
+android.tracing.perfetto.DataSource.nativeCreate(Landroid/tracing/perfetto/DataSource;Ljava/lang/String;)J
+android.tracing.perfetto.DataSource.nativeRegisterDataSource(JIZZ)V
+android.tracing.perfetto.Producer.nativePerfettoProducerInit(II)V
+android.view.DisplayEventReceiver.nativeGetDisplayEventReceiverFinalizer()J
+android.view.InputChannel.nativeDispose(J)V
+android.view.InputChannel.nativeGetFinalizer()J
+android.view.InputEventReceiver.nativeInit(Ljava/lang/ref/WeakReference;Landroid/view/InputChannel;Landroid/os/MessageQueue;)J
+android.view.KeyEvent.nativeNextId()I
+android.view.MotionEvent.nativeSetCursorPosition(JFF)V
+android.view.SurfaceControl.nativeAddTransactionCompletedListener(JLjava/util/function/Consumer;)V
+android.view.SurfaceControl.nativeApplyTransaction(JZZ)V
+android.view.SurfaceControl.nativeCreateTransaction()J
+android.view.SurfaceControl.nativeGetNativeSurfaceControlFinalizer()J
+android.view.SurfaceControl.nativeGetNativeTransactionFinalizer()J
+android.view.SurfaceControl.nativeMergeTransaction(JJ)V
+android.view.SurfaceControl.nativeSanitize(JII)V
+android.view.SurfaceControl.nativeSetFlags(JJII)V
+android.view.SurfaceControl.nativeSetFrameRateSelectionStrategy(JJI)V
+android.view.SurfaceControl.nativeSetTransformHint(JI)V
+com.android.internal.os.ApplicationSharedMemory.nativeCreate()I
+com.android.internal.os.ApplicationSharedMemory.nativeInit(J)V
+dalvik.system.VMRuntime.notifyNativeAllocationsInternal()V
+dalvik.system.VMRuntime.registerNativeAllocation(J)V
+dalvik.system.VMRuntime.registerNativeFree(J)V
+dalvik.system.VMRuntime.setDedupeHiddenApiWarnings(Z)V
+libcore.io.Linux.chmod(Ljava/lang/String;I)V

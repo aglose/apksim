@@ -249,9 +249,18 @@ Read README.md for results and limits; this file covers how to work on the code.
     "Class.method(desc)"); every other site is bound as before. `gaps` (control, `adb shell apksim gaps`, `executeShellCommand("apksim gaps")`)
     lists them, most called first, one per line (joined `; `); `Exits.log` (every exit, crashes too) adds `[apksim] gaps: N unshadowed
     framework natives called: A xN, ... (apksim gaps)` when N > 0; `AppInfo.load` resets the counts per launch.
-    Step one only: the list includes natives that are harmless as defaults (the test app after start: 43, e.g.
-    `Trace.nativeIsTagEnabled`, `Binder.*`, `SurfaceControl.*`; no allow-list yet). `-Dapksim.gaps=false` (cold launches:
-    a standby has read it) binds them plainly; `CallSiteCheck` covers it.
+    The baseline (`runtime/src/main/resources/dev/apksim/gaps-baseline.txt`, sorted `Class.method(desc)`): 47 natives
+    that are harmless as defaults (Trace, Binder, Parcel fds, Perfetto, VMRuntime, SurfaceControl, MotionEvent, input
+    channels, finalizers), taken from the test app's session over the bottom tabs and ~30 `apksim://` screens
+    (`--camera fake`, warm and cold: the same set). They are bound as if not gaps, with no counter (`Trace.nativeIsTagEnabled`
+    was ~5,000 counted calls), parsed by `Gaps.preload` (standby warm-up, Main's ahead thread). `gaps` lists the others and
+    ends "(N baseline natives not counted)"; the exit line shows only those. Each entry was looked at: a getter whose default
+    could mislead stays out (now: `OsConstants.initConstants`, so every errno/flag constant is 0, hit by every launch, and
+    `CameraMetadataNative.nativeGetBufferSize`, 0), so the test app's `gaps` shows those two until they are shadowed.
+    Counts reset per launch (`AppInfo.load`) and per test (`SimRunner.resetState`; `CompatChangeTest.gapsCommandAnswers`).
+    `ci-smoke.sh` (app part) prints `gaps` and warns about anything beyond the baseline and those two (`GAPS_CHECK=strict`
+    fails; checked on the Mac only). `-Dapksim.gaps=false` (cold launches: a standby has read it) binds them all plainly;
+    `CallSiteCheck` covers counting, the baseline and both bindings.
   - `org.robolectric.android.controller.ActivityController` (apksim's copy of Robolectric 4.17's, ahead of it on the
     class path): a configuration change that recreates an activity no longer calls `System.gc()` in a running
     instance. Robolectric collects there after destroying the old activity (its activities share one base context, and

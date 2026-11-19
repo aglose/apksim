@@ -84,4 +84,12 @@ class CompatChangeTest {
     assertTrue(out, out.contains("RENDERSCRIPT_SCRIPTC_DEPRECATION_CHANGE_ID (297019750): off"))
     assertTrue(out, shell("apksim compat all").contains("target 36"))
   }
+
+  /** The gap tripwire's command answers in a test run (the baseline natives are not counted, so only its tail is fixed). */
+  @Test
+  fun gapsCommandAnswers() {
+    if (!onApksim) return
+    val out = shell("apksim gaps")
+    assertTrue(out, out.contains("baseline natives not counted"))
+  }
 }

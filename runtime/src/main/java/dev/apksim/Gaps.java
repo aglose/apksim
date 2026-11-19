@@ -5,7 +5,9 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -25,6 +27,33 @@ public final class Gaps {
 
   private static final Map<String, AtomicLong> COUNTS = new ConcurrentHashMap<>();
   private static final MethodHandle HIT;
+  private static volatile Set<String> baseline;
+  private static final String BASELINE = "/dev/apksim/gaps-baseline.txt";
+
+  /**
+   * The natives known to be harmless as defaults (gaps-baseline.txt, one "Class.method(desc)" a line, # comments):
+   * bound plainly, never counted. Read by the standby's warm-up or Main's ahead thread; else at the first native bound.
+   */
+  public static Set<String> baseline() {
+    Set<String> b = baseline;
+    if (b != null) return b;
+    b = new HashSet<>();
+    try (java.io.InputStream in = Gaps.class.getResourceAsStream(BASELINE)) {
+      if (in != null) {
+        for (String line : new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).split("\n")) {
+          line = line.strip();
+          if (!line.isEmpty() && line.charAt(0) != '#') b.add(line);
+        }
+      }
+    } catch (java.io.IOException | RuntimeException e) {
+      System.err.println("[apksim] gaps baseline not loaded: " + e);
+    }
+    return baseline = b;
+  }
+
+  public static void preload() {
+    baseline();
+  }
 
   static {
     try {
@@ -42,6 +71,7 @@ public final class Gaps {
   public static MethodHandle count(Class<?> owner, String name, MethodType type, boolean isStatic, MethodHandle mh) {
     MethodType sig = isStatic ? type : type.dropParameterTypes(0, 1);
     String key = owner.getName() + "." + name + sig.toMethodDescriptorString();
+    if (baseline().contains(key)) return mh;
     AtomicLong n = COUNTS.computeIfAbsent(key, k -> new AtomicLong());
     return MethodHandles.foldArguments(mh, MethodHandles.insertArguments(HIT, 0, n));
   }
@@ -66,10 +96,12 @@ public final class Gaps {
   /** {@code gaps}: one "Class.method(desc): xN" per unshadowed native called, joined as every answer is. */
   public static String report() {
     List<Map.Entry<String, Long>> l = called();
-    if (l.isEmpty()) return "no unshadowed framework natives called" + (ON ? "" : " (apksim.gaps=false: not counted)");
+    String tail = " (" + baseline().size() + " baseline natives not counted)";
+    if (!ON) return "not counted (apksim.gaps=false)";
+    if (l.isEmpty()) return "no unshadowed framework natives called outside the baseline" + tail;
     StringBuilder sb = new StringBuilder();
     for (Map.Entry<String, Long> e : l) sb.append(sb.length() > 0 ? "\n" : "").append(e.getKey()).append(": x").append(e.getValue());
-    return sb.toString();
+    return sb.append(tail).toString();
   }
 
   /** The exit line, or null when nothing was called. */

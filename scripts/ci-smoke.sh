@@ -438,6 +438,28 @@ if [[ -n "$UISERVER" ]]; then
   python3 "$ROOT/scripts/adb-check.py" "localhost:$ADB_PORT" "$UISERVER"
   adb disconnect "localhost:$ADB_PORT" >/dev/null 2>&1 || true
 fi
+# The gap tripwire (dev.apksim.Gaps): the session so far must have called no framework native that has no shadow and is
+# not in runtime/src/main/resources/dev/apksim/gaps-baseline.txt, bar the two known open gaps (a new path the test app
+# reaches is looked at when it appears: shadow it, or add it to the baseline once its default is harmless). Checked
+# stable on the Mac (three headless runs, warm and cold); the Linux image has not been run, so a difference there only
+# warns until GAPS_CHECK=strict.
+gaps_out="$(drive gaps)"
+echo "$gaps_out"
+new_gaps="$(python3 - "$gaps_out" <<'EOF'
+import sys
+out = sys.argv[1].split("gaps -> ", 1)[-1]
+known = ("android.system.OsConstants.initConstants()", "CameraMetadataNative.nativeGetBufferSize(")
+if out.startswith("no unshadowed") or out.startswith("not counted"):
+    sys.exit(0)
+for e in out.rsplit(" (", 1)[0].split("; "):
+    if not any(k in e for k in known):
+        print(e)
+EOF
+)"
+if [[ -n "$new_gaps" ]]; then
+  echo "unshadowed framework natives called, not in the baseline:" >&2; echo "$new_gaps" >&2
+  [[ "${GAPS_CHECK:-warn}" == strict ]] && exit 1
+fi
 # An app's own default uncaught-exception handler gets a coroutine's crash and decides: this one keeps the app running
 # (issue 104, the test app's apksim://crash?kind=handled). Last: the handler stays the app's for the rest of the run.
 handled="$(drive 'open apksim://crash?kind=handled' 'wait 2500' nodes | grep -oE 'text="crash: handled by the app [^"]*"' || true)"

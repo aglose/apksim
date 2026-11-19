@@ -248,6 +248,16 @@ public final class CallSiteCheck {
     expect("gaps names the static native, once", gaps.contains(cls + ".snat()I: x1"), true);
     expect("most called first", gaps.indexOf(".nat(") < gaps.indexOf(".snat("), true);
     expect("the exit line", String.valueOf(Gaps.exitLine()).startsWith("[apksim] gaps: 2 unshadowed framework natives called: "), true);
+    // A native in the baseline gets no counter at all: its handle comes back as it went in.
+    MethodHandle plainNative = MethodHandles.constant(boolean.class, false).asType(MethodType.methodType(boolean.class))
+        ;
+    MethodHandle traceHandle = MethodHandles.dropArguments(plainNative, 0, long.class);
+    MethodType traceType = MethodType.methodType(boolean.class, long.class);
+    expect("baseline file is read", Gaps.baseline().contains("android.os.Trace.nativeIsTagEnabled(J)Z"), true);
+    expect("a baseline native is bound uncounted",
+        Gaps.count(Class.forName("android.os.Trace", false, CallSiteCheck.class.getClassLoader()), "nativeIsTagEnabled",
+            traceType, true, traceHandle) == traceHandle, true);
+    expect("and a non-baseline one is wrapped", Gaps.count(Target.class, "other", traceType, true, traceHandle) != traceHandle, true);
     Gaps.reset();
     expect("reset forgets the counts", Gaps.report().startsWith("no unshadowed"), true);
 
