@@ -1,0 +1,119 @@
+# KEY	apksim's value	reason. The differences from device-probe-api36.tsv that scripts/device-probe-check.py accepts today (docs/conformance.md
+# "Device-difference probe"). (a) can crash or mislead an app, (b) is cosmetic or by design. A fix makes its line fail the check: delete it then.
+activity.deviceConfigurationInfo	0	(a) reqGlEsVersion 0: an app that requires GLES 3 from it refuses to run (GLES itself loads on demand)
+activity.memoryInfo.availMem	0	(a) ActivityManager.getMemoryInfo leaves totalMem and availMem 0: an app dividing availMem by totalMem divides by zero
+activity.memoryInfo.totalMem	0	(a) ActivityManager.getMemoryInfo leaves totalMem and availMem 0: an app dividing availMem by totalMem divides by zero
+audio.inputDevices	0	(a) AudioManager.getDevices lists nothing: an app picking an output device finds none
+audio.minVolume.alarm	0	(b) AudioManager.getStreamMinVolume 0 for alarm and voice-call streams (device 1)
+audio.minVolume.voice	0	(b) AudioManager.getStreamMinVolume 0 for alarm and voice-call streams (device 1)
+audio.outputDevices	0	(a) AudioManager.getDevices lists nothing: an app picking an output device finds none
+audio.property.outputFramesPerBuffer	null	(a) AudioManager.getProperty answers null (device: OUTPUT_SAMPLE_RATE and FRAMES_PER_BUFFER strings): toInt() of it throws, AudioTrack sizing
+audio.property.outputSampleRate	null	(a) AudioManager.getProperty answers null (device: OUTPUT_SAMPLE_RATE and FRAMES_PER_BUFFER strings): toInt() of it throws, AudioTrack sizing
+battery.capacity.range	<1	(a) BatteryManager property CAPACITY is Integer.MIN_VALUE (Robolectric's default), not 1..100: a battery label shows -2147483648%
+battery.chargeCounter	<0	(a) BatteryManager property CHARGE_COUNTER is Integer.MIN_VALUE, as a device that cannot tell would not give
+battery.charging	false	(b) by design: the sticky battery broadcast says full, not charging; the emulator is on AC
+build.BOARD	robolectric	(b) by design: Robolectric's Build values, and FINGERPRINT stays `robolectric` in test runs (Compose keys on it); `--build FIELD=VALUE` changes the others
+build.BRAND	robolectric	(b) by design: Robolectric's Build values, and FINGERPRINT stays `robolectric` in test runs (Compose keys on it); `--build FIELD=VALUE` changes the others
+build.DEVICE	robolectric	(b) by design: Robolectric's Build values, and FINGERPRINT stays `robolectric` in test runs (Compose keys on it); `--build FIELD=VALUE` changes the others
+build.FINGERPRINT	robolectric	(b) by design: Robolectric's Build values, and FINGERPRINT stays `robolectric` in test runs (Compose keys on it); `--build FIELD=VALUE` changes the others
+build.HARDWARE	robolectric	(b) by design: Robolectric's Build values, and FINGERPRINT stays `robolectric` in test runs (Compose keys on it); `--build FIELD=VALUE` changes the others
+build.HOST	unknown	(b) Build field is `unknown`: not set by Robolectric; `--build FIELD=VALUE`
+build.MANUFACTURER	robolectric	(b) by design: Robolectric's Build values, and FINGERPRINT stays `robolectric` in test runs (Compose keys on it); `--build FIELD=VALUE` changes the others
+build.MODEL	robolectric	(b) by design: Robolectric's Build values, and FINGERPRINT stays `robolectric` in test runs (Compose keys on it); `--build FIELD=VALUE` changes the others
+build.PRODUCT	robolectric	(b) by design: Robolectric's Build values, and FINGERPRINT stays `robolectric` in test runs (Compose keys on it); `--build FIELD=VALUE` changes the others
+build.RADIO	null	(b) Build.getRadioVersion() is null (a device without a modem would also give null or empty)
+build.SOC_MODEL	unknown	(b) Build field is `unknown`: not set by Robolectric; `--build FIELD=VALUE`
+build.TAGS	robolectric	(b) by design: Robolectric's Build values, and FINGERPRINT stays `robolectric` in test runs (Compose keys on it); `--build FIELD=VALUE` changes the others
+build.TIME	<0	(a) Build.TIME is negative: an app computing the build's age shows a date before 1970
+build.TYPE	unknown	(b) Build field is `unknown`: not set by Robolectric; `--build FIELD=VALUE`
+build.USER	unknown	(b) Build field is `unknown`: not set by Robolectric; `--build FIELD=VALUE`
+build.serial	ok	(b) Build.getSerial() answers without the READ_PRIVILEGED_PHONE_STATE check a device makes (SecurityException there); apksim gives a generated serial
+build.version.INCREMENTAL	unknown	(b) Build field is `unknown`: not set by Robolectric; `--build FIELD=VALUE`
+codec.aac.decoder	false	(a) MediaCodecList is empty in a test run (running instances list H.264, HEVC, VP9, AAC, MP3; Opus, VP8, AV1 are not simulated): an app that probes for a decoder refuses to play
+codec.aac.encoder	false	(a) MediaCodecList is empty in a test run (running instances list H.264, HEVC, VP9, AAC, MP3; Opus, VP8, AV1 are not simulated): an app that probes for a decoder refuses to play
+codec.count	0	(a) MediaCodecList is empty in a test run (running instances list H.264, HEVC, VP9, AAC, MP3; Opus, VP8, AV1 are not simulated): an app that probes for a decoder refuses to play
+codec.h264.decoder	false	(a) MediaCodecList is empty in a test run (running instances list H.264, HEVC, VP9, AAC, MP3; Opus, VP8, AV1 are not simulated): an app that probes for a decoder refuses to play
+codec.h264.encoder	false	(a) MediaCodecList is empty in a test run (running instances list H.264, HEVC, VP9, AAC, MP3; Opus, VP8, AV1 are not simulated): an app that probes for a decoder refuses to play
+codec.hevc.decoder	false	(a) MediaCodecList is empty in a test run (running instances list H.264, HEVC, VP9, AAC, MP3; Opus, VP8, AV1 are not simulated): an app that probes for a decoder refuses to play
+codec.opus.decoder	false	(a) MediaCodecList is empty in a test run (running instances list H.264, HEVC, VP9, AAC, MP3; Opus, VP8, AV1 are not simulated): an app that probes for a decoder refuses to play
+codec.vp9.decoder	false	(a) MediaCodecList is empty in a test run (running instances list H.264, HEVC, VP9, AAC, MP3; Opus, VP8, AV1 are not simulated): an app that probes for a decoder refuses to play
+conn.caps.downstreamKbps	0	(b) link bandwidth estimates are 0 (a device's are positive): an app choosing a video quality from it picks the lowest
+conn.defaultNetworkActive	true	(b) isDefaultNetworkActive true (device false while the screen is idle)
+conn.linkProperties.dns	0	(b) LinkProperties has no DNS servers
+display.flags.secure	false	(b) default display lacks FLAG_SECURE (a device's has it)
+display.hdrCaps	null	(a) Display.getHdrCapabilities() is null (device: an object with an empty or filled list): `.supportedHdrTypes` throws NullPointerException
+display.hdrTypes	EXCEPTION:NullPointerException	(a) follows display.hdrCaps: NullPointerException
+display.supportedModes	0	(a) Display.getSupportedModes() is empty: an app picking the best mode (maxByOrNull, first()) fails or finds none
+feature.hardware.camera	false	(b) not simulated unless `--camera fake` (camera); microphone is not simulated
+feature.hardware.camera.any	false	(b) not simulated unless `--camera fake` (camera); microphone is not simulated
+feature.hardware.microphone	false	(b) not simulated unless `--camera fake` (camera); microphone is not simulated
+feature.hardware.telephony	false	(b) not simulated: no telephony feature (the emulator lists it); an app that hides calling features on a tablet shows the tablet UI
+feature.software.device_admin	false	(b) not simulated: the system feature is not listed (webview, device_admin, print, picture_in_picture)
+feature.software.picture_in_picture	false	(b) not simulated: the system feature is not listed (webview, device_admin, print, picture_in_picture)
+feature.software.print	false	(b) not simulated: the system feature is not listed (webview, device_admin, print, picture_in_picture)
+feature.software.webview	false	(b) not simulated: the system feature is not listed (webview, device_admin, print, picture_in_picture)
+ime.enabledCount	0	(a) no input method is installed or enabled (device: at least one): an app that asks the user to enable a keyboard, or picks the default IME, finds none
+ime.listCount	0	(a) no input method is installed or enabled (device: at least one): an app that asks the user to enable a keyboard, or picks the default IME, finds none
+notif.enabled	true	(b) areNotificationsEnabled() true without POST_NOTIFICATIONS, as Robolectric answers (device: false for an app targeting 33+ until granted); docs/conformance.md
+pkg.appInfo.nativeLibraryDir	null	(a) ApplicationInfo.nativeLibraryDir is null in a test run (a running instance extracts libraries to cache): an app building a path from it throws NullPointerException
+pkg.installer	EXCEPTION:NameNotFoundException	(a) PackageManager.getInstallSourceInfo throws NameNotFoundException for the app's own package (device: an object whose installingPackageName is null for an adb install)
+pkg.signatures	null	(a) signingInfo is null (device: the signing certificates): an app checking its own signature (tamper check, App Check) throws NullPointerException or fails
+settings.canWrite	true	(b) Settings.System.canWrite is true (device false until the user grants it)
+settings.global.adb_enabled	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.global.airplane_mode_on	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.global.auto_time	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.global.auto_time_zone	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.global.boot_count	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.global.data_roaming	null	(b) a device throws SecurityException for the app (no permission); apksim answers null
+settings.global.device_name	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.global.device_provisioned	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.global.install_non_market_apps	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.global.low_power	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.global.mobile_data	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.global.stay_on_while_plugged_in	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.global.transition_animation_scale	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.global.usb_mass_storage_enabled	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.global.wifi_on	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.global.window_animation_scale	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.global.zen_mode	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.secure.accessibility_enabled	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.secure.bluetooth_address	null	(b) a device throws SecurityException for the app (no permission); apksim answers null
+settings.secure.bluetooth_name	null	(b) a device throws SecurityException for the app (no permission); apksim answers null
+settings.secure.default_input_method	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.secure.immersive_mode_confirmations	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.secure.install_non_market_apps	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.secure.long_press_timeout	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.secure.show_ime_with_hard_keyboard	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.secure.ui_night_mode	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.secure.user_setup_complete	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.system.accelerometer_rotation	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.system.alarm_alert	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.system.font_scale	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.system.haptic_feedback_enabled	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.system.notification_sound	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.system.ringtone	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.system.screen_brightness	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.system.screen_brightness_mode	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.system.screen_off_timeout	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.system.sound_effects_enabled	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.system.user_rotation	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.system.vibrate_when_ringing	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+settings.system.volume_music	null	(a) absent in a test run (null; Settings.X.getInt throws SettingNotFoundException): a device always has it; seed with --setting
+storage.cacheQuota	EXCEPTION:NullPointerException	(a) StorageManager.getCacheQuotaBytes throws NPE: Robolectric's storage stub; not simulated
+storage.externalEmulated	false	(a) external storage is `removed`, not emulated, 0 bytes free in a test run (a running instance mounts /sdcard, SlotDevice): an app refuses to write
+storage.externalFree	0	(a) external storage is `removed`, not emulated, 0 bytes free in a test run (a running instance mounts /sdcard, SlotDevice): an app refuses to write
+storage.externalManager	EXCEPTION:ArrayIndexOutOfBoundsException	(a) StorageManager volumes are an empty list (index 0 throws, isExternalStorageManager reads it): not simulated in a test run
+storage.externalState	removed	(a) external storage is `removed`, not emulated, 0 bytes free in a test run (a running instance mounts /sdcard, SlotDevice): an app refuses to write
+storage.internalFree	0	(a) StatFs of the app's files dir reports 0 bytes: an app that checks free space refuses to download or divides by it
+storage.internalTotal	0	(a) StatFs of the app's files dir reports 0 bytes: an app that checks free space refuses to download or divides by it
+storage.primaryVolumeState	EXCEPTION:ArrayIndexOutOfBoundsException	(a) StorageManager volumes are an empty list (index 0 throws, isExternalStorageManager reads it): not simulated in a test run
+storage.volumes	0	(a) StorageManager volumes are an empty list (index 0 throws, isExternalStorageManager reads it): not simulated in a test run
+tel.callState	0	(b) no READ_PHONE_STATE check: apksim answers where a device throws SecurityException (the test app lacks the permission)
+tel.dataState	0	(b) TelephonyManager is Robolectric's: no SIM, data disconnected
+tel.hasIccCard	false	(b) TelephonyManager is Robolectric's: no SIM, data disconnected
+tel.networkType	true	(b) no READ_PHONE_STATE check: apksim answers where a device throws SecurityException (the test app lacks the permission)
+uimode.currentModeType	0	(b) UiModeManager is Robolectric's: currentModeType UNDEFINED and nightMode AUTO where a phone says NORMAL and NO
+uimode.nightMode	0	(b) UiModeManager is Robolectric's: currentModeType UNDEFINED and nightMode AUTO where a phone says NORMAL and NO
+vibrator.amplitudeControl	false	(b) Vibrator.hasAmplitudeControl false (device true)
+wifi.dhcpInfo	null	(a) WifiManager.getDhcpInfo() is null (device: an object): `.ipAddress` throws NullPointerException
+wifi.is5GHzSupported	false	(b) is5GHzBandSupported false (device true)
