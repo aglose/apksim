@@ -1589,13 +1589,65 @@ def crash_checks(apksim, apk, sha, size):
         subprocess.run([apksim, "--stop-standbys"], capture_output=True, env=env, timeout=60)
 
 
+def rejoin_checks(apksim, apk, sha, size):
+    """Issue 529 on the agent: `hold`, a closed socket, and the page's rejoin with its origin, its key (`f KEY`) and the
+    token. Another origin or a wrong key cannot. Its own state folder. (A detached session refuses a hold: not checked
+    here, as detaching opens a window.)"""
+    state = tempfile.mkdtemp(prefix="beam-check-rejoin-")
+    env = dict(os.environ, APKSIM_HOME=state, APKSIM_BEAM_CONSENT="allow")
+    gp, origin, other = free_port(), "http://rejoin.beam-check.test", "http://other.beam-check.test"
+    with open(apk, "rb") as f:
+        body = f.read()
+    start = {"sha256": sha, "name": "beam-check.apk", "size": size, "options": []}
+    log = open(os.path.join(state, "agent.log"), "w")
+    g = subprocess.Popen([apksim, "beam", "--port", str(gp), "--rejoin-grace", "8"], stdout=subprocess.DEVNULL, stderr=log, env=env)
+    try:
+        check(wait_up(gp, "/beam/hello"), "rejoin: an agent")
+        st, _, hb = req(gp, "GET", "/beam/hello", origin)
+        check(st == 200 and json.loads(hb).get("rejoinS") == 8, f"rejoin: /beam/hello says holds last 8 s ({json.loads(hb).get('rejoinS') if st == 200 else st})")
+        grant, _ = begin(gp, origin, start, body)
+        check("token" in grant, "rejoin: a session granted")
+        s = open_session(gp, grant, origin)
+        pid = s.stats.get("pid", 0)
+        check(pid > 0, f"rejoin: the session runs (pid {pid})")
+        sid, fkey = session_info(s).get("id", ""), next((t[2:] for t in s.texts if t.startswith("f ")), "")
+        h = (sc.arm_hold(s) or {}).get("hold")
+        check(bool(h), "rejoin: `hold` is answered with a token")
+        sc.close_ws(s)
+        time.sleep(1)
+        check(alive(pid), "rejoin: the instance outlives the closed socket")
+        base = f"http://127.0.0.1:{gp}"
+        for who, o, k, want in (("another site", other, fkey, 404), ("a wrong key", origin, "0" * len(fkey), 404),
+                                ("a wrong token", origin, fkey, 409)):
+            w = WS(base, f"/ws?rejoin={sid}&key={k}&hold={h if want != 409 else '0' * 32}", {"Origin": o})
+            check(w.status == want, f"rejoin: {who} is refused ({w.status})")
+            w.s.close()
+        w = WS(base, f"/ws?rejoin={sid}&key={fkey}&hold={h}", {"Origin": origin})
+        check(w.status == 101, f"rejoin: the page takes it back ({w.status})")
+        r = sc.Session.__new__(sc.Session)
+        r.ws, r.frames, r.codec, r.acking, r.offset, r.best_rtt = w, [], "jpeg", True, 0.0, float("inf")
+        r.texts, r.stats, r.ack_delay, r.acks = [], {}, 0, []
+        r.pump(15, until=lambda: len(r.frames) > 0)
+        ri = session_info(r)
+        check(bool(r.frames) and ri.get("id") == sid and ri.get("rejoined") is True, f"rejoin: frames again, same session ({len(r.frames)}, {ri.get('rejoined')})")
+        check(any(t == "f " + fkey for t in r.texts), "rejoin: the page hears its key again")
+        r.ws.send("stats")
+        r.pump(5, until=lambda: r.stats.get("pid", 0) > 0)
+        check(r.stats.get("pid") == pid, f"rejoin: the same instance ({r.stats.get('pid')} was {pid})")
+        sc.close_ws(r)
+        check(until(lambda: not alive(pid), 30), "rejoin: the session ends")
+    finally:
+        stop(g)
+        subprocess.run([apksim, "--stop-standbys"], capture_output=True, env=env, timeout=60)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("apk")
     ap.add_argument("--apksim", default=os.path.join(os.path.dirname(HERE), "apksim"))
     ap.add_argument("--server-port", type=int, default=47480)
     ap.add_argument("--agent-port", type=int, default=47481)
-    ap.add_argument("--only", choices=["adb", "forward", "loopback", "allow", "crash"], help="run only this part")
+    ap.add_argument("--only", choices=["adb", "forward", "loopback", "allow", "crash", "rejoin"], help="run only this part")
     a = ap.parse_args()
     sp, gp, apksim = a.server_port, a.agent_port, a.apksim
     if a.only == "allow":
@@ -1632,6 +1684,13 @@ def main():
             print(f"{len(sc.FAILED)} check(s) failed")
             sys.exit(1)
         print("beam check passed (crash)")
+        return
+    if a.only == "rejoin":
+        rejoin_checks(apksim, a.apk, sha, size)
+        if sc.FAILED:
+            print(f"{len(sc.FAILED)} check(s) failed")
+            sys.exit(1)
+        print("beam check passed (rejoin)")
         return
     if a.only == "adb":
         adb_checks(apksim, a.apk, sha, size)

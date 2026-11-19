@@ -57,7 +57,11 @@ final class Session {
   final Map<String, String> options;
   final long started = System.currentTimeMillis();
   private final Serve serve;
-  private final WebSocket ws;
+  /**
+   * The controlling tab's socket. Replaced only by a rejoin after a reload (issue 529, {@link #rejoin}): every use reads
+   * the field at that moment, so a message goes to whichever tab controls the session then.
+   */
+  private volatile WebSocket ws;
   private Process process;
   /** Reads the instance's output, where the data slot is announced: cleanup waits for it to reach the end. */
   private volatile Thread logReader;
@@ -149,7 +153,7 @@ final class Session {
   /** H.264 frames that may wait for the tab before it drops to the next keyframe. */
   private static final int MAX_WAITING = 3;
   /** Pacing for a tab slower than the app (issue 232). Guarded by this. */
-  private final Pacer pacer = new Pacer();
+  private Pacer pacer = new Pacer();
 
   Session(Serve serve, String id, Catalog.App app, Map<String, String> options, WebSocket ws) {
     this.serve = serve;
@@ -271,7 +275,9 @@ final class Session {
   void run() {
     // The tab is watched from the start: closing it while the app downloads or launches ends the session too.
     Thread tab = Thread.ofVirtual().name("serve-tab-" + id).start(() -> {
-      ws.readLoop(this::onMessage);
+      // Issue 529: a tab that armed a hold before its socket closed may come back (a reload) within the grace period;
+      // its new socket is read here in turn. Anything else ends the session as before.
+      for (WebSocket cur = ws; cur != null; cur = awaitRejoin(cur)) cur.readLoop(this::onMessage);
       boolean carriesOn;
       synchronized (this) {
         // Decided with detach's answer under one lock: a tab that closes before `window front` is answered ends the session.
@@ -1269,6 +1275,7 @@ final class Session {
    * it), its slot erased as always. The pack is kept until the ticket expires. A tab gets `h {"error"}` when it cannot.
    */
   private void handoff() {
+    handingOff = true;
     Path slot = dataDir;
     if (slot == null || ended) {
       ws.sendText("h {\"error\":\"the app has no data yet\"}");
@@ -1607,6 +1614,190 @@ final class Session {
     }
   }
 
+  // ---------------------------------------------------------------- rejoin after a reload (issue 529)
+
+  /** An armed hold lapses this long after it was armed, unused. */
+  static final long HOLD_ARMED_MS = 60_000;
+  /** Wrong tokens a held session takes before it ends its hold: a token is 128 bits, so this only stops a loop. */
+  static final int HOLD_TRIES = 5;
+
+  /** The armed hold's one-time token (hex), or null. Guarded by this. */
+  private String holdToken;
+  private long holdArmedAt;
+  /** The tab's socket closed with a hold armed: the session waits for a rejoin until {@link #heldUntil}. Guarded by this. */
+  private boolean held;
+  private long heldUntil;
+  private int holdTries;
+  /** The socket a rejoin handed over, for the tab thread to read next. Guarded by this. */
+  private WebSocket rejoined;
+  /** The last JPEG frame from the instance, for a tab that rejoins while the screen is still. */
+  private volatile byte[] lastJpeg;
+  /** A handoff to the visitor's Mac began: the session is ending by its own move, so no hold. */
+  private volatile boolean handingOff;
+  /** The tab's last `touch down|move` with no `up` or `cancel` after it, lifted when its socket closes held. */
+  private volatile String lastTouch;
+
+  /**
+   * `hold` (arm) or `hold off`: the tab is about to reload and wants its session to outlive this socket. Answered
+   * `d {"hold":TOKEN,"graceS":N}`, or `d {"hold":null,"reason":...}` when there is none to have.
+   */
+  private void holdCommand(boolean on) {
+    String answer;
+    synchronized (this) {
+      String refusal = !on ? null
+          : serve.rejoinGraceSeconds <= 0 ? "this server does not hold sessions for a rejoin (--rejoin-grace 0)"
+          : ended ? "the session is ending"
+          : detached ? "apksim's window owns this session"
+          : handingOff ? "the session is moving to this Mac"
+          : null;
+      if (!on || refusal != null) {
+        holdToken = null;
+        answer = "d {\"hold\":null" + (refusal == null ? "" : ",\"reason\":" + Http.q(refusal)) + "}";
+      } else {
+        holdToken = HexFormat.of().formatHex(secureBytes());
+        holdArmedAt = System.currentTimeMillis();
+        holdTries = 0;
+        answer = "d {\"hold\":" + Http.q(holdToken) + ",\"graceS\":" + serve.rejoinGraceSeconds + "}";
+      }
+    }
+    ws.sendText(answer);
+  }
+
+  /**
+   * The tab thread's socket `closed` has gone. With a hold armed (and still valid) the session is held for the grace
+   * period: returns the socket that rejoined, or null when none did (the session then ends as on any close).
+   */
+  private WebSocket awaitRejoin(WebSocket closed) {
+    String touch;
+    synchronized (this) {
+      long now = System.currentTimeMillis();
+      if (ended || detached || handingOff || ws != closed || holdToken == null || now - holdArmedAt > HOLD_ARMED_MS
+          || serve.rejoinGraceSeconds <= 0) {
+        holdToken = null;
+        return null;
+      }
+      held = true;
+      heldUntil = now + serve.rejoinGraceSeconds * 1000L;
+      lastInput = now;  // the idle limit counts from here: the gap is no one's input
+      touch = lastTouch;
+      lastTouch = null;
+    }
+    logLine("[serve] the tab left with a hold: waiting " + serve.rejoinGraceSeconds + " s for it to rejoin");
+    System.err.printf("[serve] session %s held for %d s%n", id, serve.rejoinGraceSeconds);
+    // A finger the tab left down (a reload mid-drag) is lifted where it was, as a device would see the touch end.
+    if (touch != null && controlOut != null) send("touch up " + touch.substring(touch.indexOf(' ', 6) + 1), null);
+    if (viewers != null) viewers.text("p reconnecting");
+    synchronized (this) {
+      try {
+        while (!ended && rejoined == null && held) {
+          long left = heldUntil - System.currentTimeMillis();
+          if (left <= 0) break;
+          wait(left);
+        }
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+      WebSocket next = rejoined;
+      rejoined = null;
+      if (next == null || ended) {
+        held = false;
+        holdToken = null;
+        notifyAll();
+        logLine("[serve] no rejoin within " + serve.rejoinGraceSeconds + " s");
+        return null;
+      }
+      return next;
+    }
+  }
+
+  /**
+   * A new socket presents the hold's token (`/ws?rejoin=ID&hold=TOKEN`): it becomes the controlling tab. Answers null
+   * when it did, else why not. The caller then greets it ({@link #greetRejoined}), and frames flow after that.
+   */
+  String rejoin(WebSocket nw, String token, Upgrade upgrade) throws IOException {
+    synchronized (this) {
+      if (ended) return "the session has ended";
+      if (!held || holdToken == null) return "no hold to rejoin (it lapsed, or the tab did not ask for one)";
+      if (token == null || !java.security.MessageDigest.isEqual(token.getBytes(StandardCharsets.US_ASCII),
+          holdToken.getBytes(StandardCharsets.US_ASCII))) {
+        if (++holdTries >= HOLD_TRIES) {
+          holdToken = null;
+          held = false;  // the waiting tab thread ends the session
+          notifyAll();
+        }
+        return "not this session's hold";
+      }
+      holdToken = null;
+      upgrade.write();  // before the socket is the session's: from then on anything may write to it
+      ws = nw;
+      nw.onPong = this::ponged;
+      // A new tab: a new frame window, and nothing it cannot decode (an H.264 delta needs its keyframe).
+      waiting.clear();
+      flying.clear();
+      inFlight = 0;
+      inFlightBytes = 0;
+      dropToKey = true;
+      if (pacer.paceMs > 0) sendStream("pace 0\n");
+      pacer = new Pacer();
+      lastInput = System.currentTimeMillis();
+    }
+    logLine("[serve] the tab rejoined");
+    System.err.printf("[serve] session %s rejoined%n", id);
+    return null;
+  }
+
+  /**
+   * After {@link #rejoin} and the server's `i` message: the session's state as it is now, then frames from a keyframe,
+   * and the tab thread reads the new socket.
+   */
+  void greetRejoined(WebSocket nw) {
+    nw.sendText("d {\"skin\":" + (skin == null ? "null" : Http.q(skin)) + ",\"device\":" + Http.q(device) + "}");
+    if (fileKey != null) nw.sendText("f " + fileKey);
+    if (serve.beam) nw.sendText("k " + (keep || detached ? "on" : "off"));
+    if (keptState != null) nw.sendText("d {\"kept\":" + Http.q(keptState) + "}");
+    if (viewers != null) nw.sendText("d {\"viewers\":" + viewers.count() + "}");
+    if (adbPort > 0) nw.sendText("d {\"adb\":" + adbPort + "}");
+    if (streamReady) nw.sendText("c " + (h264 ? "h264" : "jpeg"));  // the session's, whatever the new socket asked
+    if (firstFrameMillis >= 0) nw.sendText("p first frame after " + firstFrameMillis + " ms");
+    synchronized (this) {
+      held = false;
+      rejoined = nw;
+      notifyAll();
+    }
+    if (viewers != null) viewers.text("p reconnected");
+    if (h264) {
+      askKey();  // sent even when the screen is still
+    } else {
+      // A still JPEG screen sends nothing new: the last picture goes again (each JPEG frame is whole).
+      byte[] last = lastJpeg;
+      synchronized (this) {
+        if (last != null && waiting.isEmpty()) waiting.add(last);
+        notifyAll();
+      }
+    }
+  }
+
+  /** Writes a rejoining socket's upgrade answer (Serve). */
+  interface Upgrade {
+    void write() throws IOException;
+  }
+
+  /** Until the session ends or the rejoined socket `nw` closes or is replaced: its connection's thread waits here. */
+  void awaitSocketDone(WebSocket nw) {
+    synchronized (this) {
+      try {
+        while (!ended && ws == nw && !nw.closed()) wait(1000);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    }
+  }
+
+  /** Whether the session is waiting for its tab to rejoin (`/api/status`). */
+  synchronized boolean held() {
+    return held;
+  }
+
   // ---------------------------------------------------------------- frames
 
   private void readFrames() {
@@ -1646,9 +1837,11 @@ final class Session {
           });
           System.err.printf("[serve] session %s: %s first frame after %d ms%n", id, app.name(), firstFrameMillis);
         }
+        if (!h264) lastJpeg = frame;
         boolean askKey = false;
         int paceAsk = -1;
         synchronized (this) {
+          if (held) continue;  // no tab until a rejoin, which starts from a keyframe (or the last JPEG): nothing waits
           long n = System.nanoTime();
           // Gaps over 250 ms are a still screen (unchanged images are not sent), not the app's frame rate.
           double gap = (n - lastFrameNanos) / 1e6;
@@ -1703,24 +1896,37 @@ final class Session {
     try {
       while (!ended) {
         byte[] f;
+        WebSocket to;
         synchronized (this) {
-          while (waiting.isEmpty() || !mayFly(waiting.peek().length)) wait();
+          // Held (issue 529): no tab to send to until one rejoins, which clears what waits and asks for a keyframe.
+          while (held || waiting.isEmpty() || !mayFly(waiting.peek().length)) wait();
           f = waiting.poll();
           inFlight++;
           inFlightBytes += f.length;
           flying.add(new long[] {System.nanoTime(), f.length});
+          to = ws;
         }
         long now = System.nanoTime();
         if (now - lastProbe > 500_000_000L) {
           lastProbe = now;
-          ws.ping(java.nio.ByteBuffer.allocate(8).putLong(now).array());
+          to.ping(java.nio.ByteBuffer.allocate(8).putLong(now).array());
         }
-        ws.sendBinary(new byte[0], f, 0, f.length);
+        try {
+          to.sendBinary(new byte[0], f, 0, f.length);
+        } catch (IOException e) {
+          // The tab's socket closed. With a hold armed it may be replaced (a rejoin resets the frame window), so the
+          // sender waits for that; otherwise the session is ending.
+          synchronized (this) {
+            if (ended || holdToken == null && !held && ws == to) return;
+            while (!ended && ws == to) wait(1000);
+          }
+          continue;
+        }
         framesSent++;
         bytesSent += f.length;
       }
-    } catch (IOException | InterruptedException e) {
-      // the tab or the session ended
+    } catch (InterruptedException e) {
+      // the session ended
     }
   }
 
@@ -1847,6 +2053,10 @@ final class Session {
   // ---------------------------------------------------------------- input
 
   private void onMessage(String text) {
+    if (text.equals("hold") || text.equals("hold off")) {
+      holdCommand(text.equals("hold"));
+      return;
+    }
     if (text.equals("ack")) {
       acked();
       return;
@@ -1939,6 +2149,7 @@ final class Session {
     }
     // The tab's pace and its visibility are not someone using it.
     if (!cmd.startsWith("vsync ") && !cmd.startsWith("maxfps ")) lastInput = System.currentTimeMillis();
+    if (cmd.startsWith("touch ")) lastTouch = cmd.startsWith("touch down ") || cmd.startsWith("touch move ") ? cmd : null;
     trackSetting(cmd);
     if (viewers != null && cmd.startsWith("maxfps ")) {
       synchronized (viewers) {
@@ -2554,7 +2765,7 @@ final class Session {
     return "{\"id\":" + Http.q(id) + ",\"app\":" + Http.q(app.name()) + ",\"device\":" + Http.q(device)
         + ",\"pid\":" + pid + ",\"rssMb\":" + rssMb + ",\"heapMb\":" + heapMb + ",\"firstFrameMs\":" + firstFrameMillis
         + ",\"ageS\":" + (System.currentTimeMillis() - started) / 1000 + ",\"idleS\":" + idle
-        + ",\"idleLimitS\":" + serve.idleSeconds + ",\"stopping\":" + ended + ",\"framesSent\":" + framesSent + ",\"mbSent\":" + (bytesSent >> 20)
+        + ",\"idleLimitS\":" + serve.idleSeconds + ",\"stopping\":" + ended + ",\"held\":" + held() + ",\"framesSent\":" + framesSent + ",\"mbSent\":" + (bytesSent >> 20)
         + ",\"window\":" + window() + ",\"pingRttMs\":" + Math.round(pingRttMs()) + ",\"ackRttMs\":" + Math.round(ackRttMs()) + ",\"frameMs\":" + Math.round(frameIntervalMs) + ",\"keyDrops\":" + pacerKeyDrops() + ",\"paceMs\":" + pacerPaceMs() + ",\"busyMs\":" + Math.round(pacerBusyMs()) + ",\"tabFrameMs\":" + Math.round(tabFrameMs())
         + (viewers != null ? ",\"viewers\":" + viewers.json() : "") + "}";
   }

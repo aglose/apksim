@@ -122,6 +122,38 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
 - A session ends when its tab closes (WebSocket closed), on `--idle`, or when the app exits (Back on its last
   activity). The instance is asked to `quit`; if it is still running 5 s later, it is killed.
 
+### Rejoining after a reload (issue 529)
+
+A site that deploys a new page wants open tabs to pick it up, and a tab cannot reload without closing its `/ws`
+socket, which ends the session. So a tab may ask for a **hold** first, and the reloaded page takes the session back
+with the app still running: a gap of about a second (measured: the first frame 8 ms after the new socket opened, on
+the Mac with the test app), instead of a new session.
+
+- The tab sends `hold`. Answer: `d {"hold": TOKEN, "graceS": N}`, a one-time token (128 random bits, hex), or
+  `d {"hold": null, "reason": ...}` when there is none to have (the server's `--rejoin-grace 0`, the session ending,
+  a beam session apksim's window owns, a handoff to the Mac under way). `hold off` disarms it (`d {"hold": null}`);
+  arming again replaces the token. An armed hold lapses 60 s after it was armed, unused.
+- The socket then closes with the hold armed: the session is **held** for `--rejoin-grace` seconds (default 15, at
+  most 120; `0` turns holds off). The app keeps running, frames stop going to the tab, a finger the tab left down is
+  lifted (`touch up` where it was), viewers stay attached and hear `p reconnecting`, inspector-only sockets and shell
+  commands are untouched, and the idle limit counts from the close (the shorter of the two ends it). `/api/status`
+  shows the session with `"held": true`.
+- The reloaded page opens `/ws?rejoin=ID&hold=TOKEN` (plus `codec=`; on serve with the token as any `/ws`, on the
+  agent with the session's page origin and `key=KEY`, the key its first socket was sent as `f KEY`). Refused before the
+  upgrade with 409 (no held session, a wrong or used token) or as any `/ws` (401 without serve's token, 404 on the agent
+  for another origin or key). Five wrong tokens end the hold, and the session with it. Accepted: the new socket is
+  the session's controlling tab. It gets `i {...}` again with `"rejoined": true`, then the session's state (`d
+  {"skin","device"}`, `f KEY` and `k on|off` on the agent, `d {"kept"}`, `d {"viewers"}`, `d {"adb"}`, `c h264|jpeg`:
+  the session's codec, whatever the new socket asked), then frames from a keyframe (H.264) or the last JPEG picture
+  again (a still screen sends nothing new). The frame window and the pace start over. The rejoined tab may hold again.
+- No rejoin in time: the session ends exactly as a plain close would (a kept session packed, a beam session saved,
+  the slot emptied). A close without an armed hold ends it at once, as before.
+- Whether a server or agent holds sessions, and for how long: `"rejoinS": N` in `/api/status`, `/beam/hello` and
+  the `i` message (0 or absent: no holds).
+- serve.html: `window.apksimHold()` arms one (resolves to the `d` answer) and keeps `{id, token, ...}` in the tab's
+  `sessionStorage`; on load the page tries the rejoin first and starts a new session as before when it is refused.
+  A host page that knows a deploy is coming calls it before reloading (the page does not hold by itself).
+
 ### Kept sessions (issue 221)
 
 With `--keep-max N`, a session can keep its app's data for a later one, so a slow sign-in is done once rather than every

@@ -128,11 +128,11 @@ def http(url, path, token=None, data=None, headers=None):
 
 
 class Session:
-    def __init__(self, url, token, app, device, codec=None):
+    def __init__(self, url, token, app, device, codec=None, path=None):
         hdr = {"Origin": parts(url)[2]}
         if token:
             hdr["Cookie"] = "apksim_token=" + token
-        self.ws = WS(url, f"/ws?app={app}" + (f"&device={device}" if device else "") + (f"&codec={codec}" if codec else ""), hdr)
+        self.ws = WS(url, path or f"/ws?app={app}" + (f"&device={device}" if device else "") + (f"&codec={codec}" if codec else ""), hdr)
         # (arrived, present_ms in this machine's time, encode_ms, size, w, h, payload digest, H.264 keyframe, payload)
         self.frames = []
         self.codec = "jpeg"  # what the server answered ("c h264" or "c jpeg"), when asked
@@ -286,6 +286,9 @@ def main():
     ap.add_argument("--crash-app", help="id of an app that crashes at start (test app: -- --activity .CrashActivity)")
     ap.add_argument("--crash-rec", action="store_true",
                     help="the crash app records (--rec input in its options) on a server with --allow-rec: the end message must name the crash bundle (issue 516)")
+    ap.add_argument("--rejoin", action="store_true",
+                    help="issue 529: a held session outlives its socket and the reloaded tab takes it back (waits out one grace period)")
+    ap.add_argument("--rejoin-only", action="store_true", help="only the --rejoin checks (with the token checks before them)")
     a = ap.parse_args()
     global ACK_DELAY_MS
     ACK_DELAY_MS = a.ack_delay
@@ -409,6 +412,9 @@ def main():
         app = apps[0]["id"] if apps else None
     if not app:
         check(False, "an app to run")
+        return finish()
+    if a.rejoin_only:
+        rejoin_check(url, token, app, a.device, a.first_frame_timeout)
         return finish()
 
     t0 = time.time()
@@ -539,6 +545,8 @@ def main():
     check("apps" in st, "/api/status lists the apps' cache states")
     if a.crash_app:
         crash_check(url, token, a.crash_app, a.device, want_rec=a.crash_rec)
+    if a.rejoin:
+        rejoin_check(url, token, app, a.device, a.first_frame_timeout)
     print("RESULT " + json.dumps({"firstFrameMs": round(first_ms), "tapMs": round(median(taps)), "dragFps": round(fps),
                                   "frameLatencyMs": round(median(lat)), "encodeMs": round(median(enc), 1),
                                   "kbPerFrame": round(kb), "shaderFps": round(shader_fps), "shaderKb": round(shader_kb),
@@ -739,6 +747,148 @@ def check_h264(url, token, app, a):
     print("RESULT-H264 " + json.dumps({"encodeMs": round(enc, 1), "kbPerFrame": round(kb, 1), "dragMBps": round(drag_mb_s, 2),
                                        "shaderFps": round(len(shader) / shader_s), "shaderMBps": round(shader_mb_s, 2)}))
     s.ws.s.close()
+
+
+def rejoin_ws(url, token, sid, hold, codec=None):
+    """A reloaded tab's socket: /ws?rejoin=ID&hold=TOKEN (issue 529)."""
+    return Session(url, token, None, None, path=f"/ws?rejoin={sid}&hold={hold}" + (f"&codec={codec}" if codec else ""))
+
+
+def session_state(url, token, sid):
+    """The session's entry in /api/status, or None once it has gone."""
+    status, body = http(url, "/api/status", token)
+    if status != 200:
+        return None
+    return next((x for x in json.loads(body).get("sessions", []) if x.get("id") == sid), None)
+
+
+def arm_hold(s):
+    """Sends `hold`; the server's answer (the `d {"hold": ...}` message), or None."""
+    s.ws.send("hold")
+    s.pump(5, until=lambda: any(t.startswith('d {"hold"') for t in s.texts))
+    return next((json.loads(t[2:]) for t in reversed(s.texts) if t.startswith('d {"hold"')), None)
+
+
+def close_ws(s):
+    """Closes the tab's socket as a reloading browser does (a close frame, then the connection)."""
+    try:
+        s.ws.send("", op=8, raw=struct.pack(">H", 1001))
+    except OSError:
+        pass
+    s.ws.s.close()
+
+
+def wait_held(url, token, sid, want=True, seconds=10):
+    end = time.time() + seconds
+    while time.time() < end:
+        st = session_state(url, token, sid)
+        if (st or {}).get("held") == want:
+            return st
+        time.sleep(0.2)
+    return session_state(url, token, sid)
+
+
+def rejoin_check(url, token, app, device, first_frame_timeout):
+    """Issue 529: `hold`, a closed socket, and /ws?rejoin=ID&hold=TOKEN taking the session back."""
+    status, body = http(url, "/api/status", token)
+    grace = json.loads(body).get("rejoinS", 0) if status == 200 else 0
+    check(grace > 0, f"rejoin: /api/status says holds last {grace} s")
+    s = Session(url, token, app, device, codec="h264")
+    got = s.pump(first_frame_timeout, until=lambda: len(s.frames) > 0)
+    check(got, "rejoin: first frame")
+    if not got:
+        return
+    info = next((json.loads(t[2:]) for t in s.texts if t.startswith("i ")), {})
+    sid = info.get("id")
+    check(info.get("rejoinS") == grace, f"rejoin: the i message says it too ({info.get('rejoinS')})")
+    s.ws.send("stats")
+    s.pump(5, until=lambda: s.stats.get("pid", -1) > 0)
+    pid = s.stats.get("pid")
+
+    # Armed, then `hold off`: a close ends the session as before.
+    h = arm_hold(s)
+    check(bool(h and h.get("hold")) and h.get("graceS") == grace, f"rejoin: `hold` is answered with a token ({h})")
+    s.texts.clear()
+    s.ws.send("hold off")
+    s.pump(5, until=lambda: any(t.startswith('d {"hold"') for t in s.texts))
+    off = next((json.loads(t[2:]) for t in s.texts if t.startswith('d {"hold"')), None)
+    check(off is not None and off.get("hold") is None, f"rejoin: `hold off` disarms it ({off})")
+
+    # Armed again, and the socket closes: the session waits (held), the app still running.
+    old_hold = h.get("hold") if h else None
+    h = arm_hold(s)
+    hold = (h or {}).get("hold")
+    check(bool(hold) and hold != old_hold, "rejoin: arming again gives a new token")
+    s.ws.send("touch down 400 900")  # a finger left down: lifted when the socket goes
+    time.sleep(0.2)
+    close_ws(s)
+    st = wait_held(url, token, sid)
+    check(bool(st) and st.get("held") is True and st.get("pid") == pid, f"rejoin: the session is held, same instance ({st and {k: st.get(k) for k in ('held', 'pid')}})")
+
+    bad = WS(url, f"/ws?rejoin={sid}&hold={'0' * 32}", {"Origin": parts(url)[2], **({"Cookie": "apksim_token=" + token} if token else {})})
+    check(bad.status == 409, f"rejoin: a wrong token is refused before the upgrade ({bad.status})")
+    bad.s.close()
+    if token:
+        nt = WS(url, f"/ws?rejoin={sid}&hold={hold}", {"Origin": parts(url)[2]})
+        check(nt.status == 401, f"rejoin: without the server's token it is refused ({nt.status})")
+        nt.s.close()
+    check((session_state(url, token, sid) or {}).get("held") is True, "rejoin: refused tries leave it held")
+
+    t0 = time.time()
+    r = rejoin_ws(url, token, sid, hold, codec="h264")
+    check(r.ws.status == 101, f"rejoin: the token takes the session back ({r.ws.status})")
+    got = r.pump(20, until=lambda: len(r.frames) > 0)
+    check(got, f"rejoin: frames again after {1000 * (time.time() - t0):.0f} ms")
+    ri = next((json.loads(t[2:]) for t in r.texts if t.startswith("i ")), {})
+    check(ri.get("id") == sid and ri.get("rejoined") is True, f"rejoin: the i message names the same session, rejoined ({ri.get('id')}, {ri.get('rejoined')})")
+    check(r.texts and r.texts[0].startswith("i "), f"rejoin: the i message comes first ({r.texts[:1]})")
+    if r.codec == "h264" and r.frames:
+        check(r.frames[0][7], "rejoin: the first H.264 frame is a keyframe")
+    r.ws.send("stats")
+    r.pump(5, until=lambda: r.stats.get("pid", -1) > 0)
+    check(r.stats.get("pid") == pid, f"rejoin: the same instance runs (pid {r.stats.get('pid')} was {pid})")
+    n = len(r.frames)
+    r.after(["drag 400 1200 400 500 300"], wait=2)
+    check(len(r.frames) > n, "rejoin: input from the new socket reaches the app (frames after a drag)")
+    again = WS(url, f"/ws?rejoin={sid}&hold={hold}", {"Origin": parts(url)[2], **({"Cookie": "apksim_token=" + token} if token else {})})
+    check(again.status == 409, f"rejoin: the token works once ({again.status})")
+    again.s.close()
+
+    # Held, and nobody comes back: the session ends once the grace is over.
+    h = arm_hold(r)
+    check(bool(h and h.get("hold")), "rejoin: the rejoined tab may hold again")
+    close_ws(r)
+    wait_held(url, token, sid)
+    time.sleep(grace + 3)
+    st = session_state(url, token, sid)
+    check(st is None or st.get("stopping"), f"rejoin: with no rejoin it ends after {grace} s ({st and st.get('held')})")
+    late = WS(url, f"/ws?rejoin={sid}&hold={h.get('hold') if h else 'x'}", {"Origin": parts(url)[2], **({"Cookie": "apksim_token=" + token} if token else {})})
+    check(late.status == 409, f"rejoin: too late is refused ({late.status})")
+    late.s.close()
+
+    # A JPEG session on a still screen: the rejoined tab still gets a picture (the last one again).
+    j = Session(url, token, app, device)
+    j.pump(first_frame_timeout, until=lambda: len(j.frames) > 0)
+    j.pump(3)  # the screen settles: no new frames come by themselves
+    jid = next((json.loads(t[2:]) for t in j.texts if t.startswith("i ")), {}).get("id")
+    jh = (arm_hold(j) or {}).get("hold")
+    close_ws(j)
+    wait_held(url, token, jid)
+    jr = rejoin_ws(url, token, jid, jh)
+    got = jr.pump(10, until=lambda: len(jr.frames) > 0)
+    check(jr.ws.status == 101 and got and jr.codec == "jpeg", f"rejoin: a still JPEG screen is sent again ({jr.ws.status}, {len(jr.frames)} frames, {jr.codec})")
+    close_ws(jr)
+
+    # Without a hold, a close ends the session at once, as before.
+    p = Session(url, token, app, device)
+    p.pump(first_frame_timeout, until=lambda: len(p.frames) > 0)
+    pid2 = next((json.loads(t[2:]) for t in p.texts if t.startswith("i ")), {}).get("id")
+    close_ws(p)
+    end = time.time() + 10
+    while time.time() < end and (session_state(url, token, pid2) or {}).get("stopping") is False:
+        time.sleep(0.2)
+    st = session_state(url, token, pid2)
+    check(st is None or st.get("stopping"), "rejoin: a close without a hold still ends the session")
 
 
 def crash_check(url, token, app, device, expect=("uncaught exception", "crashed:"), want_rec=False):
