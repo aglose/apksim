@@ -578,6 +578,56 @@ final class Session {
     if (serve.beam && app.launch().contains("--tab-relay")) watchRelay(p);
     if (serve.beam && inspecting()) watchForward(p);
     watchLinks(p);
+    if ("1".equals(options.get("audiostream"))) watchAudio(p);
+  }
+
+  // ---------------------------------------------------------------- the app's sound for the tab (issue 532)
+
+  private volatile Socket audiowatch;
+  private static final java.util.regex.Pattern AUDIO_CHUNK = java.util.regex.Pattern.compile("u [0-9]{10,18} [0-9]{1,9} [0-9]{3,6} [1-8] [A-Za-z0-9+/=]{4,40000}");
+
+  /** What the `i` message says of sound: "stream" where the tab asked for it and the stream is up, "off" otherwise. */
+  String audioStreamState() {
+    return "1".equals(options.get("audiostream")) ? "stream" : "off";
+  }
+
+  /**
+   * The app's AudioTracks' output as 16-bit PCM, for this session's tab alone (a viewer's socket is never given it):
+   * the instance's `audiowatch` connection (AudioTap) sends `u PRESENTED_US TRACK RATE CHANNELS BASE64` lines, passed on
+   * as text messages while a tab holds the session. `audio stream off|on` from the tab stops and starts the copying.
+   */
+  private void watchAudio(int port) {
+    try {
+      Socket s = audiowatch = connect(port);
+      s.getOutputStream().write("audiowatch\n".getBytes(StandardCharsets.US_ASCII));
+      Thread.ofVirtual().name("serve-audio-" + id).start(() -> {
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.US_ASCII))) {
+          String first = r.readLine();
+          if (first == null || !first.equals("ok audiowatch")) {
+            closeQuietly(s);
+            return;
+          }
+          for (String line; (line = r.readLine()) != null; ) {
+            if (held || ended || !AUDIO_CHUNK.matcher(line).matches()) continue;  // no tab: the sound has no one to reach
+            ws.sendText(line);
+          }
+        } catch (IOException e) {
+          // the instance went away
+        }
+      });
+    } catch (IOException e) {
+      logLine("[serve] the app's sound is not streamed: " + e);
+    }
+  }
+
+  private void audioStreamCommand(String text) {
+    Socket s = audiowatch;
+    if (s == null) return;
+    try {
+      s.getOutputStream().write((text.substring(6) + "\n").getBytes(StandardCharsets.US_ASCII));
+    } catch (IOException e) {
+      // the instance went away
+    }
   }
 
   // ---------------------------------------------------------------- links the app opens in a browser (issue 336)
@@ -2129,6 +2179,10 @@ final class Session {
       ws.sendText("k " + (keep ? "on" : "off"));
       return;
     }
+    if (text.equals("audio stream off") || text.equals("audio stream on")) {
+      audioStreamCommand(text);
+      return;
+    }
     if (text.startsWith("inspect watch ") && inspecting()) {
       watchCommand(text);
       return;
@@ -2896,6 +2950,7 @@ final class Session {
     closeQuietly(netwatch);
     closeQuietly(relaywatch);
     closeQuietly(hostwatch);
+    closeQuietly(audiowatch);
     keepRecordings();
     // The data slot is announced on the instance's output: read it to the end (the process has gone, so the end comes)
     // before erasing, or an app that died just after taking its slot would leave it behind.

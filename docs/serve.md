@@ -749,9 +749,29 @@ docs/beam.md, "Beam client protocol", and may also name where else its build can
 store), which the agent uses only for addresses its owner allowed (`apksim beam config allow-download`, docs/beam.md
 "Builds from an artifact store").
 
+### Sound
+
+`/ws?audio=stream` (the page's "Sound" box) asks for the app's sound (issue 532). The instance's AudioTracks, which
+play on the Mac's output (`ShadowSimAudioTrack`), are also copied by `AudioTap` while a session listens (the
+instance's `audiowatch` control connection; nothing is copied otherwise, and a slow tab loses chunks, never the app's
+output) and sent to that tab alone as text messages `u PRESENTED_US TRACK RATE CHANNELS BASE64`: 16-bit little-endian
+PCM, at most 20 ms each, per AudioTrack. `PRESENTED_US` is epoch microseconds, the clock of the screen frames' header:
+when the chunk's first sample is expected to play (written, plus what the track still had queued). The page schedules
+each track's chunks back to back a short buffer ahead and drops one that is more than ~230 ms late rather than play it
+late (`window.apksimAudio()` counts chunks and drops). Browsers start sound only after a click or tap, so the
+"Sound" box is that gesture: the page resumes its `AudioContext` when it is ticked. The `i` message says `"audio":
+"stream"` when the session streams it, else `"off"`. `audio stream off|on` stops and starts the copying without
+touching the app; `audio mute` still decides what the Mac plays, and the stream carries the sound either way. Viewers
+of a shared session never get sound. Not done: Opus (no encoder is linked, so 48 kHz stereo is ~1.5 Mbit/s before
+Base64; the line format leaves room for a codec field), a per-session switch for viewers, sound from the Linux
+image (its AudioTrack is Robolectric's, which plays nothing and has no output clock), a beam session in a tab (the
+agent's route is not checked), and a seekable resync beyond dropping late chunks. `scripts/audio-tap-check.py PORT
+CLIP.aac` (an instance) and `scripts/serve-audio-check.py URL APP_ID` (a running serve, with the test app's
+`apksim://media?sample=aac-lc.m4a`) check it; by hand, no CI.
+
 ### Not in scope (yet)
 
-- Audio, the Mac's own camera (an app launch option `--camera fake` gives a session the test pattern, and a tab may
+- Sound as Opus, sound from a Linux image's AudioTracks (see "Sound"), a mix of viewers' hearing it, the tab's microphone, the Mac's own camera (an app launch option `--camera fake` gives a session the test pattern, and a tab may
   send `camera pattern` or `camera off`; never `camera image`, which names a host file), `sysfs /sys/PATH VALUE` and `sysfs clear /sys/PATH` (a hardware state file under `/sys`: a plain path, a value of at most 128 characters), the soft keyboard (a hardware keyboard counts as connected, as in the Mac window), two-finger
   gestures from the browser, file pickers (`pick`), multiple tabs sharing one session.
 - A pool of more than one warm standby (one per apksim folder today, refilled ~2 s after each launch: a second

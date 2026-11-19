@@ -369,6 +369,9 @@ Read README.md for results and limits; this file covers how to work on the code.
     `limited`: one command, only `am start`, `am broadcast` and `settings get|put` and `cat` of one file in the app's own folders (issue 408) for the app's own package
     (`TabShell.refusal`; anything else is status 126); `full` (a beamed session that asked for adb while its Mac's owner allows
     it, `allow-adb on`, read at each use): the whole shell, nothing streaming, a minute at most. Only the server sends it: it is not a command a tab may type.
+  - `video/AudioTap` (`audiowatch`, issue 532): the app's AudioTrack output as 16-bit PCM `u PRESENTED_US TRACK RATE
+    CHANNELS BASE64` lines for a serve tab that asked (`/ws?audio=stream`, `Session.watchAudio`; docs/serve.md "Sound";
+    `scripts/audio-tap-check.py`, `serve-audio-check.py`). Mac only (the Linux image's AudioTrack plays nothing).
   - `TabFiles`: `devpush DEVICE_PATH BASE64`, a file a browser tab sent (`apksim serve` and `beam`, issue 187), written
     where `adb push` could write it (the app's `files/`, `cache/`, `shared_prefs/`, `databases/`, `/sdcard`,
     `/data/local/tmp`) and moved into place whole. Only the server sends it: it is not a command a tab may type.

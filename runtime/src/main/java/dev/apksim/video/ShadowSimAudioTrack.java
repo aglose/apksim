@@ -31,6 +31,10 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
   private ByteBuffer scratch;
   private int frameBytes;
   private float volume = 1f;  // guarded by lock
+  private int encoding;
+  private final int trackId = NEXT_ID.incrementAndGet();
+  private static final java.util.concurrent.atomic.AtomicInteger NEXT_ID = new java.util.concurrent.atomic.AtomicInteger();
+  private ByteBuffer tapScratch;
 
   /** The CoreAudio stream, made on first use, or 0 when this track stays with Robolectric. */
   private long out() {
@@ -41,6 +45,7 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
         && encoding != AudioFormat.ENCODING_PCM_FLOAT)) {
       return 0;
     }
+    this.encoding = encoding;
     int channels = real.getChannelCount();
     int bufferBytes = ReflectionHelpers.getField(real, "mNativeBufferSizeInBytes");
     out = SimAudio.nativeOutCreate(real.getSampleRate(), channels, encoding, bufferBytes);
@@ -80,9 +85,41 @@ public class ShadowSimAudioTrack extends ShadowAudioTrack {
 
   /** Writes bytes already in a direct buffer to stream [o] (taken with use()); returns the bytes taken. */
   private int write(long o, ByteBuffer direct, int offset, int bytes, boolean blocking) {
+    boolean tap = AudioTap.wanted();  // muted or not: a tab hears what the Mac would play
+    long queued = tap ? SimAudio.nativeOutPending(o) : 0;  // before the write: what plays ahead of it
     int n = SimAudio.nativeOutWrite(o, direct, offset, bytes - bytes % frameBytes, blocking);
     STATS.addAndGet(1, n / frameBytes);
+    if (tap && n > 0) tap(direct, offset, n, queued);
     return n;
+  }
+
+  /** Copies what was just written to the tab's audio stream, as 16-bit PCM (issue 532). */
+  private void tap(ByteBuffer direct, int offset, int n, long queued) {
+    ByteBuffer src = direct.duplicate().order(ByteOrder.nativeOrder());
+    src.position(offset).limit(offset + n);
+    ByteBuffer pcm;
+    int bytes;
+    if (encoding == AudioFormat.ENCODING_PCM_16BIT) {
+      pcm = src;
+      bytes = n;
+    } else {
+      int samples = n / (encoding == AudioFormat.ENCODING_PCM_FLOAT ? 4 : 1);
+      if (tapScratch == null || tapScratch.capacity() < samples * 2) tapScratch = ByteBuffer.allocateDirect(Math.max(samples * 2, 1 << 15)).order(ByteOrder.nativeOrder());
+      tapScratch.clear();
+      for (int i = 0; i < samples; i++) {
+        short v;
+        if (encoding == AudioFormat.ENCODING_PCM_FLOAT) {
+          v = (short) Math.max(-32768, Math.min(32767, Math.round(src.getFloat() * 32767f)));
+        } else {
+          v = (short) (((src.get() & 0xff) - 128) << 8);  // 8-bit PCM is unsigned
+        }
+        tapScratch.putShort(v);
+      }
+      tapScratch.flip();
+      pcm = tapScratch;
+      bytes = samples * 2;
+    }
+    AudioTap.offer(trackId, real.getSampleRate(), real.getChannelCount(), pcm, bytes, queued);
   }
 
   @Implementation

@@ -1764,6 +1764,8 @@ public final class Serve {
       String v = r.param(k);
       if (v != null && !v.isEmpty()) options.put(k, v);
     }
+    // Issue 532: `audio=stream` asks for the app's sound as `u` messages on this tab's socket (never a viewer's).
+    if ("stream".equals(r.param("audio"))) options.put("audiostream", "1");
     // Issue 371: the network inspector for this session alone, where the server allows it (`--inspect-network optional`).
     // The agent's sessions ask in `/beam/start` instead (the grant's launch), never here.
     // The page's own query carries inspect=1 to the agent too: said only when the start did not get it.
@@ -1890,7 +1892,7 @@ public final class Serve {
         // Whether this session has the inspector, and whether a session could (a page offers the switch only where it works).
         // What a `shell` message may run here (issue 397): "off", "limited" or "full"; and whether an adb device comes.
         + ",\"maxBroadcasts\":" + dev.apksim.BroadcastSpec.COUNT_MAX + ",\"shell\":" + Http.q(x.shellMode()) + (beam ? ",\"adb\":" + x.wantsAdb() : "")
-        + ",\"inspect\":" + x.inspecting() + ",\"inspectAllowed\":" + x.inspectAllowed()
+        + ",\"audio\":" + Http.q(x.audioStreamState()) + ",\"inspect\":" + x.inspecting() + ",\"inspectAllowed\":" + x.inspectAllowed()
         // --allow-share: the key of this session's view-only link (`?join=ID&key=KEY`), for its own tab alone.
         + ((shareKey != null) ? ",\"share\":" + Http.q(shareKey) + ",\"maxViewers\":" + maxViewers : "")
         + (x.inspecting() ? ",\"inspectMaxRules\":" + inspectMaxRules : "")
