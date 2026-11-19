@@ -1,0 +1,23 @@
+# Cells of launch-options.tsv nobody has ruled on yet (OPTION SURFACE). A new option is decided, not added here.
+--broadcast mcp
+--camera-sizes serve
+--camera-sizes beam
+--camera-sizes mcp
+--device-kind mcp
+--fold mcp
+--gles serve
+--gles beam
+--gles mcp
+--move-shared-data mcp
+--no-network mcp
+--rec-checkpoint serve
+--rec-checkpoint beam
+--rec-checkpoint mcp
+--sensor serve
+--sensor beam
+--sensor mcp
+--skin mcp
+--skip-library serve
+--skip-library beam
+--skip-library mcp
+--sysfs mcp

@@ -536,7 +536,10 @@ Read README.md for results and limits; this file covers how to work on the code.
   method's instructions and are counted for the app's own classes, its libraries and the manifest separately; also
   manifest attributes by resource id, `lib/*/*.so` imports, `--json`; update the table when a stand-in lands;
   `subsystem-audit-check.py` in CI's quick checks, with `testapks/subsystem-audit-fixture`'s binary manifest),
-  `check-translator.sh` (translates and runs `testapks/translator-fixture`, see "Instrumentation tests"),
+  `check-launch-options.py` (CI quick check: every option the launcher parses has a row in `launch-options.tsv`, yes /
+  server-only / `no: REASON` for serve, beam and mcp, matched against `Catalog.LAUNCH_OPTIONS`, what Session/Serve add and
+  mcp.py's list; `no: undecided` only for the cells in `launch-options-undecided.txt`: decide a new option, do not add it
+  there), `check-translator.sh` (translates and runs `testapks/translator-fixture`, see "Instrumentation tests"),
   `adb-check.py` (the adb device as a tool's on-device server uses it, see "adb device"), `video-check.py` (recorded
   video over `--control`: selftest on the H.264 fixture clip, `apksim://video`, no HEVC decoder listed; `--hevc` for an
   image built with it: the HEVC clip and the Settings clip; CI runs it in both Linux
