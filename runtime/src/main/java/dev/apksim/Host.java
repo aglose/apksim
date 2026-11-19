@@ -448,7 +448,7 @@ public class Host {
   /** What keeps the UI from being quiet for a screenshot, or null. */
   private String busy(ShadowLooper looper, List<View> roots) {
     if (!pendingScript.isEmpty() || drag != null) return "input queued";
-    if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) return "a frame is wanted";
+    if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) return "a frame is wanted" + frameWantedBy(roots);
     // Behind the home screen nothing is drawn (the loop makes no frames), so a window that differs from the last
     // frame's would stay "needing drawing" until a `resume` (issue 489).
     if (!controls.hidden() && needsFrame(roots)) return "a window needs drawing";
@@ -458,6 +458,56 @@ public class Host {
     if (!looper.isIdle()) return "the main looper has messages due";
     String due = dueMessage(SystemClock.uptimeMillis() + settle.horizonMs);
     return due == null ? null : "a message is due: " + due;
+  }
+
+  /**
+   * What asks for the next frame, as far as it can be named, for `settle`'s answer: an indeterminate ProgressBar
+   * spinning on a shown window, else the running animators (AnimationHandler's callbacks); "" when neither is found
+   * (a View animation, a Scroller, Compose's frame clock). Called only while a `settle` waits.
+   */
+  private static String frameWantedBy(List<View> roots) {
+    StringBuilder spinners = new StringBuilder();
+    for (View r : roots) {
+      if (r.isShown()) spinners(r, spinners);
+    }
+    if (spinners.length() > 0) return ": a spinning ProgressBar" + spinners;
+    try {
+      List<?> callbacks = ReflectionHelpers.getField(android.animation.AnimationHandler.getInstance(), "mAnimationCallbacks");
+      java.util.Map<String, Integer> kinds = new java.util.TreeMap<>();
+      for (Object c : callbacks) {
+        if (c == null) continue;
+        String kind = c.getClass().getSimpleName();
+        if (c instanceof android.animation.ObjectAnimator o && o.getTarget() != null) {
+          kind += " on " + o.getTarget().getClass().getSimpleName() + (o.getPropertyName() == null ? "" : "." + o.getPropertyName());
+        }
+        kinds.merge(kind, 1, Integer::sum);
+      }
+      if (kinds.isEmpty()) return "";
+      StringBuilder b = new StringBuilder(": animators running:");
+      kinds.forEach((k, n) -> b.append(' ').append(k).append(n > 1 ? " x" + n : "").append(','));
+      b.setLength(b.length() - 1);
+      return b.toString();
+    } catch (RuntimeException e) {
+      return "";
+    }
+  }
+
+  private static void spinners(View v, StringBuilder out) {
+    if (v.getVisibility() != View.VISIBLE) return;
+    if (v instanceof android.widget.ProgressBar p && p.isIndeterminate()
+        && p.getIndeterminateDrawable() instanceof android.graphics.drawable.Animatable a && a.isRunning()) {
+      String id = "";
+      try {
+        if (p.getId() != View.NO_ID) id = "#" + p.getResources().getResourceEntryName(p.getId());
+      } catch (RuntimeException e) {
+        // an id with no name
+      }
+      int[] at = new int[2];
+      p.getLocationOnScreen(at);
+      out.append(' ').append(id.isEmpty() ? "" : id + " ").append("at ").append(at[0]).append(',').append(at[1]);
+    } else if (v instanceof ViewGroup g) {
+      for (int i = 0; i < g.getChildCount(); i++) spinners(g.getChildAt(i), out);
+    }
   }
 
   /**
