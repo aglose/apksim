@@ -54,7 +54,7 @@ jobs:
           code=true startup=true arm64=true
           if [ "${{ github.event_name }}" = pull_request ]; then
             files=$(git diff --no-renames --name-only "$BASE...$HEAD_SHA")
-            docs='(\.md|\.txt)$|^docs/|^\.claude/|^(LICENSE|NOTICE)(\.md|\.txt)?$'
+            docs='(\.md|\.txt)$|^docs/|^\.claude/|^website/|^scripts/docs-site\.py$|^\.github/workflows/docs\.yml$|^(LICENSE|NOTICE)(\.md|\.txt)?$'
             linux_only='^(testapks/|docker/|native/linux/|packaging/|\.github/actions/|\.github/workflows/(release|corpus)\.yml$|scripts/hooks/|scripts/jdi/)|^scripts/[^/]+\.(py|java|json)$|^scripts/(ci-smoke|docker-build|check-[a-z0-9-]+|[a-z0-9-]+-check)\.sh$'
             arm='^(native/|docker/|build\.gradle\.kts$|settings\.gradle|gradle/|\.github/actions/linux-build/|testapks/[a-z0-9-]+-fixture/|scripts/(ci-smoke|docker-build)\.sh$)'
             if [ -n "$files" ]; then

@@ -683,6 +683,21 @@ Read README.md for results and limits; this file covers how to work on the code.
   in-process; a prototype), `corpus.md` (the offline app corpus: what it checks, how to add an app, the findings and
   which are real), `stub-census.tsv` and `stub-census-registered.txt` (generated: every framework native and what
   covers it; `scripts/stub-census.sh`).
+- `website/`, `scripts/docs-site.py`, `.github/workflows/docs.yml`: the documentation site
+  (https://aglose.github.io/apksim/, Zensical with the Material theme, GitHub Pages). Nothing is kept twice:
+  `docs-site.py` assembles `work/site/docs` from `website/pages/*.md` (written for the site: the landing page and the
+  quick start), one page per `## ` section of the README (`README_PAGES` in the script) and `docs/*.md` as they are,
+  rewriting links (a README anchor to its page, other repository paths to github.com) and list indentation
+  (Python-Markdown wants a blank line before a list and each nesting level 4 spaces in; the sources nest by 2 or by 4), then builds with
+  `website/mkdocs.yml` into `work/site/out`. A new README section or `docs/*.md` file must be given a place in the
+  script's table or the nav: the build says which. `--strict` (CI) fails on a link between pages with no target;
+  `--serve` previews. Needs Zensical on the PATH or in `work/site-venv` (`python3 -m venv work/site-venv && work/site-venv/bin/pip install -r
+  website/requirements.txt`; nothing else of apksim needs it).
+  In a table, a code span's `\|` becomes `|` with a break allowed after it. `website/assets/site.css` holds the
+  site's colours (light and a blue-grey dark), type and table styling; `app-light.png`/`app-dark.png` there are the
+  test app's `shot` output (Home, and Trips with `appearance dark`), shown on the landing page: retake them when the
+  test app's look changes.
+  The workflow builds on pull requests that touch a source and deploys on `main`.
 - `.github/workflows/ci.yml`: `build` (the runtime, the test app and the Linux image, once, plus the quick checks),
   then five `linux` legs side by side on that image (`app`, `data`, `replay`, `crawl`, `tests`: `scripts/ci-smoke.sh`
   split by `SMOKE_PARTS`, the androidTest runs, affected-check, the observer gate on a subset of UI-heavy classes), and `linux-smoke`, the check every pull request must

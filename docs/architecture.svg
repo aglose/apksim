@@ -1,268 +1,213 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1813" width="1200" height="1813" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1444" width="1200" height="1444" role="img" aria-labelledby="title desc">
 <title id="title">apksim system design</title>
-<desc id="desc">Ways in (Mac window, control channel, adb device, browser tab, MCP server, test runs) lead to the launcher, which hands the launch to a pre-booted standby JVM or starts a cold one. Inside the one process: the APK's DEX code translated to JVM bytecode, the real AOSP Android 16 framework with apksim's system-server stand-ins, the APK's native libraries loaded through an ELF loader and bionic shim, the Host main thread, and the frame pipeline from display lists through HWUI and Skia to an IOSurface on a Cocoa window. Out come test results, coverage, screenshots, flight recordings, network recordings and screen maps. It runs on macOS on Apple Silicon and in a Linux container.</desc>
+<desc id="desc">Six ways in (Mac window, control channel, adb device, browser tab, MCP server, test runs) lead to the launcher, which hands the launch to a pre-booted standby JVM or starts a cold one. Inside the one process, three columns: the APK's DEX code and the translator that turns it into JVM bytecode; the real AOSP Android 16 framework over apksim's system-server stand-ins; the APK's arm64 native libraries over an ELF loader and bionic shim. Below them the Host main thread, and a frame's path: record, rasterise with HWUI and Skia, present, screen. Out come test results, coverage, screenshots, flight recordings, network recordings and screen maps. It runs on macOS on Apple Silicon and in a Linux container.</desc>
 <style>
-svg{--bg:#ffffff;--border:#d0d7de;--ink:#1f2328;--body:#3a424d;--muted:#59636e;--line:#6e7781;
---card-f:#f6f8fa;--card-s:#c4ccd6;--app-f:#fff0d4;--app-s:#bf7600;--and-f:#dcf5e3;--and-s:#1f8a47;
---sim-f:#e3edff;--sim-s:#2f6fde;--host-f:#eaedf1;--host-s:#7a8594;--proc-f:#fbfcfe;}
-@media (prefers-color-scheme:dark){svg{--bg:#0d1117;--border:#30363d;--ink:#e6edf3;--body:#c5ced8;--muted:#9198a1;--line:#8b949e;
---card-f:#161b22;--card-s:#3d444d;--app-f:#38280a;--app-s:#e0a03c;--and-f:#0f2d1b;--and-s:#46c172;
---sim-f:#11254b;--sim-s:#6ea3ff;--host-f:#22272e;--host-s:#8b96a5;--proc-f:#0f141b;}}
+svg{--bg:#ffffff;--border:#d5dbe1;--ink:#1b2430;--body:#36414d;--muted:#5a6673;--line:#6b7682;
+--card-f:#f5f7f9;--card-s:#c2cad3;--app-f:#fff1d6;--app-s:#b56f00;--and-f:#ddf4e4;--and-s:#1c8444;
+--sim-f:#e4edff;--sim-s:#2c66d6;--host-f:#e9ecf0;--host-s:#6f7b8a;--proc-f:#fbfcfd;}
+@media (prefers-color-scheme:dark){svg{--bg:#161c23;--border:#2c3642;--ink:#e6edf3;--body:#c8d1da;--muted:#98a3ae;--line:#8a95a1;
+--card-f:#1d242d;--card-s:#3e4955;--app-f:#3a2a0b;--app-s:#e3a442;--and-f:#10301d;--and-s:#4bc479;
+--sim-f:#14294f;--sim-s:#77a8ff;--host-f:#252c35;--host-s:#8e99a8;--proc-f:#12171d;}}
 .bgr{fill:var(--bg);stroke:var(--border)}
-text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif;fill:var(--body);font-size:14px}
-.m{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;font-size:12.6px}
-.h1{font-size:27px;font-weight:700;fill:var(--ink)}
-.sub{font-size:15.5px;fill:var(--muted)}
-.s{font-size:13px;font-weight:700;letter-spacing:.09em;fill:var(--ink)}
-.numt{font-size:12.5px;font-weight:700;fill:var(--bg)}
+text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif;fill:var(--body);font-size:15px}
+.h1{font-size:30px;font-weight:700;fill:var(--ink)}
+.sub{font-size:17px;fill:var(--muted)}
+.s{font-size:20px;font-weight:700;fill:var(--ink)}
+.numt{font-size:14px;font-weight:700;fill:var(--bg)}
 .num{fill:var(--ink)}
-.c{font-size:11.5px;font-weight:700;letter-spacing:.08em;fill:var(--muted)}
-.note{font-size:13px;fill:var(--muted)}
-.tiny{font-size:11px;font-weight:600;fill:var(--muted)}
-.t{font-size:15.5px;font-weight:650;fill:var(--ink)}
-.t .m{font-size:14px;font-weight:600}
-.p{font-size:14px}
-.tag{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;font-size:12.5px;fill:var(--sim-s);font-weight:600}
-.stat{font-size:13.5px;font-weight:650;fill:var(--sim-s)}
-.b{stroke-width:1.4}
+.c{font-size:15px;font-weight:700;fill:var(--muted)}
+.note{font-size:15px;fill:var(--muted)}
+.t{font-size:18px;font-weight:650;fill:var(--ink)}
+.tc{font-size:16.5px;font-weight:650;fill:var(--ink)}
+.p{font-size:15px}
+.tag{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;font-size:13.5px;fill:var(--sim-s);font-weight:600}
+.stat{font-size:15px;font-weight:650;fill:var(--sim-s)}
+.b{stroke-width:1.5}
 .card{fill:var(--card-f);stroke:var(--card-s)}
 .app{fill:var(--app-f);stroke:var(--app-s)}
 .and{fill:var(--and-f);stroke:var(--and-s)}
 .sim{fill:var(--sim-f);stroke:var(--sim-s)}
 .host{fill:var(--host-f);stroke:var(--host-s)}
-.proc{fill:var(--proc-f);stroke:var(--line);stroke-width:1.4;stroke-dasharray:7 5}
-.a{fill:none;stroke:var(--line);stroke-width:1.6}
+.k-card{fill:var(--card-s)}.k-app{fill:var(--app-s)}.k-and{fill:var(--and-s)}.k-sim{fill:var(--sim-s)}.k-host{fill:var(--host-s)}
+.proc{fill:var(--proc-f);stroke:var(--line);stroke-width:1.5;stroke-dasharray:7 5}
+.a{fill:none;stroke:var(--line);stroke-width:2}
 .ah{fill:var(--line)}
 </style>
 <defs>
-<marker id="ah" viewBox="0 0 8 8" markerWidth="8" markerHeight="8" refX="1" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path class="ah" d="M0,0 L8,4 L0,8 Z"/></marker>
-<marker id="ahs" viewBox="0 0 8 8" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path class="ah" d="M8,0 L0,4 L8,8 Z"/></marker>
+<marker id="ah" viewBox="0 0 10 10" markerWidth="10" markerHeight="10" refX="1" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path class="ah" d="M0,0 L10,5 L0,10 Z"/></marker>
 </defs>
-<rect x="0.5" y="0.5" width="1199" height="1812" rx="14" class="bgr"/>
+<rect x="0.5" y="0.5" width="1199" height="1443" rx="14" class="bgr"/>
 <text x="40" y="54" class="h1">apksim: system design</text>
-<text x="40" y="82" class="sub">An unmodified APK runs as one ordinary process on the host’s CPU: no emulator, no virtual machine, no install step.</text>
-<text x="40" y="113" class="note">Whose code:</text>
-<rect x="132" y="101" width="16" height="16" rx="4" class="b app"/>
-<text x="155" y="113" class="p">the app’s own</text>
-<rect x="256" y="101" width="16" height="16" rx="4" class="b and"/>
-<text x="279" y="113" class="p">Android’s own (AOSP 16)</text>
-<rect x="452" y="101" width="16" height="16" rx="4" class="b sim"/>
-<text x="475" y="113" class="p">apksim</text>
-<rect x="534" y="101" width="16" height="16" rx="4" class="b host"/>
-<text x="557" y="113" class="p">the host OS</text>
-<circle cx="51" cy="153.5" r="11" class="num"/>
-<text x="51" y="158" class="numt" text-anchor="middle">1</text>
-<text x="70" y="158" class="s">WAYS IN</text>
-<text x="1160" y="158" class="note" text-anchor="end">each is a launch option or subcommand; all end as the same commands on the Android main thread</text>
-<rect x="40" y="172" width="354" height="74" rx="8" class="b card"/>
-<text x="380" y="196" class="tag" text-anchor="end">apksim app.apk</text>
-<text x="54" y="196" class="t">Mac window</text>
-<text x="54" y="216" class="p">mouse, keyboard and trackpad gestures;</text>
-<text x="54" y="234" class="p">iOS-Simulator-style menus, device skins</text>
-<rect x="423" y="172" width="354" height="74" rx="8" class="b card"/>
-<text x="763" y="196" class="tag" text-anchor="end">--control</text>
-<text x="437" y="196" class="t">Control channel</text>
-<text x="437" y="216" class="p">one command a line: <tspan class="m">drive.py</tspan>, <tspan class="m">ctl.py</tspan>,</text>
-<text x="437" y="234" class="p">fleets, scenes, snapshots, the crawler</text>
-<rect x="806" y="172" width="354" height="74" rx="8" class="b card"/>
-<text x="1146" y="196" class="tag" text-anchor="end">--adb</text>
-<text x="820" y="196" class="t">adb device</text>
-<text x="820" y="216" class="p"><tspan class="m">adb</tspan>, the Android CLI, <tspan class="m">uiautomator dump</tspan>,</text>
-<text x="820" y="234" class="p">logcat, push and pull, on-device servers</text>
-<rect x="40" y="263" width="354" height="74" rx="8" class="b card"/>
-<text x="380" y="287" class="tag" text-anchor="end">apksim serve</text>
-<text x="54" y="287" class="t">Browser tab</text>
-<text x="54" y="307" class="p">an APK per tab, streamed; compare mode,</text>
-<text x="54" y="325" class="p">PR previews; <tspan class="m">beam</tspan> runs it on your own Mac</text>
-<rect x="423" y="263" width="354" height="74" rx="8" class="b card"/>
-<text x="763" y="287" class="tag" text-anchor="end">apksim mcp</text>
-<text x="437" y="287" class="t">AI agents</text>
-<text x="437" y="307" class="p">an MCP server: launch, tap, type, and read</text>
-<text x="437" y="325" class="p">the screen as a short list of nodes</text>
-<rect x="806" y="263" width="354" height="74" rx="8" class="b card"/>
-<text x="1146" y="287" class="tag" text-anchor="end">--instrument</text>
-<text x="820" y="287" class="t">Test runs</text>
-<text x="820" y="307" class="p">androidTest APKs: Compose, Espresso,</text>
-<text x="820" y="325" class="p">UiAutomator; shards, isolation, a warm pool</text>
-<path d="M180,337 V379" class="a" marker-end="url(#ah)"/>
-<circle cx="51" cy="369.5" r="11" class="num"/>
-<text x="51" y="374" class="numt" text-anchor="middle">2</text>
-<text x="70" y="374" class="s">LAUNCH</text>
-<rect x="40" y="388" width="280" height="116" rx="8" class="b sim"/>
-<text x="54" y="412" class="t"><tspan class="m">apksim app.apk</tspan></text>
-<text x="54" y="432" class="p">the launcher: bash builtins only,</text>
-<text x="54" y="450" class="p">as each fork cost a few ms; the</text>
-<text x="54" y="468" class="p">instance then runs inside a</text>
-<text x="54" y="486" class="p"><tspan class="m">sandbox-exec</tspan> profile on macOS</text>
-<rect x="350" y="388" width="810" height="56" rx="8" class="b sim"/>
-<text x="1146" y="412" class="stat" text-anchor="end">window ~10 ms · first frame 0.2-0.5 s</text>
-<text x="364" y="412" class="t">Warm launch</text>
-<text x="364" y="432" class="p"><tspan class="m">apksim-client</tspan> hands the APK and the terminal’s stdio to a standby JVM, pre-booted like Android’s zygote</text>
-<rect x="350" y="448" width="810" height="56" rx="8" class="b sim"/>
-<text x="1146" y="472" class="stat" text-anchor="end">first frame 1.1-1.6 s</text>
-<text x="364" y="472" class="t">Cold launch</text>
-<text x="364" y="492" class="p">a new JVM 24 starts from an AOT cache that already holds the framework’s classes; test runs start this way</text>
-<path d="M320,416 H343" class="a" marker-end="url(#ah)"/>
-<path d="M320,476 H343" class="a" marker-end="url(#ah)"/>
-<path d="M755,504 V541" class="a" marker-end="url(#ah)"/>
-<rect x="24" y="548" width="1152" height="844" rx="12" class="proc"/>
-<circle cx="51" cy="575.5" r="11" class="num"/>
-<text x="51" y="580" class="numt" text-anchor="middle">3</text>
-<text x="70" y="580" class="s">THE PROCESS</text>
-<text x="1160" y="580" class="note" text-anchor="end">one JVM 24 (HotSpot) process: the Android main thread, a raster thread, the app’s own threads</text>
-<text x="40" y="608" class="c">APP CODE</text>
-<text x="423" y="608" class="c">ANDROID FRAMEWORK</text>
-<text x="806" y="608" class="c">NATIVE CODE</text>
-<rect x="40" y="618" width="354" height="56" rx="8" class="b app"/>
-<text x="54" y="642" class="t">The APK’s DEX files</text>
-<text x="54" y="662" class="p">mapped in place, classes read on demand</text>
-<path d="M217,675.5 v9" class="a" marker-end="url(#ah)"/>
-<rect x="40" y="692" width="354" height="92" rx="8" class="b sim"/>
-<text x="54" y="716" class="t">DEX → JVM bytecode translator</text>
-<text x="54" y="736" class="p">written from scratch; lazy, class by class;</text>
-<text x="54" y="754" class="p">registers become typed locals; big methods</text>
-<text x="54" y="772" class="p">are split; network and clock calls are hooked</text>
-<path d="M217,785.5 v9" class="a" marker-end="url(#ah)"/>
-<rect x="40" y="802" width="354" height="56" rx="8" class="b sim"/>
-<text x="54" y="826" class="t">Class cache</text>
-<text x="54" y="846" class="p">per DEX file: only what changed is redone</text>
-<path d="M217,859.5 v9" class="a" marker-end="url(#ah)"/>
-<rect x="40" y="876" width="354" height="74" rx="8" class="b app"/>
-<text x="54" y="900" class="t">App classes on the JVM</text>
-<text x="54" y="920" class="p">JVM bytecode: JIT-compiled by HotSpot,</text>
-<text x="54" y="938" class="p">breakpoints and locals over JDWP</text>
-<rect x="423" y="618" width="354" height="128" rx="8" class="b and"/>
-<text x="437" y="642" class="t">AOSP Android 16 framework (API 36)</text>
-<text x="437" y="662" class="p">The real classes, from <tspan class="m">android-all</tspan>:</text>
-<text x="437" y="680" class="p">Activity, View, Canvas, text, resources,</text>
-<text x="437" y="698" class="p">SQLite, MediaCodec, WindowManager. Calls</text>
-<text x="437" y="716" class="p">bind straight to the original or its stand-in,</text>
-<text x="437" y="734" class="p">with no dispatch in between.</text>
-<rect x="423" y="764" width="354" height="186" rx="8" class="b sim"/>
-<text x="437" y="788" class="t">System-server stand-ins</text>
-<text x="437" y="808" class="p">Robolectric’s shadows and apksim’s own do</text>
-<text x="437" y="826" class="p">what a device’s system server and apps do:</text>
-<text x="437" y="844" class="p">· activity stack and lifecycle, windows, insets</text>
-<text x="437" y="862" class="p">· touch routing, system bars, soft keyboard</text>
-<text x="437" y="880" class="p">· connectivity, Wi-Fi, sticky broadcasts</text>
-<text x="437" y="898" class="p">· services, jobs, alarms, FCM pushes</text>
-<text x="437" y="916" class="p">· permissions, biometrics, keystore, settings</text>
-<text x="437" y="934" class="p">· Bluetooth LE peripherals, camera, location</text>
-<rect x="806" y="618" width="354" height="74" rx="8" class="b app"/>
-<text x="820" y="642" class="t">The APK’s arm64 .so libraries</text>
-<text x="820" y="662" class="p">run directly on the CPU: same instruction set,</text>
-<text x="820" y="680" class="p">so nothing is emulated</text>
-<path d="M983,693.5 v9" class="a" marker-end="url(#ah)"/>
-<rect x="806" y="710" width="354" height="128" rx="8" class="b sim"/>
-<text x="820" y="734" class="t">ELF loader, bionic shim, JNI bridge</text>
-<text x="820" y="754" class="p">maps and relocates Android ELF in process;</text>
-<text x="820" y="772" class="p">bionic → libSystem (glibc on Linux): structs,</text>
-<text x="820" y="790" class="p">errno, pthreads, TLS, sockets; trampolines</text>
-<text x="820" y="808" class="p">where the varargs ABIs differ; 4 KB-aligned</text>
-<text x="820" y="826" class="p">libraries on 16 KB pages</text>
-<rect x="806" y="856" width="354" height="94" rx="8" class="b and"/>
-<text x="820" y="880" class="t">Android’s native runtime</text>
-<text x="820" y="900" class="p">Skia, HWUI, SQLite, ICU, fonts: Android’s</text>
-<text x="820" y="918" class="p">own C++, built for the host by Robolectric</text>
-<path d="M394,913 H408.5 V702 H416" class="a" marker-end="url(#ah)"/>
-<path d="M785,654 H798" class="a" marker-end="url(#ah)" marker-start="url(#ahs)"/>
-<text x="791.5" y="645" class="tiny" text-anchor="middle">JNI</text>
-<path d="M777,730 H791.5 V893 H799" class="a" marker-end="url(#ah)"/>
-<rect x="40" y="974" width="1120" height="74" rx="8" class="b sim"/>
-<text x="54" y="998" class="t"><tspan class="m">Host</tspan>: the Android main thread</text>
-<text x="54" y="1018" class="p">runs the main looper, keeps the activity stack as a device’s activity manager does, dispatches input and device controls (rotation, dark mode, locale ...),</text>
-<text x="54" y="1036" class="p">and draws one frame per display vsync, up to 120 Hz; with nothing to do it sleeps until the next message is due</text>
-<path d="M168,1048 V1081" class="a" marker-end="url(#ah)"/>
-<text x="182" y="1075" class="c">A FRAME</text>
-<rect x="40" y="1088" width="257" height="74" rx="8" class="b and"/>
-<text x="54" y="1112" class="t">Record</text>
-<text x="54" y="1132" class="p">Views and Compose record</text>
-<text x="54" y="1150" class="p">display lists (main thread)</text>
-<rect x="327" y="1088" width="257" height="74" rx="8" class="b and"/>
-<text x="341" y="1112" class="t">Rasterise</text>
-<text x="341" y="1132" class="p">Android’s HWUI and Skia, on a</text>
-<text x="341" y="1150" class="p">thread of their own, on the CPU</text>
-<path d="M301,1125 h16" class="a" marker-end="url(#ah)"/>
-<rect x="614" y="1088" width="257" height="74" rx="8" class="b sim"/>
-<text x="628" y="1112" class="t">Present</text>
-<text x="628" y="1132" class="p">straight into an IOSurface on</text>
-<text x="628" y="1150" class="p">the window: ~0.5 ms a frame</text>
-<path d="M588,1125 h16" class="a" marker-end="url(#ah)"/>
-<rect x="901" y="1088" width="257" height="74" rx="8" class="b host"/>
-<text x="915" y="1112" class="t">Screen</text>
-<text x="915" y="1132" class="p">a native Cocoa window, paced</text>
-<text x="915" y="1150" class="p">to the display’s vsync</text>
-<path d="M875,1125 h16" class="a" marker-end="url(#ah)"/>
-<path d="M168,1186 V1169" class="a" marker-end="url(#ah)"/>
-<path d="M455,1186 V1169" class="a" marker-end="url(#ah)"/>
-<path d="M742,1162 V1179" class="a" marker-end="url(#ah)"/>
-<rect x="40" y="1186" width="257" height="74" rx="8" class="b sim"/>
-<text x="54" y="1210" class="t">Video</text>
-<text x="54" y="1230" class="p">MediaCodec decodes on</text>
-<text x="54" y="1248" class="p">VideoToolbox, or libavcodec</text>
-<rect x="327" y="1186" width="257" height="74" rx="8" class="b sim"/>
-<text x="341" y="1210" class="t">Metal</text>
-<text x="341" y="1230" class="p">AGSL shaders, layer effects,</text>
-<text x="341" y="1248" class="p">bitmap scaling: on the GPU</text>
-<rect x="614" y="1186" width="546" height="74" rx="8" class="b sim"/>
-<text x="628" y="1210" class="t">The same frame also feeds</text>
-<text x="628" y="1230" class="p">screenshots and golden diffs, screen recording, the flight recorder’s</text>
-<text x="628" y="1248" class="p">frame ring, and the H.264 or JPEG stream of <tspan class="m">apksim serve</tspan></text>
-<text x="40" y="1286" class="c">THE REST OF THE SIMULATED DEVICE</text>
-<rect x="40" y="1296" width="257" height="74" rx="8" class="b sim"/>
-<text x="54" y="1320" class="t">Network tap and engine</text>
-<text x="54" y="1340" class="p">records to HAR untouched; replays</text>
-<text x="54" y="1358" class="p">with no backend; offline, 3G, lossy</text>
-<rect x="327" y="1296" width="257" height="74" rx="8" class="b sim"/>
-<text x="341" y="1320" class="t">Flight recorder</text>
-<text x="341" y="1340" class="p">rings of input, logcat, network,</text>
-<text x="341" y="1358" class="p">SQLite and frames; checkpoints</text>
-<rect x="614" y="1296" width="257" height="74" rx="8" class="b sim"/>
-<text x="628" y="1320" class="t">Clocks</text>
-<text x="628" y="1340" class="p">a settable wall clock and zone;</text>
-<text x="628" y="1358" class="p">uptime simulated or real-time</text>
-<rect x="901" y="1296" width="257" height="74" rx="8" class="b sim"/>
-<text x="915" y="1320" class="t">Data slots</text>
-<text x="915" y="1340" class="p">app data, <tspan class="m">/sdcard</tspan> and Settings</text>
-<text x="915" y="1358" class="p">kept per app, or <tspan class="m">--fresh</tspan></text>
-<path d="M600,1392 v30" class="a" marker-end="url(#ah)"/>
-<circle cx="51" cy="1441.5" r="11" class="num"/>
-<text x="51" y="1446" class="numt" text-anchor="middle">4</text>
-<text x="70" y="1446" class="s">WHAT COMES OUT</text>
-<rect x="40" y="1460" width="354" height="74" rx="8" class="b card"/>
-<text x="54" y="1484" class="t">Test results</text>
-<text x="54" y="1504" class="p">JUnit XML; a failure bundle per failing test:</text>
-<text x="54" y="1522" class="p">screen, node tree, log, threads, <tspan class="m">repro.sh</tspan></text>
-<rect x="423" y="1460" width="354" height="74" rx="8" class="b card"/>
-<text x="437" y="1484" class="t">Coverage and test impact</text>
-<text x="437" y="1504" class="p">JaCoCo and LCOV with no rebuild; only the</text>
-<text x="437" y="1522" class="p">tests a change reaches; balanced shards</text>
-<rect x="806" y="1460" width="354" height="74" rx="8" class="b card"/>
-<text x="820" y="1484" class="t">Screenshots and goldens</text>
-<text x="820" y="1504" class="p">devices × dark mode × locales × text sizes,</text>
-<text x="820" y="1522" class="p">byte-identical run to run, HTML diff report</text>
-<rect x="40" y="1551" width="354" height="74" rx="8" class="b card"/>
-<text x="54" y="1575" class="t">Flight recordings (<tspan class="m">.apkrec</tspan>)</text>
-<text x="54" y="1595" class="p">replay, bisect across builds, turn into a</text>
-<text x="54" y="1613" class="p">journey test, open in the trace viewer</text>
-<rect x="423" y="1551" width="354" height="74" rx="8" class="b card"/>
-<text x="437" y="1575" class="t">Network recordings (HAR)</text>
-<text x="437" y="1595" class="p">hermetic replays with no backend, for</text>
-<text x="437" y="1613" class="p">running instances and test runs alike</text>
-<rect x="806" y="1551" width="354" height="74" rx="8" class="b card"/>
-<text x="820" y="1575" class="t">Screen maps</text>
-<text x="820" y="1595" class="p">the crawler’s graph of screens, captured</text>
-<text x="820" y="1613" class="p">across a matrix; a resilience sweep of each</text>
-<circle cx="51" cy="1660.5" r="11" class="num"/>
-<text x="51" y="1665" class="numt" text-anchor="middle">5</text>
-<text x="70" y="1665" class="s">RUNS ON</text>
-<rect x="40" y="1679" width="551" height="74" rx="8" class="b host"/>
-<text x="54" y="1703" class="t">macOS on Apple Silicon</text>
-<text x="54" y="1723" class="p">Cocoa window, IOSurface, Metal, VideoToolbox, CoreAudio,</text>
-<text x="54" y="1741" class="p"><tspan class="m">sandbox-exec</tspan>, warm standbys; arm64 libraries run natively</text>
-<rect x="609" y="1679" width="551" height="74" rx="8" class="b host"/>
-<text x="623" y="1703" class="t">Linux container, x86_64 or arm64</text>
-<text x="623" y="1723" class="p">headless: CPU shaders, Mesa for GLES, libavcodec, OpenH264,</text>
-<text x="623" y="1741" class="p">a bionic → glibc shim; needs no KVM, so any CI runner will do</text>
-<text x="40" y="1785" class="note">Timings: an M4 Pro, median of 5 launches of a small Compose app and a large R8 app. Each box is described in AGENTS.md.</text>
+<text x="40" y="84" class="sub">An unmodified APK runs as one ordinary process on the host’s CPU: no emulator, no virtual machine.</text>
+<text x="40" y="119" class="note">Whose code:</text>
+<rect x="136" y="104" width="22" height="22" rx="5" class="b app"/>
+<text x="166" y="120" class="p">the app’s own</text>
+<rect x="296" y="104" width="22" height="22" rx="5" class="b and"/>
+<text x="326" y="120" class="p">Android’s own (AOSP)</text>
+<rect x="516" y="104" width="22" height="22" rx="5" class="b sim"/>
+<text x="546" y="120" class="p">apksim’s</text>
+<rect x="642" y="104" width="22" height="22" rx="5" class="b host"/>
+<text x="672" y="120" class="p">the host’s</text>
+<circle cx="53" cy="170" r="13" class="num"/>
+<text x="53" y="175" class="numt" text-anchor="middle">1</text>
+<text x="76" y="176" class="s">Ways in</text>
+<text x="1160" y="176" class="note" text-anchor="end">every one ends as the same commands on the Android main thread</text>
+<rect x="40.0" y="194" width="175.0" height="78" rx="10" class="b card"/>
+<rect x="48.0" y="206" width="5" height="54" rx="2.5" class="k-card"/>
+<text x="64.0" y="225" class="tc">Mac window</text>
+<text x="64.0" y="248" class="tag">apksim app.apk</text>
+<rect x="229.0" y="194" width="175.0" height="78" rx="10" class="b card"/>
+<rect x="237.0" y="206" width="5" height="54" rx="2.5" class="k-card"/>
+<text x="253.0" y="225" class="tc">Control channel</text>
+<text x="253.0" y="248" class="tag">--control</text>
+<rect x="418.0" y="194" width="175.0" height="78" rx="10" class="b card"/>
+<rect x="426.0" y="206" width="5" height="54" rx="2.5" class="k-card"/>
+<text x="442.0" y="225" class="tc">adb device</text>
+<text x="442.0" y="248" class="tag">--adb</text>
+<rect x="607.0" y="194" width="175.0" height="78" rx="10" class="b card"/>
+<rect x="615.0" y="206" width="5" height="54" rx="2.5" class="k-card"/>
+<text x="631.0" y="225" class="tc">Browser tab</text>
+<text x="631.0" y="248" class="tag">apksim serve</text>
+<rect x="796.0" y="194" width="175.0" height="78" rx="10" class="b card"/>
+<rect x="804.0" y="206" width="5" height="54" rx="2.5" class="k-card"/>
+<text x="820.0" y="225" class="tc">AI agents</text>
+<text x="820.0" y="248" class="tag">apksim mcp</text>
+<rect x="985.0" y="194" width="175.0" height="78" rx="10" class="b card"/>
+<rect x="993.0" y="206" width="5" height="54" rx="2.5" class="k-card"/>
+<text x="1009.0" y="225" class="tc">Test runs</text>
+<text x="1009.0" y="248" class="tag">--instrument</text>
+<path d="M600,280 L600,306" class="a" marker-end="url(#ah)"/>
+<circle cx="53" cy="332" r="13" class="num"/>
+<text x="53" y="337" class="numt" text-anchor="middle">2</text>
+<text x="76" y="338" class="s">Launch</text>
+<rect x="40" y="356" width="300" height="100" rx="10" class="b sim"/>
+<rect x="48" y="368" width="5" height="76" rx="2.5" class="k-sim"/>
+<text x="64" y="387" class="t">The launcher</text>
+<text x="64" y="410" class="p">starts the app inside a</text>
+<text x="64" y="430" class="p">sandbox on macOS</text>
+<path d="M346,406.0 L380,406.0" class="a" marker-end="url(#ah)"/>
+<rect x="388" y="356" width="368.0" height="100" rx="10" class="b sim"/>
+<rect x="396" y="368" width="5" height="76" rx="2.5" class="k-sim"/>
+<text x="412" y="387" class="t">Warm launch</text>
+<text x="412" y="410" class="p">handed to a standby JVM that has</text>
+<text x="412" y="430" class="p">already booted the framework</text>
+<text x="740.0" y="387" class="stat" text-anchor="end">first frame 0.2-0.5 s</text>
+<text x="774.0" y="411.0" class="note" text-anchor="middle">or</text>
+<rect x="792.0" y="356" width="368.0" height="100" rx="10" class="b sim"/>
+<rect x="800.0" y="368" width="5" height="76" rx="2.5" class="k-sim"/>
+<text x="816.0" y="387" class="t">Cold launch</text>
+<text x="816.0" y="410" class="p">a new JVM starts from a cache</text>
+<text x="816.0" y="430" class="p">of the framework’s classes</text>
+<text x="1144.0" y="387" class="stat" text-anchor="end">first frame 1.1-1.6 s</text>
+<path d="M600,464 L600,490" class="a" marker-end="url(#ah)"/>
+<circle cx="53" cy="516" r="13" class="num"/>
+<text x="53" y="521" class="numt" text-anchor="middle">3</text>
+<text x="76" y="522" class="s">The process</text>
+<text x="1160" y="522" class="note" text-anchor="end">one JVM: the Android main thread, a raster thread and the app’s own threads</text>
+<rect x="40" y="540" width="1120" height="538" rx="14" class="proc"/>
+<text x="60.0" y="570" class="c">App code</text>
+<text x="426.6666666666667" y="570" class="c">Android framework</text>
+<text x="793.3333333333334" y="570" class="c">Native code</text>
+<rect x="60.0" y="584" width="346.7" height="98" rx="10" class="b app"/>
+<rect x="68.0" y="596" width="5" height="74" rx="2.5" class="k-app"/>
+<text x="84.0" y="615" class="t">The APK’s DEX code</text>
+<text x="84.0" y="638" class="p">mapped from the APK, each class</text>
+<text x="84.0" y="658" class="p">read when the app first needs it</text>
+<rect x="60.0" y="712" width="346.7" height="98" rx="10" class="b sim"/>
+<rect x="68.0" y="724" width="5" height="74" rx="2.5" class="k-sim"/>
+<text x="84.0" y="743" class="t">DEX to JVM translator</text>
+<text x="84.0" y="766" class="p">turns it into JVM bytecode, which</text>
+<text x="84.0" y="786" class="p">HotSpot compiles like any Java</text>
+<path d="M233.3,687 L233.3,701" class="a" marker-end="url(#ah)"/>
+<rect x="426.7" y="584" width="346.7" height="98" rx="10" class="b and"/>
+<rect x="434.7" y="596" width="5" height="74" rx="2.5" class="k-and"/>
+<text x="450.7" y="615" class="t">Android 16 framework (AOSP)</text>
+<text x="450.7" y="638" class="p">the real classes: Activity, View,</text>
+<text x="450.7" y="658" class="p">Canvas, resources, SQLite</text>
+<rect x="426.7" y="712" width="346.7" height="98" rx="10" class="b sim"/>
+<rect x="434.7" y="724" width="5" height="74" rx="2.5" class="k-sim"/>
+<text x="450.7" y="743" class="t">System-server stand-ins</text>
+<text x="450.7" y="766" class="p">activity stack, windows, network,</text>
+<text x="450.7" y="786" class="p">services, permissions, sensors</text>
+<path d="M600.0,687 L600.0,701" class="a" marker-end="url(#ah)"/>
+<rect x="793.3" y="584" width="346.7" height="98" rx="10" class="b app"/>
+<rect x="801.3" y="596" width="5" height="74" rx="2.5" class="k-app"/>
+<text x="817.3" y="615" class="t">The APK’s arm64 libraries</text>
+<text x="817.3" y="638" class="p">run on the CPU as they are:</text>
+<text x="817.3" y="658" class="p">nothing is emulated</text>
+<rect x="793.3" y="712" width="346.7" height="98" rx="10" class="b sim"/>
+<rect x="801.3" y="724" width="5" height="74" rx="2.5" class="k-sim"/>
+<text x="817.3" y="743" class="t">ELF loader and bionic shim</text>
+<text x="817.3" y="766" class="p">map the libraries in and answer</text>
+<text x="817.3" y="786" class="p">their libc calls with the host’s</text>
+<path d="M966.7,687 L966.7,701" class="a" marker-end="url(#ah)"/>
+<rect x="60" y="832" width="1080" height="80" rx="10" class="b sim"/>
+<rect x="68" y="844" width="5" height="56" rx="2.5" class="k-sim"/>
+<text x="84" y="863" class="t">Host: the Android main thread</text>
+<text x="84" y="886" class="p">keeps the activity stack, dispatches input and device controls, and draws one frame for each display vsync, up to 120 Hz</text>
+<text x="60" y="946" class="c">A frame</text>
+<rect x="60.0" y="960" width="240.0" height="98" rx="10" class="b and"/>
+<rect x="68.0" y="972" width="5" height="74" rx="2.5" class="k-and"/>
+<text x="84.0" y="991" class="t">Record</text>
+<text x="84.0" y="1014" class="p">Views and Compose record</text>
+<text x="84.0" y="1034" class="p">display lists</text>
+<path d="M306.0,1009.0 L329.0,1009.0" class="a" marker-end="url(#ah)"/>
+<rect x="340.0" y="960" width="240.0" height="98" rx="10" class="b and"/>
+<rect x="348.0" y="972" width="5" height="74" rx="2.5" class="k-and"/>
+<text x="364.0" y="991" class="t">Rasterise</text>
+<text x="364.0" y="1014" class="p">Android’s own HWUI and</text>
+<text x="364.0" y="1034" class="p">Skia, on a thread of theirs</text>
+<path d="M586.0,1009.0 L609.0,1009.0" class="a" marker-end="url(#ah)"/>
+<rect x="620.0" y="960" width="240.0" height="98" rx="10" class="b sim"/>
+<rect x="628.0" y="972" width="5" height="74" rx="2.5" class="k-sim"/>
+<text x="644.0" y="991" class="t">Present</text>
+<text x="644.0" y="1014" class="p">straight into the window’s</text>
+<text x="644.0" y="1034" class="p">surface: ~0.5 ms a frame</text>
+<path d="M866.0,1009.0 L889.0,1009.0" class="a" marker-end="url(#ah)"/>
+<rect x="900.0" y="960" width="240.0" height="98" rx="10" class="b host"/>
+<rect x="908.0" y="972" width="5" height="74" rx="2.5" class="k-host"/>
+<text x="924.0" y="991" class="t">Screen</text>
+<text x="924.0" y="1014" class="p">a native window, or a</text>
+<text x="924.0" y="1034" class="p">stream to a browser tab</text>
+<path d="M600,1086 L600,1112" class="a" marker-end="url(#ah)"/>
+<circle cx="53" cy="1138" r="13" class="num"/>
+<text x="53" y="1143" class="numt" text-anchor="middle">4</text>
+<text x="76" y="1144" class="s">What comes out</text>
+<text x="1160" y="1144" class="note" text-anchor="end">most of it is input to another apksim command</text>
+<rect x="40.0" y="1162" width="175.0" height="78" rx="10" class="b card"/>
+<rect x="48.0" y="1174" width="5" height="54" rx="2.5" class="k-card"/>
+<text x="64.0" y="1193" class="tc">Test results</text>
+<text x="64.0" y="1216" class="p">JUnit XML, bundles</text>
+<rect x="229.0" y="1162" width="175.0" height="78" rx="10" class="b card"/>
+<rect x="237.0" y="1174" width="5" height="54" rx="2.5" class="k-card"/>
+<text x="253.0" y="1193" class="tc">Coverage</text>
+<text x="253.0" y="1216" class="p">JaCoCo and LCOV</text>
+<rect x="418.0" y="1162" width="175.0" height="78" rx="10" class="b card"/>
+<rect x="426.0" y="1174" width="5" height="54" rx="2.5" class="k-card"/>
+<text x="442.0" y="1193" class="tc">Screenshots</text>
+<text x="442.0" y="1216" class="p">goldens and diffs</text>
+<rect x="607.0" y="1162" width="175.0" height="78" rx="10" class="b card"/>
+<rect x="615.0" y="1174" width="5" height="54" rx="2.5" class="k-card"/>
+<text x="631.0" y="1193" class="tc">Flight recordings</text>
+<text x="631.0" y="1216" class="p">replay, bisect, view</text>
+<rect x="796.0" y="1162" width="175.0" height="78" rx="10" class="b card"/>
+<rect x="804.0" y="1174" width="5" height="54" rx="2.5" class="k-card"/>
+<text x="820.0" y="1193" class="tc">Network (HAR)</text>
+<text x="820.0" y="1216" class="p">replays, no backend</text>
+<rect x="985.0" y="1162" width="175.0" height="78" rx="10" class="b card"/>
+<rect x="993.0" y="1174" width="5" height="54" rx="2.5" class="k-card"/>
+<text x="1009.0" y="1193" class="tc">Screen maps</text>
+<text x="1009.0" y="1216" class="p">the crawler’s graph</text>
+<circle cx="53" cy="1284" r="13" class="num"/>
+<text x="53" y="1289" class="numt" text-anchor="middle">5</text>
+<text x="76" y="1290" class="s">Runs on</text>
+<rect x="40" y="1308" width="550.0" height="80" rx="10" class="b host"/>
+<rect x="48" y="1320" width="5" height="56" rx="2.5" class="k-host"/>
+<text x="64" y="1339" class="t">macOS on Apple Silicon</text>
+<text x="64" y="1362" class="p">a native window, Metal and VideoToolbox; warm launches</text>
+<rect x="610.0" y="1308" width="550.0" height="80" rx="10" class="b host"/>
+<rect x="618.0" y="1320" width="5" height="56" rx="2.5" class="k-host"/>
+<text x="634.0" y="1339" class="t">Linux container, x86_64 or arm64</text>
+<text x="634.0" y="1362" class="p">headless, drawn on the CPU; needs no KVM, so any CI runner</text>
+<text x="40" y="1418" class="note">Timings: an M4 Pro, the median of 5 launches of a small Compose app and of a large R8 app.</text>
 </svg>
