@@ -10,7 +10,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT/scripts/jdk.sh"
 TABLE="$ROOT/docs/stub-census.tsv"
-run() { "$JDK/bin/java" -cp "$ROOT/work/lib/asm-9.10.1.jar" "$ROOT/scripts/stub-census.java" "$ROOT" "$@"; }
+CP="$(ls "$ROOT"/work/lib/asm-[0-9]*.jar | head -1)"
+run() { "$JDK/bin/java" -cp "$CP" "$ROOT/scripts/stub-census.java" "$ROOT" "$@"; }
 case "${1:-}" in
   --update) run --out "$TABLE" ;;
   --summary) run ;;

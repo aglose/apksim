@@ -569,16 +569,19 @@ Read README.md for results and limits; this file covers how to work on the code.
   `api-refs.py` (which framework classes, methods and fields apksim.jar uses that another level's android-all jar lacks,
   and which shadow methods stop binding there; docs/api-levels.md),
   `stub-census.sh` (`stub-census.java`; CI's quick checks: `docs/stub-census.tsv`, every native method of the
-  framework jar, 5,934 on API 36, with `shadowed-by CLASS` (an @Implements shadow of that class, apksim's before
+  framework jar, 5,934 on API 36: `shadowed-by CLASS` 800 (an @Implements shadow of that class, apksim's before
   Robolectric's, has an @Implementation of that name and parameter types, SDK 36 in range, ShadowLegacy* ignored, a
-  shadow superclass counted), `native-runtime` (a ShadowNative* shadow, or libandroid_runtime registers it: the names in
-  `docs/stub-census-registered.txt`, from one launch's `-Xlog:jni+resolve=debug` by `--update-registered APK` on a Mac,
-  by name so every overload counts) or `unshadowed` (a call returns the default; 4,197), and whether the member is public
-  API-shaped; no argument checks the table against `work/lib` and `work/apksim.jar`, `--update` rewrites it, `--summary`
-  prints natives per package; a changed shadow in `runtime/` changes rows, so `--update` after one. A native is a
-  `$$robo$$X$nativeBinding` method with the native flag, as Robolectric's instrumentation leaves it. Not told: a class
-  whose shadow has `callNativeMethodsByDefault` and a native nothing registers, which throws UnsatisfiedLinkError, not
-  a default),
+  shadow superclass counted, `Object` parameters only for looseSignatures), `native-runtime` 894 (a ShadowNative* shadow
+  method, or libandroid_runtime registers the name AND the class's exact shadow, apksim's if any, has
+  `callNativeMethodsByDefault`), `registered-unbound` 40 (registered, no such shadow: Robolectric's instrumented `X`
+  returns the default and `ShadowWrangler` calls `$$robo$$X$nativeBinding` only for such a shadow; proved in a test run:
+  `android.graphics.Camera` kept an identity matrix and `YuvImage.compressToJpeg` returned false while Bitmap worked) or
+  `unshadowed` 4,200 (a call returns the default). The registered names are `docs/stub-census-registered.txt`, from one
+  launch's `-Xlog:jni+resolve=debug` by `--update-registered APK` on a Mac (by name: every overload counts). Last column:
+  public/protected member of a public class or internal. No argument checks the table against `work/lib` and
+  `work/apksim.jar`, `--update` rewrites it, `--summary` prints natives per package; a changed shadow in `runtime/`
+  changes rows, so `--update` after one. A native is a `$$robo$$X$nativeBinding` method with the native flag. Not told:
+  a native of a `callNativeMethodsByDefault` class that nothing registers, which throws UnsatisfiedLinkError),
   `make-media.sh` (test clips), `docker-build.sh` and `ci-smoke.sh` (Linux image, CI), `network-check.sh` and
   `network-fixture.py` (record, replay and conditions against the test app, see "Network"), `package-release.sh` (see
   "Releases"),
@@ -595,7 +598,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   documented behaviour here against an emulator, `scripts/conformance.py`: the table per library, causes fixed and left),
   `api-levels.md` (a spike that ran the API 30 framework: how far it got, what broke, what `--api 30` would cost),
   `uiautomator-engine.md` (`--uia engine`: UiAutomator's idle waits, gesture time and accessibility events decided
-  in-process; a prototype).
+  in-process; a prototype), `stub-census.tsv` and `stub-census-registered.txt` (generated: every framework native and what
+  covers it; `scripts/stub-census.sh`).
 - `.github/workflows/ci.yml`: `build` (the runtime, the test app and the Linux image, once, plus the quick checks),
   then five `linux` legs side by side on that image (`app`, `data`, `replay`, `crawl`, `tests`: `scripts/ci-smoke.sh`
   split by `SMOKE_PARTS`, the androidTest runs, affected-check), and `linux-smoke`, the check every pull request must

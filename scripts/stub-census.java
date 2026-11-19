@@ -40,9 +40,13 @@ import org.objectweb.asm.Type;
  *                      has an @Implementation of that name and parameter types (a shadow's Object stands for any
  *                      reference type: looseSignatures), declared in it or in a shadow superclass. apksim's own
  *                      shadows are preferred to Robolectric's, those to the native runtime's.
- *   native-runtime     that shadow is a ShadowNative*: Robolectric's native runtime (librobolectric-nativeruntime,
- *                      registered on its own org.robolectric.nativeruntime.*Natives classes) does the work
- *   unshadowed         nothing: a call returns the default (0, false, null) or whatever the instrumented class does
+ *   native-runtime     that shadow is a ShadowNative* (it calls Robolectric's org.robolectric.nativeruntime.*Natives), or
+ *                      libandroid_runtime registers the name on the framework class (docs/stub-census-registered.txt)
+ *                      AND the class's exact shadow has callNativeMethodsByDefault: only then does ShadowWrangler call
+ *                      the $nativeBinding method
+ *   registered-unbound registered, but no such shadow: the instrumented X returns the default (0, false, null), so
+ *                      the registration is dead (observed: android.graphics.Camera, YuvImage.compressToJpeg)
+ *   unshadowed         nothing: a call returns the default
  * Last column: public when the member is public or protected in a public class, else internal.
  */
 public class StubCensus {
@@ -56,6 +60,7 @@ public class StubCensus {
     String shadowed;   // internal name of the class (value), or null
     String className;  // internal name from className=
     int minSdk = -1, maxSdk = -1;
+    boolean callNative, loose;
     boolean implementsSeen;
     List<String[]> impls = new ArrayList<>();  // name, params descriptor
     List<int[]> implSdk = new ArrayList<>();
@@ -107,8 +112,21 @@ public class StubCensus {
       byShadowed.computeIfAbsent(target, k -> new ArrayList<>()).add(s.name);
     }
 
+    // ShadowWrangler calls a native's $nativeBinding only when the class's exact shadow has callNativeMethodsByDefault and
+    // has no method for it. The exact shadow is apksim's where it shadows the class (it replaces the base one), else any.
+    Map<String, Boolean> callNative = new HashMap<>();
+    for (Map.Entry<String, List<String>> e : byShadowed.entrySet()) {
+      boolean hasSim = false, simFlag = false, anyFlag = false;
+      for (String sh : e.getValue()) {
+        boolean f = shadowClasses.get(sh).callNative;
+        if (sh.startsWith("dev/apksim/")) { hasSim = true; simFlag |= f; }
+        anyFlag |= f;
+      }
+      callNative.put(e.getKey(), hasSim ? simFlag : anyFlag);
+    }
+
     List<String> rows = new ArrayList<>();
-    Map<String, int[]> perPackage = new TreeMap<>();  // natives, unshadowed, native-runtime
+    Map<String, int[]> perPackage = new TreeMap<>();  // natives, unshadowed, native-runtime, registered-unbound
     int nearMiss = 0;
     for (Native n : natives) {
       String status = "unshadowed";
@@ -123,13 +141,15 @@ public class StubCensus {
       }
       boolean registeredNative = inRuntime.contains(n.cls + "." + n.name);
       if (best != null && bestRank < 2) status = "shadowed-by " + best.replace('/', '.');
-      else if (best != null || registeredNative) status = "native-runtime";
+      else if (best != null) status = "native-runtime";
+      else if (registeredNative) status = callNative.getOrDefault(n.cls, false) ? "native-runtime" : "registered-unbound";
       else if (sameName) nearMiss++;
       rows.add(String.join("\t", n.cls.replace('/', '.'), n.name, n.desc, status, n.visible ? "public" : "internal"));
-      int[] c = perPackage.computeIfAbsent(topPackage(n.cls), k -> new int[3]);
+      int[] c = perPackage.computeIfAbsent(topPackage(n.cls), k -> new int[4]);
       c[0]++;
       if (status.equals("unshadowed")) c[1]++;
       if (status.equals("native-runtime")) c[2]++;
+      if (status.equals("registered-unbound")) c[3]++;
     }
     Collections.sort(rows);
     String table = HEADER + "\n" + String.join("\n", rows) + "\n";
@@ -143,9 +163,12 @@ public class StubCensus {
             + ", shadows, work/apksim.jar). Regenerate: scripts/stub-census.sh --update");
         List<String> old = List.of(have.split("\n"));
         Set<String> oldSet = new HashSet<>(old), newSet = new HashSet<>(rows);
-        int shown = 0;
-        for (String r : rows) if (!oldSet.contains(r) && shown++ < 10) System.err.println("  + " + r);
-        for (String r : old) if (!newSet.contains(r) && !r.equals(HEADER) && shown++ < 20) System.err.println("  - " + r);
+        List<String> added = new ArrayList<>(), removed = new ArrayList<>();
+        for (String r : rows) if (!oldSet.contains(r)) added.add(r);
+        for (String r : old) if (!newSet.contains(r) && !r.equals(HEADER)) removed.add(r);
+        System.err.println("  " + added.size() + " rows new or changed, " + removed.size() + " gone or changed");
+        for (int i = 0; i < Math.min(10, added.size()); i++) System.err.println("  + " + added.get(i));
+        for (int i = 0; i < Math.min(10, removed.size()); i++) System.err.println("  - " + removed.get(i));
         System.exit(1);
       }
       System.out.println("stub-census: table is current (" + rows.size() + " natives)");
@@ -171,14 +194,14 @@ public class StubCensus {
   }
 
   static void summary(Map<String, int[]> per, int total, int nearMiss) {
-    int un = 0, nr = 0;
-    for (int[] c : per.values()) { un += c[1]; nr += c[2]; }
-    System.out.printf("%-34s %8s %10s %15s%n", "package", "natives", "unshadowed", "native-runtime");
+    int un = 0, nr = 0, ru = 0;
+    for (int[] c : per.values()) { un += c[1]; nr += c[2]; ru += c[3]; }
+    System.out.printf("%-34s %8s %10s %15s %18s%n", "package", "natives", "unshadowed", "native-runtime", "registered-unbound");
     for (Map.Entry<String, int[]> e : per.entrySet()) {
       int[] c = e.getValue();
-      System.out.printf("%-34s %8d %10d %15d%n", e.getKey(), c[0], c[1], c[2]);
+      System.out.printf("%-34s %8d %10d %15d %18d%n", e.getKey(), c[0], c[1], c[2], c[3]);
     }
-    System.out.printf("%-34s %8d %10d %15d%n", "TOTAL", total, un, nr);
+    System.out.printf("%-34s %8d %10d %15d %18d%n", "TOTAL", total, un, nr, ru);
     System.out.println("unshadowed with a same-named shadow method of other parameter types: " + nearMiss);
   }
 
@@ -203,7 +226,7 @@ public class StubCensus {
         int[] sdk = s.implSdk.get(i);
         if (!im[0].equals(name)) continue;
         if (sdk[0] > SDK || (sdk[1] != -1 && sdk[1] < SDK)) continue;
-        if (paramsMatch(im[1], params)) return 1;
+        if (paramsMatch(im[1], params, s.loose)) return 1;
         result = 2;
       }
       c = s.superName;
@@ -211,13 +234,13 @@ public class StubCensus {
     return result;
   }
 
-  static boolean paramsMatch(String shadow, String target) {
+  static boolean paramsMatch(String shadow, String target, boolean loose) {
     Type[] a = Type.getArgumentTypes(shadow + "V"), b = Type.getArgumentTypes(target + "V");
     if (a.length != b.length) return false;
     for (int i = 0; i < a.length; i++) {
       if (a[i].equals(b[i])) continue;
       boolean ref = b[i].getSort() == Type.OBJECT || b[i].getSort() == Type.ARRAY;
-      if (ref && a[i].getDescriptor().equals("Ljava/lang/Object;")) continue;  // looseSignatures
+      if (loose && ref && a[i].getDescriptor().equals("Ljava/lang/Object;")) continue;  // looseSignatures
       return false;
     }
     return true;
@@ -295,6 +318,8 @@ public class StubCensus {
                     case "className" -> { if (!((String) value).isEmpty()) s.className = ((String) value).replace('.', '/'); }
                     case "minSdk" -> s.minSdk = (Integer) value;
                     case "maxSdk" -> s.maxSdk = (Integer) value;
+                    case "callNativeMethodsByDefault" -> s.callNative = (Boolean) value;
+                    case "looseSignatures" -> s.loose = (Boolean) value;
                     default -> { }
                   }
                 }

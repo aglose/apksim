@@ -48,7 +48,7 @@ android.app.admin.SecurityLog	writeEvent	(I[Ljava/lang/Object;)I	unshadowed	publ
 android.app.backup.BackupDataInput	ctor	(Ljava/io/FileDescriptor;)J	shadowed-by org.robolectric.shadows.ShadowBackupDataInput	internal
 android.app.backup.BackupDataInput	dtor	(J)V	unshadowed	internal
 android.app.backup.BackupDataInput	readEntityData_native	(J[BII)I	shadowed-by org.robolectric.shadows.ShadowBackupDataInput	internal
-android.app.backup.BackupDataInput	readNextHeader_native	(JLandroid/app/backup/BackupDataInput$EntityHeader;)I	shadowed-by org.robolectric.shadows.ShadowBackupDataInput	internal
+android.app.backup.BackupDataInput	readNextHeader_native	(JLandroid/app/backup/BackupDataInput$EntityHeader;)I	unshadowed	internal
 android.app.backup.BackupDataInput	skipEntityData_native	(J)I	shadowed-by org.robolectric.shadows.ShadowBackupDataInput	internal
 android.app.backup.BackupDataOutput	ctor	(Ljava/io/FileDescriptor;)J	shadowed-by org.robolectric.shadows.ShadowBackupDataOutput	internal
 android.app.backup.BackupDataOutput	dtor	(J)V	shadowed-by org.robolectric.shadows.ShadowBackupDataOutput	internal
@@ -72,9 +72,9 @@ android.content.res.ApkAssets	nativeGetDebugName	(J)Ljava/lang/String;	unshadowe
 android.content.res.ApkAssets	nativeGetOverlayableInfo	(JLjava/lang/String;)Landroid/content/om/OverlayableInfo;	unshadowed	internal
 android.content.res.ApkAssets	nativeGetStringBlock	(J)J	shadowed-by org.robolectric.shadows.ShadowArscApkAssets9	internal
 android.content.res.ApkAssets	nativeIsUpToDate	(J)I	unshadowed	internal
-android.content.res.ApkAssets	nativeLoad	(ILjava/lang/String;ILandroid/content/res/loader/AssetsProvider;)J	shadowed-by org.robolectric.shadows.ShadowArscApkAssets9	internal
+android.content.res.ApkAssets	nativeLoad	(ILjava/lang/String;ILandroid/content/res/loader/AssetsProvider;)J	native-runtime	internal
 android.content.res.ApkAssets	nativeLoadEmpty	(ILandroid/content/res/loader/AssetsProvider;)J	unshadowed	internal
-android.content.res.ApkAssets	nativeLoadFd	(ILjava/io/FileDescriptor;Ljava/lang/String;ILandroid/content/res/loader/AssetsProvider;)J	shadowed-by org.robolectric.shadows.ShadowArscApkAssets9	internal
+android.content.res.ApkAssets	nativeLoadFd	(ILjava/io/FileDescriptor;Ljava/lang/String;ILandroid/content/res/loader/AssetsProvider;)J	unshadowed	internal
 android.content.res.ApkAssets	nativeLoadFdOffsets	(ILjava/io/FileDescriptor;Ljava/lang/String;JJILandroid/content/res/loader/AssetsProvider;)J	unshadowed	internal
 android.content.res.ApkAssets	nativeOpenXml	(JLjava/lang/String;)J	shadowed-by org.robolectric.shadows.ShadowArscApkAssets9	internal
 android.content.res.AssetManager	getAssetAllocations	()Ljava/lang/String;	shadowed-by org.robolectric.shadows.ShadowArscAssetManager10	public
@@ -502,22 +502,22 @@ android.graphics.BitmapRegionDecoder	nativeNewInstance	([BII)Landroid/graphics/B
 android.graphics.BitmapShader	nativeCreate	(JJIIIZZJ)J	native-runtime	internal
 android.graphics.BlendModeColorFilter	native_CreateBlendModeFilter	(II)J	native-runtime	internal
 android.graphics.BlurMaskFilter	nativeConstructor	(FI)J	native-runtime	internal
-android.graphics.Camera	dotWithNormal	(FFF)F	native-runtime	public
-android.graphics.Camera	getLocationX	()F	native-runtime	public
-android.graphics.Camera	getLocationY	()F	native-runtime	public
-android.graphics.Camera	getLocationZ	()F	native-runtime	public
-android.graphics.Camera	nativeApplyToCanvas	(J)V	native-runtime	internal
-android.graphics.Camera	nativeConstructor	()V	native-runtime	internal
-android.graphics.Camera	nativeDestructor	()V	native-runtime	internal
-android.graphics.Camera	nativeGetMatrix	(J)V	native-runtime	internal
-android.graphics.Camera	restore	()V	native-runtime	public
-android.graphics.Camera	rotate	(FFF)V	native-runtime	public
-android.graphics.Camera	rotateX	(F)V	native-runtime	public
-android.graphics.Camera	rotateY	(F)V	native-runtime	public
-android.graphics.Camera	rotateZ	(F)V	native-runtime	public
-android.graphics.Camera	save	()V	native-runtime	public
-android.graphics.Camera	setLocation	(FFF)V	native-runtime	public
-android.graphics.Camera	translate	(FFF)V	native-runtime	public
+android.graphics.Camera	dotWithNormal	(FFF)F	registered-unbound	public
+android.graphics.Camera	getLocationX	()F	registered-unbound	public
+android.graphics.Camera	getLocationY	()F	registered-unbound	public
+android.graphics.Camera	getLocationZ	()F	registered-unbound	public
+android.graphics.Camera	nativeApplyToCanvas	(J)V	registered-unbound	internal
+android.graphics.Camera	nativeConstructor	()V	registered-unbound	internal
+android.graphics.Camera	nativeDestructor	()V	registered-unbound	internal
+android.graphics.Camera	nativeGetMatrix	(J)V	registered-unbound	internal
+android.graphics.Camera	restore	()V	registered-unbound	public
+android.graphics.Camera	rotate	(FFF)V	registered-unbound	public
+android.graphics.Camera	rotateX	(F)V	registered-unbound	public
+android.graphics.Camera	rotateY	(F)V	registered-unbound	public
+android.graphics.Camera	rotateZ	(F)V	registered-unbound	public
+android.graphics.Camera	save	()V	registered-unbound	public
+android.graphics.Camera	setLocation	(FFF)V	registered-unbound	public
+android.graphics.Camera	translate	(FFF)V	registered-unbound	public
 android.graphics.Canvas	nClipPath	(JJI)Z	native-runtime	internal
 android.graphics.Canvas	nClipRect	(JFFFFI)Z	native-runtime	internal
 android.graphics.Canvas	nClipShader	(JJI)V	native-runtime	internal
@@ -565,7 +565,7 @@ android.graphics.ComposeShader	nativeCreate	(JJJI)J	native-runtime	internal
 android.graphics.CornerPathEffect	nativeCreate	(F)J	native-runtime	internal
 android.graphics.DashPathEffect	nativeCreate	([FF)J	native-runtime	internal
 android.graphics.DiscretePathEffect	nativeCreate	(FF)J	native-runtime	internal
-android.graphics.DrawFilter	nativeDestructor	(J)V	native-runtime	internal
+android.graphics.DrawFilter	nativeDestructor	(J)V	registered-unbound	internal
 android.graphics.EmbossMaskFilter	nativeConstructor	([FFFF)J	native-runtime	internal
 android.graphics.FontFamily	nAddAxisValue	(JIF)V	native-runtime	internal
 android.graphics.FontFamily	nAddFont	(JLjava/nio/ByteBuffer;III)Z	native-runtime	internal
@@ -574,22 +574,22 @@ android.graphics.FontFamily	nCreateFamily	(J)J	native-runtime	internal
 android.graphics.FontFamily	nGetBuilderReleaseFunc	()J	native-runtime	internal
 android.graphics.FontFamily	nGetFamilyReleaseFunc	()J	native-runtime	internal
 android.graphics.FontFamily	nInitBuilder	(Ljava/lang/String;I)J	shadowed-by org.robolectric.shadows.ShadowFontFamily	internal
-android.graphics.Gainmap	nCreateCopy	(J)J	native-runtime	internal
+android.graphics.Gainmap	nCreateCopy	(J)J	registered-unbound	internal
 android.graphics.Gainmap	nCreateEmpty	()J	shadowed-by org.robolectric.shadows.ShadowGainmap	internal
-android.graphics.Gainmap	nGetAlternativeColorSpace	(J)Landroid/graphics/ColorSpace;	native-runtime	internal
-android.graphics.Gainmap	nGetDirection	(J)I	native-runtime	internal
+android.graphics.Gainmap	nGetAlternativeColorSpace	(J)Landroid/graphics/ColorSpace;	registered-unbound	internal
+android.graphics.Gainmap	nGetDirection	(J)I	registered-unbound	internal
 android.graphics.Gainmap	nGetDisplayRatioHdr	(J)F	shadowed-by org.robolectric.shadows.ShadowGainmap	internal
 android.graphics.Gainmap	nGetDisplayRatioSdr	(J)F	shadowed-by org.robolectric.shadows.ShadowGainmap	internal
 android.graphics.Gainmap	nGetEpsilonHdr	(J[F)V	shadowed-by org.robolectric.shadows.ShadowGainmap	internal
 android.graphics.Gainmap	nGetEpsilonSdr	(J[F)V	shadowed-by org.robolectric.shadows.ShadowGainmap	internal
-android.graphics.Gainmap	nGetFinalizer	()J	native-runtime	internal
+android.graphics.Gainmap	nGetFinalizer	()J	registered-unbound	internal
 android.graphics.Gainmap	nGetGamma	(J[F)V	shadowed-by org.robolectric.shadows.ShadowGainmap	internal
 android.graphics.Gainmap	nGetRatioMax	(J[F)V	shadowed-by org.robolectric.shadows.ShadowGainmap	internal
 android.graphics.Gainmap	nGetRatioMin	(J[F)V	shadowed-by org.robolectric.shadows.ShadowGainmap	internal
 android.graphics.Gainmap	nReadGainmapFromParcel	(JLandroid/os/Parcel;)V	shadowed-by org.robolectric.shadows.ShadowGainmap	internal
-android.graphics.Gainmap	nSetAlternativeColorSpace	(JJ)V	native-runtime	internal
+android.graphics.Gainmap	nSetAlternativeColorSpace	(JJ)V	registered-unbound	internal
 android.graphics.Gainmap	nSetBitmap	(JLandroid/graphics/Bitmap;)V	shadowed-by org.robolectric.shadows.ShadowGainmap	internal
-android.graphics.Gainmap	nSetDirection	(JI)V	native-runtime	internal
+android.graphics.Gainmap	nSetDirection	(JI)V	registered-unbound	internal
 android.graphics.Gainmap	nSetDisplayRatioHdr	(JF)V	shadowed-by org.robolectric.shadows.ShadowGainmap	internal
 android.graphics.Gainmap	nSetDisplayRatioSdr	(JF)V	shadowed-by org.robolectric.shadows.ShadowGainmap	internal
 android.graphics.Gainmap	nSetEpsilonHdr	(JFFF)V	shadowed-by org.robolectric.shadows.ShadowGainmap	internal
@@ -807,7 +807,7 @@ android.graphics.Paint	nGetNativeFinalizer	()J	native-runtime	internal
 android.graphics.Paint	nGetOffsetForAdvance	(J[CIIIIZF)I	native-runtime	internal
 android.graphics.Paint	nGetRunAdvance	(J[CIIIIZI)F	shadowed-by org.robolectric.shadows.ShadowPaint	internal
 android.graphics.Paint	nGetRunCharacterAdvance	(J[CIIIIZI[FILandroid/graphics/RectF;)F	native-runtime	internal
-android.graphics.Paint	nGetRunCharacterAdvance	(J[CIIIIZI[FILandroid/graphics/RectF;Landroid/graphics/Paint$RunInfo;)F	shadowed-by org.robolectric.shadows.ShadowPaint	internal
+android.graphics.Paint	nGetRunCharacterAdvance	(J[CIIIIZI[FILandroid/graphics/RectF;Landroid/graphics/Paint$RunInfo;)F	native-runtime	internal
 android.graphics.Paint	nGetStartHyphenEdit	(J)I	native-runtime	internal
 android.graphics.Paint	nGetStrikeThruPosition	(J)F	native-runtime	internal
 android.graphics.Paint	nGetStrikeThruThickness	(J)F	native-runtime	internal
@@ -875,7 +875,7 @@ android.graphics.Paint	nSetUnderlineText	(JZ)V	native-runtime	internal
 android.graphics.Paint	nSetWordSpacing	(JF)V	native-runtime	internal
 android.graphics.Paint	nSetXfermode	(JI)V	native-runtime	internal
 android.graphics.Paint	nSetXfermode	(JJ)V	native-runtime	internal
-android.graphics.PaintFlagsDrawFilter	nativeConstructor	(II)J	native-runtime	internal
+android.graphics.PaintFlagsDrawFilter	nativeConstructor	(II)J	registered-unbound	internal
 android.graphics.Path	nAddArc	(JFFFFFF)V	native-runtime	internal
 android.graphics.Path	nAddCircle	(JFFFI)V	native-runtime	internal
 android.graphics.Path	nAddOval	(JFFFFI)V	native-runtime	internal
@@ -1083,13 +1083,13 @@ android.graphics.RenderNode	nSetTranslationY	(JF)Z	native-runtime	internal
 android.graphics.RenderNode	nSetTranslationZ	(JF)Z	native-runtime	internal
 android.graphics.RenderNode	nSetUsageHint	(JI)V	native-runtime	internal
 android.graphics.RenderNode	nStretch	(JFFFF)Z	native-runtime	internal
-android.graphics.RuntimeColorFilter	nativeCreateRuntimeColorFilter	(Ljava/lang/String;)J	native-runtime	internal
-android.graphics.RuntimeColorFilter	nativeUpdateChild	(JLjava/lang/String;J)V	native-runtime	internal
-android.graphics.RuntimeColorFilter	nativeUpdateInputColorFilter	(JLjava/lang/String;J)V	native-runtime	internal
-android.graphics.RuntimeColorFilter	nativeUpdateUniforms	(JLjava/lang/String;FFFFI)V	native-runtime	internal
-android.graphics.RuntimeColorFilter	nativeUpdateUniforms	(JLjava/lang/String;IIIII)V	native-runtime	internal
-android.graphics.RuntimeColorFilter	nativeUpdateUniforms	(JLjava/lang/String;[FZ)V	native-runtime	internal
-android.graphics.RuntimeColorFilter	nativeUpdateUniforms	(JLjava/lang/String;[I)V	native-runtime	internal
+android.graphics.RuntimeColorFilter	nativeCreateRuntimeColorFilter	(Ljava/lang/String;)J	registered-unbound	internal
+android.graphics.RuntimeColorFilter	nativeUpdateChild	(JLjava/lang/String;J)V	registered-unbound	internal
+android.graphics.RuntimeColorFilter	nativeUpdateInputColorFilter	(JLjava/lang/String;J)V	registered-unbound	internal
+android.graphics.RuntimeColorFilter	nativeUpdateUniforms	(JLjava/lang/String;FFFFI)V	registered-unbound	internal
+android.graphics.RuntimeColorFilter	nativeUpdateUniforms	(JLjava/lang/String;IIIII)V	registered-unbound	internal
+android.graphics.RuntimeColorFilter	nativeUpdateUniforms	(JLjava/lang/String;[FZ)V	registered-unbound	internal
+android.graphics.RuntimeColorFilter	nativeUpdateUniforms	(JLjava/lang/String;[I)V	registered-unbound	internal
 android.graphics.RuntimeShader	nativeCreateBuilder	(Ljava/lang/String;)J	native-runtime	internal
 android.graphics.RuntimeShader	nativeCreateShader	(JJ)J	native-runtime	internal
 android.graphics.RuntimeShader	nativeCreateShader	(JJJ)J	native-runtime	internal
@@ -1151,8 +1151,8 @@ android.graphics.Typeface	nativeRegisterLocaleList	(Ljava/lang/String;)V	native-
 android.graphics.Typeface	nativeSetDefault	(J)V	native-runtime	internal
 android.graphics.Typeface	nativeWarmUpCache	(Ljava/lang/String;)V	native-runtime	internal
 android.graphics.Typeface	nativeWriteTypefaces	(Ljava/nio/ByteBuffer;I[J)I	native-runtime	internal
-android.graphics.YuvImage	nativeCompressToJpeg	([BIII[I[IILjava/io/OutputStream;[B)Z	native-runtime	internal
-android.graphics.YuvImage	nativeCompressToJpegR	([BI[BIIIILjava/io/OutputStream;[B[B[I[I)Z	native-runtime	internal
+android.graphics.YuvImage	nativeCompressToJpeg	([BIII[I[IILjava/io/OutputStream;[B)Z	registered-unbound	internal
+android.graphics.YuvImage	nativeCompressToJpegR	([BI[BIIIILjava/io/OutputStream;[B[B[I[I)Z	registered-unbound	internal
 android.graphics.animation.NativeInterpolatorFactory	createAccelerateDecelerateInterpolator	()J	native-runtime	public
 android.graphics.animation.NativeInterpolatorFactory	createAccelerateInterpolator	(F)J	native-runtime	public
 android.graphics.animation.NativeInterpolatorFactory	createAnticipateInterpolator	(F)J	native-runtime	public
@@ -1802,7 +1802,7 @@ android.media.MediaCodec	getImage	(ZI)Landroid/media/Image;	unshadowed	internal
 android.media.MediaCodec	getOutputFormatNative	(I)Ljava/util/Map;	unshadowed	internal
 android.media.MediaCodec	getOwnCodecInfo	()Landroid/media/MediaCodecInfo;	unshadowed	internal
 android.media.MediaCodec	native_closeMediaImage	(J)V	unshadowed	internal
-android.media.MediaCodec	native_configure	([Ljava/lang/String;[Ljava/lang/Object;Landroid/view/Surface;Landroid/media/MediaCrypto;Landroid/os/IHwBinder;I)V	shadowed-by dev.apksim.video.ShadowSimMediaCodec	internal
+android.media.MediaCodec	native_configure	([Ljava/lang/String;[Ljava/lang/Object;Landroid/view/Surface;Landroid/media/MediaCrypto;Landroid/os/IHwBinder;I)V	unshadowed	internal
 android.media.MediaCodec	native_createPersistentInputSurface	()Landroid/media/MediaCodec$PersistentSurface;	unshadowed	internal
 android.media.MediaCodec	native_dequeueInputBuffer	(J)I	shadowed-by dev.apksim.video.ShadowSimMediaCodec	internal
 android.media.MediaCodec	native_dequeueOutputBuffer	(Landroid/media/MediaCodec$BufferInfo;J)I	shadowed-by dev.apksim.video.ShadowSimMediaCodec	internal
@@ -3823,17 +3823,17 @@ android.os.SystemClock	elapsedRealtime	()J	shadowed-by dev.apksim.RealTimeClock$
 android.os.SystemClock	elapsedRealtimeNanos	()J	shadowed-by dev.apksim.RealTimeClock$ShadowRealTimeSystemClock	public
 android.os.SystemClock	uptimeMillis	()J	shadowed-by dev.apksim.RealTimeClock$ShadowRealTimeSystemClock	public
 android.os.SystemClock	uptimeNanos	()J	shadowed-by dev.apksim.RealTimeClock$ShadowRealTimeSystemClock	public
-android.os.SystemProperties	native_add_change_callback	()V	native-runtime	internal
-android.os.SystemProperties	native_find	(Ljava/lang/String;)J	native-runtime	internal
-android.os.SystemProperties	native_get	(J)Ljava/lang/String;	native-runtime	internal
+android.os.SystemProperties	native_add_change_callback	()V	registered-unbound	internal
+android.os.SystemProperties	native_find	(Ljava/lang/String;)J	registered-unbound	internal
+android.os.SystemProperties	native_get	(J)Ljava/lang/String;	registered-unbound	internal
 android.os.SystemProperties	native_get	(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;	shadowed-by org.robolectric.shadows.ShadowSystemProperties	internal
-android.os.SystemProperties	native_get_boolean	(JZ)Z	native-runtime	internal
+android.os.SystemProperties	native_get_boolean	(JZ)Z	registered-unbound	internal
 android.os.SystemProperties	native_get_boolean	(Ljava/lang/String;Z)Z	shadowed-by org.robolectric.shadows.ShadowSystemProperties	internal
-android.os.SystemProperties	native_get_int	(JI)I	native-runtime	internal
+android.os.SystemProperties	native_get_int	(JI)I	registered-unbound	internal
 android.os.SystemProperties	native_get_int	(Ljava/lang/String;I)I	shadowed-by org.robolectric.shadows.ShadowSystemProperties	internal
-android.os.SystemProperties	native_get_long	(JJ)J	native-runtime	internal
+android.os.SystemProperties	native_get_long	(JJ)J	registered-unbound	internal
 android.os.SystemProperties	native_get_long	(Ljava/lang/String;J)J	shadowed-by org.robolectric.shadows.ShadowSystemProperties	internal
-android.os.SystemProperties	native_report_sysprop_change	()V	native-runtime	internal
+android.os.SystemProperties	native_report_sysprop_change	()V	registered-unbound	internal
 android.os.SystemProperties	native_set	(Ljava/lang/String;Ljava/lang/String;)V	shadowed-by org.robolectric.shadows.ShadowSystemProperties	internal
 android.os.Trace	nativeAsyncTraceBegin	(JLjava/lang/String;I)V	unshadowed	internal
 android.os.Trace	nativeAsyncTraceEnd	(JLjava/lang/String;I)V	unshadowed	internal
