@@ -2301,7 +2301,7 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
 - MediaCodec has H.264, HEVC, VP9 (profile 0, `apksim.vp9.decoder`, issue 340: VideoToolbox's supplemental VP9 decoder
   with a `vpcC` format description built from each key frame's header, as WebM gives no codec data; libavcodec in a Linux
   image built with `VIDEO_DECODERS=h264,vp9`; `selftest work/media/clip.ivf`; listed on the Mac without a probe, as a trial session costs ~85 ms of a cold launch: a
-  codec's configure makes it and logs when the system has none), AAC and MP3 (on Linux H.264 only, HEVC as a build option: no audio decoders or output there, and no
+  codec's configure makes it and logs when the system has none), AAC and MP3 (on Linux H.264 only for video, HEVC and VP9 as build options; AAC and MP3 are libavcodec's there, with no audio output, and no
   H.264 for libwebrtc); AV1 and VP8 video and Opus/Vorbis audio are not listed (the owner's app needs
   none of them).
 - Layer-content RenderEffects run on Metal (`GpuRenderNode`). On the owner's app, fps with them on the CPU → on
