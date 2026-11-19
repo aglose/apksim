@@ -115,6 +115,7 @@ class IdleZooActivity : Activity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    // The column sits in a ScrollView so it fits a landscape tablet; the sources are unchanged by it.
     column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(16, 64, 16, 16) }
     for (s in Source.values()) {
       val label = TextView(this).apply { textSize = 12f }
@@ -126,10 +127,10 @@ class IdleZooActivity : Activity() {
         addView(label, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2f).apply { gravity = Gravity.CENTER_VERTICAL })
       })
     }
-    column.addView(Button(this).apply { text = "Refresh"; setOnClickListener { refresh() } })
+    column.addView(Button(this).apply { text = "Refresh"; contentDescription = "refresh"; setOnClickListener { refresh() } })
     stage = FrameLayout(this)
     column.addView(stage, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 300))
-    setContentView(column)
+    setContentView(android.widget.ScrollView(this).apply { addView(column) })
     val named = intent?.data?.getQueryParameter("on").orEmpty().split(',').filter { it.isNotBlank() }
     for (n in named) {
       val s = Source.values().firstOrNull { it.name == n }
