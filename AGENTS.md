@@ -250,7 +250,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     "Class.method(desc)"); every other site is bound as before. `gaps` (control, `adb shell apksim gaps`, `executeShellCommand("apksim gaps")`)
     lists them, most called first, one per line (joined `; `); `Exits.log` (every exit, crashes too) adds `[apksim] gaps: N unshadowed
     framework natives called: A xN, ... (apksim gaps)` when N > 0; `AppInfo.load` resets the counts per launch.
-    The baseline (`runtime/src/main/resources/dev/apksim/gaps-baseline.txt`, sorted `Class.method(desc)`): 48 natives
+    The baseline (`runtime/src/main/resources/dev/apksim/gaps-baseline.txt`, sorted `Class.method(desc)`): 47 natives
     that are harmless as defaults (Trace, Binder, Parcel fds, Perfetto, VMRuntime, SurfaceControl, MotionEvent, input
     channels, finalizers), taken from the test app's session over the bottom tabs and ~30 `apksim://` screens
     (`--camera fake`, warm and cold: the same set). They are bound as if not gaps, with no counter (`Trace.nativeIsTagEnabled`
@@ -1862,7 +1862,7 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   and returns what it printed: `getprop`, `settings put global animator_duration_scale 0` (as `animscale`: Views and
   Compose both follow it), `touch`/`ls`/`rm` in /sdcard, `logcat -c`/`-d` (the log is kept from the first `logcat` a
   test asks for), `am`, `pm`. On the main thread a command runs at once, not through the Host loop, and in a test run
-  the control commands it reaches are animscale, fontscale, network, bars, timezone, bluetooth, thermal, compat and camera
+  the control commands it reaches are animscale, fontscale, network, bars, timezone, bluetooth, thermal, compat, camera and gaps
   (`ShellCommandTest`, `ThermalTest`), and `pm grant|revoke PKG PERMISSION` (Robolectric's granted set, reset at the next
   test's setup; `CameraTest`).
 - The framework's wall clock is the real one (`SimRunner.WallClock`): Robolectric pointed System.currentTimeMillis
