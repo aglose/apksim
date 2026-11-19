@@ -369,6 +369,7 @@ public class Host {
             }
           }
         }
+        if (settle != null) settle.roots = roots;
         if (settle != null && settle.check(firstFrame ? "no first frame yet" : busy(looper, roots))) settle = null;
         // Nothing to do until a message is due or something arrives: sleep (idleWait) rather than poll every 2 ms.
         boolean still = !firstFrame && settle == null && drag == null && pendingScript.isEmpty()
@@ -409,6 +410,8 @@ public class Host {
     long quietSince;
     long framesAtQuiet;
     String reason = "";
+    /** The windows of the last loop turn, to name what wants a frame when the answer is given. */
+    List<View> roots = List.of();
 
     Settle(Control.Pending p) {
       pending = p;
@@ -435,7 +438,7 @@ public class Host {
       }
       if (now - start > maxNanos) {
         // Nothing was busy, but the quiet window did not fit before MAX_MS: say so rather than an empty reason.
-        String why = !reason.isEmpty() ? reason : "quiet for " + (quietSince == 0 ? 0 : (now - quietSince) / 1_000_000)
+        String why = FRAME_WANTED.equals(reason) ? reason + frameWantedBy(roots) : !reason.isEmpty() ? reason : "quiet for " + (quietSince == 0 ? 0 : (now - quietSince) / 1_000_000)
             + " of " + quietNanos / 1_000_000 + " ms";
         pending.finish("error: not settled after " + (now - start) / 1_000_000 + " ms: " + why
             + (controls.hidden() ? " (app in background: `resume` brings it back)" : ""));
@@ -445,10 +448,12 @@ public class Host {
     }
   }
 
+  private static final String FRAME_WANTED = "a frame is wanted";
+
   /** What keeps the UI from being quiet for a screenshot, or null. */
   private String busy(ShadowLooper looper, List<View> roots) {
     if (!pendingScript.isEmpty() || drag != null) return "input queued";
-    if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) return "a frame is wanted";
+    if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) return FRAME_WANTED;
     // Behind the home screen nothing is drawn (the loop makes no frames), so a window that differs from the last
     // frame's would stay "needing drawing" until a `resume` (issue 489).
     if (!controls.hidden() && needsFrame(roots)) return "a window needs drawing";
@@ -458,6 +463,57 @@ public class Host {
     if (!looper.isIdle()) return "the main looper has messages due";
     String due = dueMessage(SystemClock.uptimeMillis() + settle.horizonMs);
     return due == null ? null : "a message is due: " + due;
+  }
+
+  /**
+   * What asks for the next frame, as far as it can be named, for `settle`'s answer: an indeterminate ProgressBar
+   * spinning on a shown window, else the running animators (AnimationHandler's callbacks); "" when neither is found
+   * (a View animation, a Scroller, Compose's frame clock). What is named may be one of several asking. Called once,
+   * when a `settle` gives up.
+   */
+  private static String frameWantedBy(List<View> roots) {
+    StringBuilder spinners = new StringBuilder();
+    for (View r : roots) {
+      if (r.isShown()) spinners(r, spinners);
+    }
+    if (spinners.length() > 0) return ": a spinning ProgressBar" + spinners;
+    try {
+      List<?> callbacks = ReflectionHelpers.getField(android.animation.AnimationHandler.getInstance(), "mAnimationCallbacks");
+      java.util.Map<String, Integer> kinds = new java.util.TreeMap<>();
+      for (Object c : callbacks) {
+        if (c == null) continue;
+        String kind = c.getClass().getSimpleName();
+        if (c instanceof android.animation.ObjectAnimator o && o.getTarget() != null) {
+          kind += " on " + o.getTarget().getClass().getSimpleName() + (o.getPropertyName() == null ? "" : "." + o.getPropertyName());
+        }
+        kinds.merge(kind, 1, Integer::sum);
+      }
+      if (kinds.isEmpty()) return "";
+      StringBuilder b = new StringBuilder(": animators running:");
+      kinds.forEach((k, n) -> b.append(' ').append(k).append(n > 1 ? " x" + n : "").append(','));
+      b.setLength(b.length() - 1);
+      return b.toString();
+    } catch (RuntimeException e) {
+      return "";
+    }
+  }
+
+  private static void spinners(View v, StringBuilder out) {
+    if (v.getVisibility() != View.VISIBLE) return;
+    if (v instanceof android.widget.ProgressBar p && p.isIndeterminate()
+        && p.getIndeterminateDrawable() instanceof android.graphics.drawable.Animatable a && a.isRunning()) {
+      String id = "";
+      try {
+        if (p.getId() != View.NO_ID) id = "#" + p.getResources().getResourceEntryName(p.getId());
+      } catch (RuntimeException e) {
+        // an id with no name
+      }
+      int[] at = new int[2];
+      p.getLocationOnScreen(at);
+      out.append(' ').append(id.isEmpty() ? "" : id + " ").append("at ").append(at[0]).append(',').append(at[1]);
+    } else if (v instanceof ViewGroup g) {
+      for (int i = 0; i < g.getChildCount(); i++) spinners(g.getChildAt(i), out);
+    }
   }
 
   /**

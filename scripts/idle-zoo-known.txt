@@ -4,10 +4,8 @@
 # case is fixed (the check fails on a listed case that passes).
 * ticker : settle counts a main-looper message due in 16 ms ("a message is due ... Handler ...Runnable") as work although it changes nothing on screen (issue 131's class)
 * slowticker : same for a 500 ms repost: not settled, "a message is due: in ~470 ms", though nothing on screen changes
-* progress : an indeterminate ProgressBar settles in ~300 ms ("settled"); a user sees a turning spinner (busy), and nothing keeps a frame wanted
 * ticker+worker : the ticker alone decides it (message due); the worker's no-op posts every 50 ms would also count
 * slowticker+caret : not settled (message due; with --max-fps 10 "a frame is wanted" instead): the caret's blink does not settle together with a pending message
 * scroller+ticker : never settles after the scroller's 1000 ms because of the ticker's message
 * viewanim+slowticker : never settles after the animation's 300 ms because of the ticker's message
-* progress+caret : settles though the spinner is busy (as progress alone)
 * ticker+slowticker+caret+sensor+overlay+popup+worker : every idle source together does not settle (the tickers' messages)

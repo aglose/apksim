@@ -348,6 +348,11 @@ drive 'back' 'open apksim://sensors?redraw=0' 'wait 1500' 'settle 5000 300' | ta
 drive 'open apksim://edittext' 'wait 1500' 'settle 5000 300' | tail -1 | grep -q 'settled in' \
   || { echo "a screen with a focused EditText never settled" >&2; exit 1; }
 drive 'back' >/dev/null  # leave the screen: the checks below expect the one under it
+# An indeterminate ProgressBar turns for as long as it is shown (ShadowUiThreadVectorAnimations): settle must not
+# answer, and must name it. Its render-thread animator stopped after ~250 ms, and settle said settled.
+drive 'open apksim://idle-zoo?on=progress' 'wait 1500' 'settle 1500 300' | tail -1 | grep -q 'not settled.*spinning ProgressBar' \
+  || { echo "a screen with a spinning ProgressBar settled, or settle did not name it" >&2; exit 1; }
+drive 'back' >/dev/null
 # Backgrounded (home, or Back on the root launcher activity) nothing draws, so settle must answer, and say so (issue 489).
 drive 'home' 'wait 500' 'settle 5000 300' | tail -1 | grep -q 'settled in .*app in background' \
   || { echo "settle did not answer while the app was in the background" >&2; exit 1; }

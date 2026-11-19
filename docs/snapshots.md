@@ -130,7 +130,7 @@ quiet for QUIET_MS of real time:
 Background threads are not inspected (an image load on an IO thread is invisible until it posts to the main thread);
 the quiet window is what covers them, so a screen that loads slowly from disk can raise QUIET_MS in its steps
 (`settle 10000 1000`). It replies `settled in N ms`, or after MAX_MS `error: not settled after N ms: REASON` (what was
-still busy: a frame wanted, a dirty window, a message due with its handler, callback and object), which fails that
+still busy: a frame wanted (with a spinning ProgressBar or the running animators named when they can be), a dirty window, a message due with its handler, callback and object), which fails that
 capture. While the app is in the background (`home`, Back on the root launcher activity) nothing is drawn, so a
 stopped window is not "needing drawing": the answer comes, ending "(app in background: `resume` brings it back)". After a `restart` or a device switch the test app settles in 200-220 ms, i.e. at once plus the quiet window;
 the Shader tab (an endless shader animation) never does ("a frame is wanted").
