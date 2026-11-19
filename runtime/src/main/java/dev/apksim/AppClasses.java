@@ -209,8 +209,35 @@ final class AppClasses {
     return is;
   }
 
+  /**
+   * A class's place in the hierarchy wherever the app defines it (its other DEX files, the test APK's), or null. R8
+   * puts a class and its superclass in different files.
+   */
+  private dev.apksim.dex.Hierarchy.Shape shape(String cls, String name, String desc) {
+    int[] at = find(cls);
+    if (at == null) return target != null ? target.shape(cls, name, desc) : null;
+    DexFile d = dexes.get(at[0]);
+    return new dev.apksim.dex.Hierarchy.Shape(d.superclassOf(at[1]), d.interfacesOf(at[1]), d.declaresMethod(at[1], name, desc));
+  }
+
+  /** The cache's key for a hierarchy question: {@code NUL class NUL method descriptor}. */
+  private static final char HIERARCHY = '\0';
+
+  /** One byte that changes when the answer to a hierarchy question does (a hash: a collision keeps a stale entry). */
+  private int shapeAnswer(String key) {
+    int sep = key.indexOf(HIERARCHY, 1);
+    String cls = key.substring(1, sep);
+    String rest = key.substring(sep + 1);
+    int paren = rest.indexOf('(');
+    var sh = shape(cls, rest.substring(0, paren), rest.substring(paren));
+    if (sh == null) return 0;
+    int h = java.util.Objects.hash(sh.superclass(), java.util.Arrays.hashCode(sh.interfaces()), sh.declares());
+    return 1 + Math.floorMod(h, 255);
+  }
+
   /** What a translation learned about a class it calls; see {@link ClassCache}. */
   private int answer(String owner) {
+    if (!owner.isEmpty() && owner.charAt(0) == HIERARCHY) return shapeAnswer(owner);
     int[] at = find(owner);
     if (at == null) return target != null ? target.answer(owner) : ClassCache.NOT_APP;
     return (dexes.get(at[0]).classAccess(at[1]) & ACC_INTERFACE) != 0 ? ClassCache.INTERFACE : ClassCache.CLASS;
@@ -283,6 +310,9 @@ final class AppClasses {
       out = new ClassTranslator(dex, at[1], owner -> {
         answers.computeIfAbsent(owner, o -> (byte) answer(o));
         return isInterface(owner);
+      }, (cls, name, desc) -> {
+        answers.computeIfAbsent(HIERARCHY + cls + HIERARCHY + name + desc, o -> (byte) answer(o));
+        return shape(cls, name, desc);
       }).translate();
     } catch (RuntimeException e) {
       // The class loader would report this only as "class not found".

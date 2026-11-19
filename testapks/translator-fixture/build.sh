@@ -10,8 +10,17 @@ ANDROID_JAR="$(ls -d "$SDK"/platforms/android-* | sort -V | tail -1)/android.jar
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 javac --release 11 -nowarn -d "$OUT/classes" $(find "$HERE/src" -name "*.java")
+javac --release 11 -nowarn -d "$OUT/multiclasses" $(find "$HERE/src-multi" -name "*.java")
 java -cp "$HERE/../../work/lib/*" "$HERE/RetargetSuper.java" "$OUT/classes"
+java -cp "$HERE/../../work/lib/*" "$HERE/RetargetSuper.java" "$OUT/multiclasses"
 (cd "$OUT/classes" && jar cf "$OUT/in.jar" .)
+# The multi-DEX fixture: the superclass and its interface in classes2.dex, the class calling through them in classes.dex.
+(cd "$OUT/multiclasses" && jar cf "$OUT/lib.jar" fixture/MultiLib*.class && jar cf "$OUT/multi.jar" fixture/MultiImpl*.class)
+mkdir -p "$OUT/m1" "$OUT/m2"
+java -cp "$BT/lib/d8.jar" com.android.tools.r8.D8 --release --min-api 26 --lib "$ANDROID_JAR" --classpath "$OUT/lib.jar" --output "$OUT/m1" "$OUT/multi.jar"
+java -cp "$BT/lib/d8.jar" com.android.tools.r8.D8 --release --min-api 26 --lib "$ANDROID_JAR" --output "$OUT/m2" "$OUT/lib.jar"
+cp "$OUT/m1/classes.dex" "$HERE/multidex/classes.dex"
+cp "$OUT/m2/classes.dex" "$HERE/multidex/classes2.dex"
 mkdir -p "$OUT/dex"
 java -cp "$BT/lib/d8.jar" com.android.tools.r8.R8 --release --min-api 26 --lib "$ANDROID_JAR" \
   --pg-conf "$HERE/rules.pro" --output "$OUT/dex" "$OUT/in.jar"

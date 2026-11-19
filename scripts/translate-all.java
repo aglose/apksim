@@ -1,5 +1,6 @@
 import dev.apksim.dex.ClassTranslator;
 import dev.apksim.dex.DexFile;
+import dev.apksim.dex.Hierarchy;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -22,7 +23,7 @@ import java.util.zip.ZipFile;
  * java -Xmx4g -cp "work/apksim.jar:$(ls work/lib/*.jar | tr '\n' :)" scripts/translate-all.java app.apk out.txt 3
  * </pre>
  *
- * Interfaces are the APK's own (the live translator asks the app, which also knows framework interfaces).
+ * Interfaces and the class hierarchy are the APK's own, across its DEX files (the live translator asks the app, which also knows framework interfaces).
  */
 public class TranslateAll {
   public static void main(String[] a) throws Exception {
@@ -36,6 +37,21 @@ public class TranslateAll {
     for (DexFile d : dexes) {
       for (int i = 0; i < d.classDefsSize; i++) if ((d.classAccess(i) & 0x200) != 0) interfaces.add(d.className(i));
     }
+    // Where each class is defined, the first DEX file winning, as on Android: the hierarchy the live translator sees.
+    java.util.Map<String, int[]> where = new java.util.HashMap<>();
+    for (int k = 0; k < dexes.size(); k++) {
+      DexFile d = dexes.get(k);
+      for (int i = 0; i < d.classDefsSize; i++) {
+        String t = d.className(i);
+        where.putIfAbsent(t.substring(1, t.length() - 1), new int[] {k, i});
+      }
+    }
+    Hierarchy all = (cls, name, desc) -> {
+      int[] at = where.get(cls);
+      if (at == null) return null;
+      DexFile d = dexes.get(at[0]);
+      return new Hierarchy.Shape(d.superclassOf(at[1]), d.interfacesOf(at[1]), d.declaresMethod(at[1], name, desc));
+    };
     int passes = a.length > 2 ? Integer.parseInt(a[2]) : 1;
     StringBuilder out = new StringBuilder();
     for (int p = 0; p < passes; p++) {
@@ -48,7 +64,7 @@ public class TranslateAll {
         for (int i = 0; i < d.classDefsSize; i++) {
           String h;
           try {
-            byte[] b = new ClassTranslator(d, i, name -> interfaces.contains("L" + name + ";")).translate();
+            byte[] b = new ClassTranslator(d, i, name -> interfaces.contains("L" + name + ";"), all).translate();
             h = last ? HexFormat.of().formatHex(md.digest(b)) : "";
           } catch (Throwable t) {
             errors++;

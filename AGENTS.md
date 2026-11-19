@@ -1686,7 +1686,11 @@ animation clock check, a translator check and offscreen GLES) is the check:
 regression check is `scripts/check-translator.sh` (CI too): `testapks/translator-fixture` is plain Java built with R8
 (`fixture.dex`) and with D8 in debug mode (`fixture-d8-debug.dex`), whose register reuse produced the two liveness
 miscompilations (an int returned in a synchronized block's lock register; a return shared by paths inside and outside
-a lock's catch-all range); it translates them and runs them on a plain JVM. Its `build.sh` rebuilds the committed
+a lock's catch-all range); it translates them and runs them on a plain JVM. `multidex/` (from `src-multi`) is one app over two DEX
+files, a class in `classes.dex` making a super call to a default method that only its superclass in `classes2.dex`
+reaches (issue 522): the translator asks the whole app for superclasses and interfaces (`dex/Hierarchy`, AppClasses'
+across every DEX file and the test APK's; the class cache keeps each answer used as a one-byte hash under a
+`NUL class NUL method` key, so a pack still depends on other DEX files only through recorded answers). Its `build.sh` rebuilds the committed
 `.dex` files. When the translator miscompiles a new shape, add it there and check it fails before the fix.
 The native loader's is `testapks/loader-fixture` (`loaderfixture.c`, built with the NDK by its `build.sh` into the
 test app's `jniLibs` for arm64-v8a and x86_64; the `.so` files are committed so the test app needs no NDK), run by
