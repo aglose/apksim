@@ -2,8 +2,9 @@
 # harmless as defaults: handles, finalizers, tracing, binder identity, SurfaceControl transactions (nothing composites
 # here), allocation bookkeeping. Bound as if not a gap and never counted (dev.apksim.Gaps). One Class.method(desc) a
 # line, sorted. Added by looking at each entry; a native whose default could mislead an app (a getter) stays out and
-# shows in `gaps`: OsConstants.initConstants (every errno/flag constant stays 0) and
-# CameraMetadataNative.nativeGetBufferSize (0).
+# shows in `gaps`. Left out for now: CameraMetadataNative.nativeGetBufferSize (answers 0; its only caller is the
+# object's native-allocation accounting, where 0 is harmless, so it is a candidate once camera metadata is looked at).
+# OsConstants.initConstants is in: Robolectric's ShadowOsConstants sets the constants itself (ENOENT=2, S_IFMT=61440).
 android.app.Activity.getDlWarning()Ljava/lang/String;
 android.content.res.ApkAssets.nativeDestroy(J)V
 android.content.res.AssetManager.nativeGetThemeFreeFunction()J
@@ -25,6 +26,7 @@ android.os.PerfettoTrace$Category.native_init(Ljava/lang/String;Ljava/lang/Strin
 android.os.PerfettoTrackEventExtra.native_delete()J
 android.os.SystemProperties.native_add_change_callback()V
 android.os.Trace.nativeIsTagEnabled(J)Z
+android.system.OsConstants.initConstants()V
 android.tracing.perfetto.DataSource.nativeCreate(Landroid/tracing/perfetto/DataSource;Ljava/lang/String;)J
 android.tracing.perfetto.DataSource.nativeRegisterDataSource(JIZZ)V
 android.tracing.perfetto.Producer.nativePerfettoProducerInit(II)V

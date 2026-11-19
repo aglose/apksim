@@ -439,7 +439,7 @@ if [[ -n "$UISERVER" ]]; then
   adb disconnect "localhost:$ADB_PORT" >/dev/null 2>&1 || true
 fi
 # The gap tripwire (dev.apksim.Gaps): the session so far must have called no framework native that has no shadow and is
-# not in runtime/src/main/resources/dev/apksim/gaps-baseline.txt, bar the two known open gaps (a new path the test app
+# not in runtime/src/main/resources/dev/apksim/gaps-baseline.txt, bar the one known open gap (a new path the test app
 # reaches is looked at when it appears: shadow it, or add it to the baseline once its default is harmless). Checked
 # stable on the Mac (three headless runs, warm and cold); the Linux image has not been run, so a difference there only
 # warns until GAPS_CHECK=strict.
@@ -448,7 +448,7 @@ echo "$gaps_out"
 new_gaps="$(python3 - "$gaps_out" <<'EOF'
 import sys
 out = sys.argv[1].split("gaps -> ", 1)[-1]
-known = ("android.system.OsConstants.initConstants()", "CameraMetadataNative.nativeGetBufferSize(")
+known = ("CameraMetadataNative.nativeGetBufferSize(",)
 if out.startswith("no unshadowed") or out.startswith("not counted"):
     sys.exit(0)
 for e in out.rsplit(" (", 1)[0].split("; "):

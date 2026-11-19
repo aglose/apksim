@@ -249,16 +249,18 @@ Read README.md for results and limits; this file covers how to work on the code.
     "Class.method(desc)"); every other site is bound as before. `gaps` (control, `adb shell apksim gaps`, `executeShellCommand("apksim gaps")`)
     lists them, most called first, one per line (joined `; `); `Exits.log` (every exit, crashes too) adds `[apksim] gaps: N unshadowed
     framework natives called: A xN, ... (apksim gaps)` when N > 0; `AppInfo.load` resets the counts per launch.
-    The baseline (`runtime/src/main/resources/dev/apksim/gaps-baseline.txt`, sorted `Class.method(desc)`): 47 natives
+    The baseline (`runtime/src/main/resources/dev/apksim/gaps-baseline.txt`, sorted `Class.method(desc)`): 48 natives
     that are harmless as defaults (Trace, Binder, Parcel fds, Perfetto, VMRuntime, SurfaceControl, MotionEvent, input
     channels, finalizers), taken from the test app's session over the bottom tabs and ~30 `apksim://` screens
     (`--camera fake`, warm and cold: the same set). They are bound as if not gaps, with no counter (`Trace.nativeIsTagEnabled`
     was ~5,000 counted calls), parsed by `Gaps.preload` (standby warm-up, Main's ahead thread). `gaps` lists the others and
     ends "(N baseline natives not counted)"; the exit line shows only those. Each entry was looked at: a getter whose default
-    could mislead stays out (now: `OsConstants.initConstants`, so every errno/flag constant is 0, hit by every launch, and
-    `CameraMetadataNative.nativeGetBufferSize`, 0), so the test app's `gaps` shows those two until they are shadowed.
+    could mislead stays out. `OsConstants.initConstants` is in: Robolectric's `ShadowOsConstants` sets the constants itself
+    (read in a running instance: ENOENT=2, EACCES=13, O_RDONLY=0, S_IFMT=61440). `CameraMetadataNative.nativeGetBufferSize`
+    (0; its only caller is the object's native-allocation accounting, where 0 is harmless) is left out for now, so `gaps`
+    shows it once the camera screen is used; a plain test-app session shows none.
     Counts reset per launch (`AppInfo.load`) and per test (`SimRunner.resetState`; `CompatChangeTest.gapsCommandAnswers`).
-    `ci-smoke.sh` (app part) prints `gaps` and warns about anything beyond the baseline and those two (`GAPS_CHECK=strict`
+    `ci-smoke.sh` (app part) prints `gaps` and warns about anything beyond the baseline and that one (`GAPS_CHECK=strict`
     fails; checked on the Mac only). `-Dapksim.gaps=false` (cold launches: a standby has read it) binds them all plainly;
     `CallSiteCheck` covers counting, the baseline and both bindings.
   - `org.robolectric.android.controller.ActivityController` (apksim's copy of Robolectric 4.17's, ahead of it on the
