@@ -628,9 +628,9 @@ public final class Serve {
     if (launchd) {
       // Another release installed under this launcher's path (`brew upgrade`): the next page's request would still meet
       // this one. With no session running it ends, and launchd starts the new release at that request (issue 309).
-      final String startedVersion = Beam.version(root);
+      startedVersion = Beam.version(root);
       timer.scheduleWithFixedDelay(() -> {
-        if (sessions.isEmpty() && busy.get() == 0 && !Beam.version(root).equals(startedVersion)) {
+        if (sessions.isEmpty() && busy.get() == 0 && releaseReplaced()) {
           System.err.printf("[beam] release %s replaced by %s: exiting (launchd starts the new one for the next page)%n",
               startedVersion, Beam.version(root));
           System.exit(0);
@@ -696,10 +696,23 @@ public final class Serve {
     }
   }
 
+  /** The release this launchd agent started from (issue 524); null until the agent is set up, or when not launchd. */
+  volatile String startedVersion;
+
+  /**
+   * True once the release this launchd agent runs from has been replaced or removed (`brew upgrade` deletes the old
+   * cask folder): its launcher is gone or its version line changed. Nothing can be started from it any more (issue 524).
+   */
+  boolean releaseReplaced() {
+    String started = startedVersion;
+    return started != null && (!Files.exists(launcher) || !Beam.version(root).equals(started));
+  }
+
   /** On the Mac, a warm-launch standby for the first session (each instance starts the next after its first frame). */
   void warmStandby() {
     if (!System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac")) return;
     if ("0".equals(System.getenv("APKSIM_STANDBY"))) return;
+    if (releaseReplaced()) return;  // no launcher to start it from; the agent exits once idle
     try {
       // The standby is the JVM sessions' instances become: it gets the no-core policy too (APKSIM_NO_CORE reaches its flags).
       // The agent's instances run in the beam sandbox (b, the launcher's APKSIM_BEAM_SANDBOX), so their standbys too.

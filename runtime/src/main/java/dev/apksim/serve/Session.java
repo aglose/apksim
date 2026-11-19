@@ -408,6 +408,9 @@ final class Session {
     // Its own data slots (serve-0, serve-1...): --fresh then never empties data an ordinary launch keeps.
     // A beamed instance has a window, hidden, which "Show in Simulator" brings up (docs/beam.md, phase 3): the same
     // display, a second view of it.
+    // An agent whose release was replaced (`brew upgrade` removes the old cask) has no launcher to run: end this
+    // session with a reason; the agent exits once idle and launchd starts the new release at the next request (issue 524).
+    if (serve.releaseReplaced()) throw new IOException("apksim was upgraded; start again");
     List<String> cmd = new ArrayList<>(List.of(serve.launcher.toString()));
     cmd.addAll(serve.beam ? List.of("--window", "hidden") : List.of("--headless"));
     // A session whose data came from the server (phase 5) runs in the slot the agent unpacked it into, not a fresh one.
