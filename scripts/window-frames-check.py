@@ -6,9 +6,10 @@ The device's side is testapks/composeapp/window-frames-api36.tsv (scripts/gen-wi
 ./apksim by default) and quit at the end. Each scene is `restart URL` + `settle`, then `windows`: the windows the
 activity stack shows (those of stopped or destroyed activities are left out), bottom to top, are matched to the
 table's rows by position, and every difference is printed in pixels (field: kind, left, top, right, bottom, focused,
-count). A difference not in window-frames-known.tsv (scene, window, field, device, apksim, reason) fails the run (1);
+count; kind is only panel (a popup or overlay: not a DecorView on apksim's side, a panel type on the device) against
+window, as `windows` cannot tell an activity's window from a dialog's). A difference not in window-frames-known.tsv (scene, window, field, device, apksim, reason) fails the run (1);
 so does a known one that no longer differs or differs otherwise. docs/conformance.md "Window frames"."""
-import argparse, os, re, shlex, socket, subprocess, sys, time
+import argparse, os, re, shlex, socket, subprocess, sys, threading, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIELDS = ["kind", "left", "top", "right", "bottom", "focused"]
@@ -40,6 +41,10 @@ class Control:
 WIN = re.compile(r"(\w+)@(-?\d+),(-?\d+) (\d+)x(\d+)( focused)? (\S+?)\{([^}]*)\}")
 
 
+def unparsed(reply):
+    return [x for x in reply.split("; ") if x.strip() and not WIN.search(x)]
+
+
 def apksim_windows(reply):
     """(kind, l, t, r, b, focused) of the windows a device would show, bottom to top."""
     rows = []
@@ -53,11 +58,12 @@ def apksim_windows(reply):
 
 
 def kind_of(cls, dev_kind):
-    """apksim's root view class against the device's window type: `kind` is the device's, or the class when they
-    disagree (a DecorView is an activity's or a dialog's window; anything else is a panel on the device)."""
-    if cls == "DecorView":
-        return dev_kind if dev_kind in ("activity", "dialog") else "decor"
-    return dev_kind if dev_kind not in ("activity", "dialog") else cls
+    """panel or window, from apksim's root view class (DecorView: a window)."""
+    return "window" if cls == "DecorView" else "panel"
+
+
+def dev_kind_of(dev_kind):
+    return "window" if dev_kind in ("activity", "dialog") else "panel"
 
 
 def main():
@@ -78,9 +84,19 @@ def main():
 
     proc, port = None, a.port
     if port is None:
-        port = 7400 + (os.getpid() % 500)
-        proc = subprocess.Popen(shlex.split(a.apksim) + ["--headless", "--control", str(port), a.apk],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Its own data slot and a port it is told, never a guessed one: only an instance launched here is driven or quit.
+        proc = subprocess.Popen(shlex.split(a.apksim) + ["--headless", "--fresh", "--no-autofill", "--data-slots",
+                                "windowframes", "--control", "auto", a.apk],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        port = None
+        for line in proc.stderr:
+            m = re.search(r"\[apksim\] control port (\d+)", line)
+            if m:
+                port = int(m.group(1))
+                break
+        if port is None:
+            sys.exit(f"apksim exited ({proc.wait()}) before it gave a control port")
+        threading.Thread(target=lambda: [None for _ in proc.stderr], daemon=True).start()
     t0 = time.time()
     try:
         c = Control(port)
@@ -93,11 +109,16 @@ def main():
             s = c("settle 8000")
             if not s.startswith("settled"):
                 print(f"note: {name}: {s}", file=sys.stderr)
-            rows = apksim_windows(c("windows"))
+            reply = c("windows")
+            rows = apksim_windows(reply)
             if rows == [] or len(rows) != len(table.get(name, [])):  # a window may still be coming up
                 time.sleep(1.0)
                 c("settle 8000")
-                rows = apksim_windows(c("windows"))
+                reply = c("windows")
+                rows = apksim_windows(reply)
+            if a.v or len(rows) != len(table.get(name, [])):
+                for x in unparsed(reply):
+                    print(f"note: {name}: unparsed windows segment: {x}", file=sys.stderr)
             dev = table.get(name, [])
             if a.v:
                 print(f"{name}: device {[tuple(d[2:9]) for d in dev]}\n{' ' * len(name)}  apksim {rows}", file=sys.stderr)
@@ -105,7 +126,7 @@ def main():
                 diffs.append((name, "-", "count", str(len(dev)), str(len(rows))))
             for i in range(min(len(rows), len(dev))):
                 d, m = dev[i], rows[i]
-                dv = {"kind": d[2], "left": d[4], "top": d[5], "right": d[6], "bottom": d[7], "focused": d[8]}
+                dv = {"kind": dev_kind_of(d[2]), "left": d[4], "top": d[5], "right": d[6], "bottom": d[7], "focused": d[8]}
                 av = dict(zip(FIELDS, m))
                 av["kind"] = kind_of(m[0], d[2])
                 for f in FIELDS:
@@ -123,7 +144,7 @@ def main():
     for r in tsv(a.known) if os.path.exists(a.known) else []:
         known[tuple(r[:3])] = r
     seen = set()
-    bad = 0
+    bad = nknown = 0
     for sc, w, f, dv, av in diffs:
         k = (sc, w, f)
         px = ""
@@ -132,6 +153,7 @@ def main():
         line = f"{sc} window {w} {f}: device {dv}, apksim {av}{px}"
         if k in known and known[k][3] == dv and known[k][4] == av:
             seen.add(k)
+            nknown += 1
             print("known:   " + line + "  # " + (known[k][5] if len(known[k]) > 5 else ""))
         else:
             bad += 1
@@ -142,7 +164,7 @@ def main():
             bad += 1
             print(f"STALE:   {k[0]} window {k[1]} {k[2]}: listed as device {r[3]}, apksim {r[4]}, but it no longer differs")
     print(f"window-frames: {len(scenes)} scenes, {sum(len(v) for v in table.values())} device windows, "
-          f"{len(diffs)} differences ({len(diffs) - bad if bad <= len(diffs) else 0} known), {bad} to look at "
+          f"{len(diffs)} differences ({nknown} known), {bad} to look at "
           f"({time.time() - t0:.0f} s)")
     sys.exit(1 if bad else 0)
 
