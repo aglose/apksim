@@ -568,6 +568,17 @@ Read README.md for results and limits; this file covers how to work on the code.
   an APK: time per pass and a hash per class, to profile the translator and check a change leaves output identical),
   `api-refs.py` (which framework classes, methods and fields apksim.jar uses that another level's android-all jar lacks,
   and which shadow methods stop binding there; docs/api-levels.md),
+  `stub-census.sh` (`stub-census.java`; CI's quick checks: `docs/stub-census.tsv`, every native method of the
+  framework jar, 5,934 on API 36, with `shadowed-by CLASS` (an @Implements shadow of that class, apksim's before
+  Robolectric's, has an @Implementation of that name and parameter types, SDK 36 in range, ShadowLegacy* ignored, a
+  shadow superclass counted), `native-runtime` (a ShadowNative* shadow, or libandroid_runtime registers it: the names in
+  `docs/stub-census-registered.txt`, from one launch's `-Xlog:jni+resolve=debug` by `--update-registered APK` on a Mac,
+  by name so every overload counts) or `unshadowed` (a call returns the default; 4,197), and whether the member is public
+  API-shaped; no argument checks the table against `work/lib` and `work/apksim.jar`, `--update` rewrites it, `--summary`
+  prints natives per package; a changed shadow in `runtime/` changes rows, so `--update` after one. A native is a
+  `$$robo$$X$nativeBinding` method with the native flag, as Robolectric's instrumentation leaves it. Not told: a class
+  whose shadow has `callNativeMethodsByDefault` and a native nothing registers, which throws UnsatisfiedLinkError, not
+  a default),
   `make-media.sh` (test clips), `docker-build.sh` and `ci-smoke.sh` (Linux image, CI), `network-check.sh` and
   `network-fixture.py` (record, replay and conditions against the test app, see "Network"), `package-release.sh` (see
   "Releases"),
