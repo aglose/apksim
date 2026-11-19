@@ -119,6 +119,8 @@ jobs:
         run: scripts/check-call-sites.sh
       - name: Compat-table check (changes by the app's targetSdk, no allocation)
         run: scripts/check-compat-table.sh
+      - name: Stub census check (docs/stub-census.tsv current against the framework and shadow jars)
+        run: scripts/stub-census.sh
       - name: Media probe check (MediaPlayer durations by container; the app's descriptor left open)
         run: scripts/check-media-probe.sh
       - name: Heap trim check (the heap's spaces found on this JDK; objects intact through trims at every collection)

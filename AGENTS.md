@@ -369,6 +369,9 @@ Read README.md for results and limits; this file covers how to work on the code.
     `limited`: one command, only `am start`, `am broadcast` and `settings get|put` and `cat` of one file in the app's own folders (issue 408) for the app's own package
     (`TabShell.refusal`; anything else is status 126); `full` (a beamed session that asked for adb while its Mac's owner allows
     it, `allow-adb on`, read at each use): the whole shell, nothing streaming, a minute at most. Only the server sends it: it is not a command a tab may type.
+  - `video/AudioTap` (`audiowatch`, issue 532): the app's AudioTrack output as 16-bit PCM `u PRESENTED_US TRACK RATE
+    CHANNELS BASE64` lines for a serve tab that asked (`/ws?audio=stream`, `Session.watchAudio`; docs/serve.md "Sound";
+    `scripts/audio-tap-check.py`, `serve-audio-check.py`). Mac only (the Linux image's AudioTrack plays nothing).
   - `TabFiles`: `devpush DEVICE_PATH BASE64`, a file a browser tab sent (`apksim serve` and `beam`, issue 187), written
     where `adb push` could write it (the app's `files/`, `cache/`, `shared_prefs/`, `databases/`, `/sdcard`,
     `/data/local/tmp`) and moved into place whole. Only the server sends it: it is not a command a tab may type.
@@ -575,9 +578,27 @@ Read README.md for results and limits; this file covers how to work on the code.
   *and* be run through `corpus.py`; `.github/workflows/corpus.yml`, nightly, not required),
   `api-refs.py` (which framework classes, methods and fields apksim.jar uses that another level's android-all jar lacks,
   and which shadow methods stop binding there; docs/api-levels.md),
+  `stub-census.sh` (`stub-census.java`; CI's quick checks: `docs/stub-census.tsv`, every native method of the
+  framework jar, 5,934 on API 36: `shadowed-by CLASS` 800 (an @Implements shadow of that class, apksim's before
+  Robolectric's, has an @Implementation of that name and parameter types, SDK 36 in range, ShadowLegacy* ignored, a
+  shadow superclass counted, `Object` parameters only for looseSignatures), `native-runtime` 894 (a ShadowNative* shadow
+  method, or libandroid_runtime registers the name AND the class's exact shadow, apksim's if any, has
+  `callNativeMethodsByDefault`), `registered-unbound` 40 (registered, no such shadow: Robolectric's instrumented `X`
+  returns the default and `ShadowWrangler` calls `$$robo$$X$nativeBinding` only for such a shadow; proved in a test run:
+  `android.graphics.Camera` kept an identity matrix and `YuvImage.compressToJpeg` returned false while Bitmap worked) or
+  `unshadowed` 4,200 (a call returns the default). The registered names are `docs/stub-census-registered.txt`, from one
+  launch's `-Xlog:jni+resolve=debug` by `--update-registered APK` on a Mac (by name: every overload counts). Last column:
+  public/protected member of a public class or internal. No argument checks the table against `work/lib` and
+  `work/apksim.jar`, `--update` rewrites it, `--summary` prints natives per package; a changed shadow in `runtime/`
+  changes rows, so `--update` after one. A native is a `$$robo$$X$nativeBinding` method with the native flag. Not told:
+  a native of a `callNativeMethodsByDefault` class that nothing registers, which throws UnsatisfiedLinkError),
   `make-media.sh` (test clips), `docker-build.sh` and `ci-smoke.sh` (Linux image, CI), `network-check.sh` and
   `network-fixture.py` (record, replay and conditions against the test app, see "Network"), `package-release.sh` (see
   "Releases"),
+  `gen-window-frames.py` and `window-frames-check.py` (each window's frame of the test app's window screens on an API 36
+  emulator, `testapks/composeapp/window-frames-api36.tsv`, against apksim's `windows`; scenes in `window-frames-scenes.txt`,
+  known differences in `testapks/composeapp/window-frames-known.tsv`; docs/conformance.md "Window frames"; the check is
+  not in CI yet),
   `hooks/` (`pre-push`: no direct pushes to main; `pre-commit`/`pre-push` run `check-private`, see "Git and pull
   requests").
 - `docs/`: `architecture.svg` (the README's system design diagram, a hand-edited SVG with light and dark colours:
@@ -592,7 +613,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   `api-levels.md` (a spike that ran the API 30 framework: how far it got, what broke, what `--api 30` would cost),
   `uiautomator-engine.md` (`--uia engine`: UiAutomator's idle waits, gesture time and accessibility events decided
   in-process; a prototype), `corpus.md` (the offline app corpus: what it checks, how to add an app, the findings and
-  which are real).
+  which are real), `stub-census.tsv` and `stub-census-registered.txt` (generated: every framework native and what
+  covers it; `scripts/stub-census.sh`).
 - `.github/workflows/ci.yml`: `build` (the runtime, the test app and the Linux image, once, plus the quick checks),
   then five `linux` legs side by side on that image (`app`, `data`, `replay`, `crawl`, `tests`: `scripts/ci-smoke.sh`
   split by `SMOKE_PARTS`, the androidTest runs, affected-check), and `linux-smoke`, the check every pull request must

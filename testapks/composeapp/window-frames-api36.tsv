@@ -1,0 +1,35 @@
+# scene	index	kind	title	left	top	right	bottom	focused	dim
+# Written by scripts/gen-window-frames.py from `dumpsys window windows` of an API 36 emulator at 822x1782, density 320: the test app's visible windows, bottom to top. dim: FLAG_DIM_BEHIND set.
+main	0	activity	MainActivity	0	0	822	1782	1	0
+main-overlay-small	0	activity	MainActivity	0	0	822	1782	1	0
+main-overlay-small	1	panel	MainActivity	411	891	411	891	0	0
+main-overlay-full	0	activity	MainActivity	0	0	822	1782	1	0
+main-overlay-full	1	panel	MainActivity	0	48	822	1734	0	0
+dialog-full	0	activity	DialogsActivity	0	0	822	1782	0	0
+dialog-full	1	dialog	DialogsActivity	0	48	822	1734	1	1
+dialog-inscreen	0	activity	DialogsActivity	0	0	822	1782	0	0
+dialog-inscreen	1	dialog	DialogsActivity	0	0	822	1734	1	1
+dialog-modal	0	activity	DialogsActivity	0	0	822	1782	0	0
+dialog-modal	1	dialog	DialogsActivity	208	709	614	1073	1	1
+dialog-nonmodal	0	activity	DialogsActivity	0	0	822	1782	0	0
+dialog-nonmodal	1	dialog	DialogsActivity	181	709	641	1073	1	1
+dialog-compose	0	activity	DialogsActivity	0	0	822	1782	0	0
+dialog-compose	1	dialog	DialogsActivity	214	714	608	1068	1	1
+dialog-popupfull	0	activity	DialogsActivity	0	0	822	1782	0	0
+dialog-popupfull	1	panel	PopupWindow	48	1200	384	1286	0	0
+dialog-popupfull	2	dialog	DialogsActivity	0	48	822	1734	1	1
+floating	0	activity	FloatingActivity	91	733	731	1048	1	1
+floating-popup	0	activity	FloatingActivity	91	733	731	1048	1	1
+floating-popup	1	panel	PopupWindow	139	833	556	919	0	0
+floating-popup-offscreen	0	activity	FloatingActivity	91	733	731	1048	1	1
+floating-popup-offscreen	1	panel	PopupWindow	-9	833	408	919	0	0
+floating-tall	0	activity	FloatingTallActivity	91	48	731	1734	1	1
+floating-tall-barshide	0	activity	FloatingTallActivity	91	0	731	1782	0	1
+bottomsheet-material	0	activity	BottomSheetActivity	0	0	822	1782	0	0
+bottomsheet-material	1	dialog	BottomSheetActivity	0	0	822	1782	1	1
+bottomsheet-compose	0	activity	BottomSheetActivity	0	0	822	1782	0	0
+bottomsheet-compose	1	dialog	BottomSheetActivity	0	0	822	1782	1	0
+bottomsheet-plain	0	activity	BottomSheetActivity	0	0	822	1782	0	0
+bottomsheet-plain	1	dialog	BottomSheetActivity	0	1144	822	1734	1	1
+popup-trace	0	activity	PopupTraceActivity	0	0	822	1782	1	0
+systembars	0	activity	SystemBarsActivity	0	0	822	1782	1	0
