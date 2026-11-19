@@ -297,8 +297,11 @@ HTTP).
   runs and after it ended, for as long as the log is kept (a week), and `404` otherwise. No `apksim beam config`
   setting turns it off: the log comes from the visitor's own Mac, but only to the site they let run the app there.
 - The JVM writes `hs_err_pid<N>.log` to its working directory, which is the logs folder. When the instance has gone,
-  serve copies the report's `#` header (the signal, the frame, the JVM's own notes) and the crashing thread's `siginfo`, `Native frames:`
-  and `Java frames:` (at most 200 lines; issue 523; no registers, memory map or environment variables) into the session's log as `[hs_err]` lines and deletes the file. Leftover `core*` and
+  serve copies the report's `#` header (the signal, the frame, the JVM's own notes) and the crashing thread (its
+  `Current thread`, `Stack:` and `siginfo:` lines, then `Native frames:` and `Java frames:`, 80 and 60 frames at most;
+  issue 523; no registers, memory map or environment variables; `scripts/check-crash.sh`, CI)
+  into the session's log as `[hs_err]` lines and deletes the file. The frames are in the log (file and endpoint), not
+  among the last lines a tab is sent. Leftover `core*` and
   `hs_err_pid*` files an earlier server run left are removed at start and hourly once a day old.
 
 ### Warming an APK's cache

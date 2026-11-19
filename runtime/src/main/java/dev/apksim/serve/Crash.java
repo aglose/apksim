@@ -14,7 +14,7 @@ import java.util.regex.Pattern;
 /**
  * What a session's log says about why its instance ended, and the JVM's crash files: a short, bounded reason for the
  * tab, the tail of a log as text, and the summary of an `hs_err_pid<N>.log` (its `#` header: the signal and the
- * problematic frame, never the registers, memory map or environment), after which the file is deleted. Only log text
+ * problematic frame, and the crashing thread's frames; never the registers, memory map or environment), after which the file is deleted. Only log text
  * ever leaves the machine, never a file as such.
  */
 final class Crash {
@@ -28,11 +28,10 @@ final class Crash {
   static final int TAIL_BYTES = 64 * 1024;
   static final int TAIL_LINES = 200;
   static final int TAB_LINES = 50;
-  /** How much of a JVM crash report is read (its header is a few hundred bytes). */
-  static final int HEADER_BYTES = 16 * 1024;
-  /** How much of an hs_err report is read, and how many lines of its stacks reach the log. */
+  /** How much of a JVM crash report is read, and how many frames of its crashing thread reach the log. */
   static final int REPORT_BYTES = 512 * 1024;
-  static final int MAX_STACK_LINES = 200;
+  static final int MAX_NATIVE_FRAMES = 80;
+  static final int MAX_JAVA_FRAMES = 60;
 
   private Crash() {}
 
@@ -141,7 +140,7 @@ final class Crash {
   }
 
   /**
-   * The header of each `hs_err_pid<pid>.log` in `dir` (the JVM writes it to its working directory, which is the logs
+   * The summary ({@link #hsErrLines}) of each `hs_err_pid<pid>.log` in `dir` (the JVM writes it to its working directory, which is the logs
    * folder), as lines for the session's log, and deletes the file. Empty when there is none.
    */
   static List<String> takeHsErr(Path dir, long... pids) {
@@ -151,36 +150,7 @@ final class Crash {
       Path f = dir.resolve("hs_err_pid" + pid + ".log");
       if (!Files.isRegularFile(f)) continue;
       try (java.io.InputStream in = Files.newInputStream(f)) {
-        // The header, then the crashing thread's own frames (issue 523): never the registers, memory map or environment.
-        String text = new String(in.readNBytes(REPORT_BYTES), StandardCharsets.ISO_8859_1);
-        String[] lines = text.split("\n", -1);
-        int i = 0;
-        for (; i < lines.length; i++) {
-          String l = lines[i];
-          if (l.startsWith("#")) {
-            if (out.size() < 20 && !l.equals("#")) out.add("[hs_err] " + clip(l));
-          } else if (!out.isEmpty()) {
-            break;  // the header ends at the first line that is not one of its comments
-          }
-        }
-        int kept = 0;
-        boolean inSection = false;
-        for (; i < lines.length && kept < MAX_STACK_LINES; i++) {
-          String l = lines[i];
-          if (l.startsWith("Native frames:") || l.startsWith("Java frames:") || l.startsWith("siginfo:")
-              || l.startsWith("Current thread") || l.startsWith("Stack:")) {
-            inSection = true;
-          } else if (l.isBlank() || l.startsWith("---") || l.startsWith("Registers:") || l.startsWith("Top of Stack")
-              || l.startsWith("Instructions:") || l.startsWith("Lock stack")) {
-            inSection = false;
-            continue;
-          }
-          if (inSection) {
-            out.add("[hs_err] " + clip(l));
-            kept++;
-          }
-        }
-        if (kept >= MAX_STACK_LINES) out.add("[hs_err] ... (more frames cut)");
+        out.addAll(hsErrLines(new String(in.readNBytes(REPORT_BYTES), StandardCharsets.ISO_8859_1)));
       } catch (IOException e) {
         out.add("[hs_err] unreadable: " + e.getMessage());
       }
@@ -190,6 +160,61 @@ final class Crash {
         // swept later
       }
     }
+    return out;
+  }
+
+  /**
+   * One report's lines for the log: its `#` header (20 lines at most), then the crashing thread (issue 523): its
+   * `Current thread`, `Stack:` and `siginfo:` lines first, so a deep stack cannot push the fault address out, then
+   * `Native frames:` and `Java frames:`, each cut at its own limit. Under {@link #TAIL_LINES} in all, so the log
+   * endpoint's tail still starts at the header. Never the registers, memory map or environment.
+   */
+  static List<String> hsErrLines(String text) {
+    String[] lines = text.split("\n", -1);
+    List<String> header = new ArrayList<>();
+    List<String> thread = new ArrayList<>();
+    List<String> natives = new ArrayList<>();
+    List<String> javas = new ArrayList<>();
+    int i = 0;
+    for (; i < lines.length; i++) {
+      String l = lines[i];
+      if (l.startsWith("#")) {
+        if (header.size() < 20 && !l.equals("#")) header.add("[hs_err] " + clip(l));
+      } else if (!header.isEmpty() || !l.isBlank()) {
+        break;  // the header ends at the first line that is not one of its comments
+      }
+    }
+    List<String> section = null;
+    int limit = 0;
+    boolean nativeCut = false;
+    boolean javaCut = false;
+    for (; i < lines.length; i++) {
+      String l = lines[i];
+      if (l.startsWith("Native frames:")) {
+        section = natives;
+        limit = MAX_NATIVE_FRAMES + 1;  // the section's own first line and its frames
+      } else if (l.startsWith("Java frames:")) {
+        section = javas;
+        limit = MAX_JAVA_FRAMES + 1;
+      } else if (l.startsWith("siginfo:") || l.startsWith("Current thread") || l.startsWith("Stack:")) {
+        section = thread;
+        limit = 6;
+      } else if (l.isBlank() || l.startsWith("---") || l.startsWith("Registers:") || l.startsWith("Top of Stack")
+          || l.startsWith("Instructions:") || l.startsWith("Lock stack")) {
+        section = null;
+        continue;
+      }
+      if (section == null) continue;
+      if (section.size() < limit) section.add("[hs_err] " + clip(l));
+      else if (section == natives) nativeCut = true;
+      else if (section == javas) javaCut = true;
+    }
+    if (nativeCut) natives.add("[hs_err] ... (more native frames cut)");
+    if (javaCut) javas.add("[hs_err] ... (more Java frames cut)");
+    List<String> out = new ArrayList<>(header);
+    out.addAll(thread);
+    out.addAll(natives);
+    out.addAll(javas);
     return out;
   }
 

@@ -129,6 +129,8 @@ jobs:
         run: scripts/launch-priority-check.sh
       - name: serve pacing check (an H.264 tab slower than the app, on a simulated clock)
         run: scripts/check-pacer.sh
+      - name: crash report check (an hs_err report's header and crashing thread into the log, nothing else)
+        run: scripts/check-crash.sh
       - name: tab relay check (a stand-in tab, both clients, bodies, limits, timeouts)
         run: scripts/check-tab-relay.sh
       - name: forward link check (a beam agent's stand-in sends a forward rule's request; answer, refusal, no agent, link lost)

@@ -1478,7 +1478,8 @@ final class Session {
       abnormal = true;
       // The JVM's crash report is summarised into the log, then deleted (it holds the environment and a memory map).
       List<String> hs = serve.beam ? beamHsErr() : Crash.takeHsErr(serve.logs, p.pid(), pid, crash.hsErrPid());
-      for (String l : hs) logLine(l);
+      // Its frames go to the log file only: the tab's last lines stay the app's own output and the report's header.
+      for (String l : hs) logLine(l, l.startsWith("[hs_err] #") || l.startsWith("[hs_err] unreadable"));
       String reason = Crash.hsErrReason(hs);
       if (reason != null) reason = "crashed: " + reason;
       else if (crash.text() != null) reason = crash.text();
@@ -1583,12 +1584,18 @@ final class Session {
     }
   }
 
-  private synchronized void logLine(String line) {
+  private void logLine(String line) {
+    logLine(line, true);
+  }
+
+  /** `forTab`: whether the line is also one of the last lines a tab gets when the session ends badly. */
+  private synchronized void logLine(String line, boolean forTab) {
     if (log == null) return;
     try {
       log.write(line);
       log.write('\n');
       log.flush();
+      if (!forTab) return;
       tail.add(Crash.clip(line));
       if (tail.size() > Crash.TAB_LINES) tail.poll();
     } catch (IOException e) {
