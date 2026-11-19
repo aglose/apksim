@@ -151,6 +151,8 @@ jobs:
         run: python3 scripts/journey-start-check.py
       - name: Subsystem audit (what the test app refers to, against apksim's status table)
         run: python3 scripts/subsystem-audit-check.py
+      - name: Launch options (every launcher option decided for serve, beam and mcp)
+        run: python3 scripts/check-launch-options.py
       - name: Build the image
         run: scripts/docker-build.sh apksim:ci
       - name: Save the image

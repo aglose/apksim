@@ -1,0 +1,96 @@
+option	value	cli	serve	beam	mcp	note
+--activity	value	yes	yes	yes	yes	
+--adb	value	yes	no: the beam agent's own, while the Mac's owner allows adb	server-only	no: opens a port	
+--anim-scale	value	yes	yes	yes	yes	
+--appearance	value	yes	yes	yes	yes	as a session option on serve and beam
+--audio	value	yes	yes	yes	yes	
+--biometrics	value	yes	yes	yes	yes	
+--ble	value	yes	no: reads a host file	no: reads a host file	no: reads a host file	
+--bluetooth	value	yes	yes	yes	yes	
+--broadcast	value	yes	yes	yes	no: undecided	
+--build	value	yes	yes	yes	yes	
+--bundles	value	yes	no: writes files	no: writes files	no: writes files	
+--bundles-max	value	yes	no: only with --bundles (writes files)	no: only with --bundles (writes files)	no: only with --bundles (writes files)	
+--bundles-on	value	yes	no: only with --bundles (writes files)	no: only with --bundles (writes files)	no: only with --bundles (writes files)	
+--bundles-redact	value	yes	no: only with --bundles (writes files)	no: only with --bundles (writes files)	no: only with --bundles (writes files)	
+--camera	value	yes	yes	yes	yes	
+--camera-sizes	value	yes	no: undecided	no: undecided	no: undecided	
+--clock	value	yes	yes	yes	yes	
+--control	value	yes	server-only	server-only	server-only	
+--control-bind	value	yes	no: opens a port	no: opens a port	no: opens a port	
+--coverage	value	yes	no: writes files	no: writes files	no: writes files	
+--data-slots	value	yes	server-only	server-only	server-only	
+--debug	value	yes	no: opens a JDWP port	no: opens a JDWP port	no: opens a JDWP port	
+--device	value	yes	yes	yes	yes	
+--device-kind	value	yes	yes	yes	no: undecided	
+--device-profile	value	yes	no: reads a host file	no: reads a host file	no: reads a host file	
+--exit-after-first-frame	flag	yes	no: a one-shot script mode	no: a one-shot script mode	no: a one-shot script mode	
+--feature	value	yes	yes	yes	yes	
+--fold	value	yes	yes	yes	no: undecided	
+--font-scale	value	yes	yes	yes	yes	as a session option on serve and beam
+--forward-link	flag	yes	no: the beam agent's own	server-only	no: the beam agent's own	
+--fresh	flag	yes	server-only	server-only	server-only	
+--gles	value	yes	no: undecided	no: undecided	no: undecided	
+--headless	flag	yes	server-only	no: beam runs a hidden window	server-only	
+--health	value	yes	no: reads a host file	no: reads a host file	no: reads a host file	
+--instrument	value	yes	no: test runs only	no: test runs only	no: test runs only	
+--jvm	value	yes	no: the beam agent's own (its build cache)	server-only	no: changes the JVM	
+--locale	value	yes	yes	yes	yes	as a session option on serve and beam
+--max-fps	value	yes	yes	yes	yes	
+--mock-maker	value	yes	no: test runs only	no: test runs only	no: test runs only	
+--move-shared-data	flag	yes	yes	yes	no: undecided	
+--nav-bar	value	yes	yes	yes	yes	
+--network	pair	yes	no: names a recording file	no: names a recording file	no: names a recording file	
+--network-host	value	yes	yes	yes	no: needs an address allow-list the MCP server has none of	
+--network-ignore-header	value	yes	no: only with --network replay	no: only with --network replay	no: only with --network replay	
+--network-ignore-query	value	yes	no: only with --network replay	no: only with --network replay	no: only with --network replay	
+--network-inspect	flag	yes	server-only	server-only	no: the serve and beam servers' own	
+--network-inspect-rules	value	yes	server-only	server-only	no: the serve and beam servers' own	
+--network-match	value	yes	no: only with --network replay	no: only with --network replay	no: only with --network replay	
+--network-profile	value	yes	yes	yes	yes	
+--network-redact	value	yes	no: only with --network record	no: only with --network record	no: only with --network record	
+--network-replay-mark	value	yes	no: only with --network replay	no: only with --network replay	no: only with --network replay	
+--network-replay-timing	value	yes	no: only with --network replay	no: only with --network replay	no: only with --network replay	
+--network-trust	value	yes	yes	yes	no: needs an address allow-list the MCP server has none of	
+--network-unmatched	value	yes	no: only with --network replay	no: only with --network replay	no: only with --network replay	
+--no-autofill	flag	yes	server-only	server-only	server-only	
+--no-network	flag	yes	server-only	server-only	no: undecided	
+--no-network-inspect	flag	yes	no: the beam agent's own	server-only	no: the serve and beam servers' own	
+--no-sandbox	flag	yes	no: loosens the sandbox	no: loosens the sandbox	no: loosens the sandbox	
+--permissions	value	yes	yes	yes	yes	as a session option on serve and beam
+--pooled	flag	yes	no: test runs only	no: test runs only	no: test runs only	
+--precise-waits	value	yes	no: test runs only	no: test runs only	no: test runs only	
+--realtime-clock	flag	yes	no: test runs only	no: test runs only	no: test runs only	
+--rec	value	yes	yes	yes	server-only	
+--rec-checkpoint	value	yes	no: undecided	no: undecided	no: undecided	
+--rec-crash-dir	value	yes	server-only	no: serve's own (beam's crash bundle goes to its out folder)	no: the serve and beam servers' own	
+--rec-crash-id	value	yes	server-only	server-only	no: the serve and beam servers' own	
+--rec-window	value	yes	server-only	no: serve's own	no: the serve and beam servers' own	
+--record	value	yes	no: test-run movies write files	no: test-run movies write files	no: test-run movies write files	
+--record-dir	value	yes	no: writes files	no: writes files	no: writes files	
+--record-format	value	yes	no: test-run movies write files	no: test-run movies write files	no: test-run movies write files	
+--record-fps	value	yes	no: test-run movies write files	no: test-run movies write files	no: test-run movies write files	
+--record-size	value	yes	no: test-run movies write files	no: test-run movies write files	no: test-run movies write files	
+--replay-dir	value	yes	no: reads a host folder	no: reads a host folder	no: reads a host folder	
+--replay-out	value	yes	no: writes files	no: writes files	no: writes files	
+--sdcard-file	value	yes	yes	yes	yes	
+--sensor	value	yes	no: undecided	no: undecided	no: undecided	
+--serial	value	yes	yes	yes	yes	
+--setting	value	yes	yes	yes	yes	
+--shot	value	yes	no: writes a file	no: writes a file	no: writes a file	
+--skin	value	yes	yes	yes	no: undecided	
+--skip-library	value	yes	no: undecided	no: undecided	no: undecided	
+--snapshot	flag	yes	no: screenshot-test mode, not an app launch	no: screenshot-test mode, not an app launch	no: screenshot-test mode, not an app launch	
+--soft-keyboard	flag	yes	yes	yes	yes	
+--start-activities	flag	yes	no: test runs only	no: test runs only	no: test runs only	
+--status-bar	value	yes	yes	yes	yes	
+--sysfs	value	yes	yes	yes	no: undecided	
+--tab-relay	flag	yes	no: the beam agent's own	server-only	no: the beam agent's own	
+--test-outputs	value	yes	no: writes files	no: writes files	no: writes files	
+--timezone	value	yes	yes	yes	yes	
+--uia	value	yes	no: test runs only	no: test runs only	no: test runs only	
+--video	value	yes	yes	yes	yes	
+--window	value	yes	no: serve runs its instances headless	server-only	no: the MCP server has its own window argument	
+--window-x	value	yes	no: positions the Mac window	no: positions the Mac window	no: positions the Mac window	
+-e	pair	yes	no: test runs only	no: test runs only	no: test runs only	
+# Cells: yes | server-only | no: REASON (`no: undecided` only for the cells in launch-options-undecided.txt). See scripts/check-launch-options.py.
