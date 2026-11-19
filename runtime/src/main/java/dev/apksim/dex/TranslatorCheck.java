@@ -24,6 +24,7 @@ public final class TranslatorCheck {
   }
 
   private static boolean check(Path path) throws Exception {
+    if (Files.isDirectory(path)) return checkMulti(path);
     DexFile dex = new DexFile(ByteBuffer.wrap(Files.readAllBytes(path)));
     Map<String, Integer> index = new HashMap<>();
     for (int i = 0; i < dex.classDefsSize; i++) index.put(internal(dex.className(i)), i);
@@ -43,6 +44,56 @@ public final class TranslatorCheck {
       return false;
     }
     System.out.println("translator check passed: " + path.getFileName() + " (" + index.size() + " classes)");
+    return true;
+  }
+
+  /**
+   * A folder of classes.dex, classes2.dex...: one app over several DEX files, as R8 writes it, each class translated
+   * with the whole app's hierarchy (as AppClasses does) and fixture.MultiImpl.run() the check.
+   */
+  private static boolean checkMulti(Path dir) throws Exception {
+    java.util.List<Path> files;
+    try (var st = Files.list(dir)) {
+      files = st.filter(f -> f.toString().endsWith(".dex")).sorted().toList();
+    }
+    java.util.List<DexFile> dexes = new java.util.ArrayList<>();
+    Map<String, int[]> index = new HashMap<>();
+    for (Path f : files) {
+      DexFile d = new DexFile(ByteBuffer.wrap(Files.readAllBytes(f)));
+      for (int i = 0; i < d.classDefsSize; i++) index.putIfAbsent(internal(d.className(i)), new int[] {dexes.size(), i});
+      dexes.add(d);
+    }
+    ClassLoader parent = TranslatorCheck.class.getClassLoader();
+    Hierarchy all = (cls, name, desc) -> {
+      int[] at = index.get(cls);
+      if (at == null) return null;
+      DexFile d = dexes.get(at[0]);
+      return new Hierarchy.Shape(d.superclassOf(at[1]), d.interfacesOf(at[1]), d.declaresMethod(at[1], name, desc));
+    };
+    ClassLoader loader = new ClassLoader(parent) {
+      @Override
+      protected Class<?> findClass(String name) throws ClassNotFoundException {
+        int[] at = index.get(name.replace('.', '/'));
+        if (at == null) throw new ClassNotFoundException(name);
+        DexFile d = dexes.get(at[0]);
+        byte[] b = new ClassTranslator(d, at[1], owner -> {
+          int[] o = index.get(owner);
+          if (o != null) return (dexes.get(o[0]).classAccess(o[1]) & Opcodes.ACC_INTERFACE) != 0;
+          try {
+            return Class.forName(owner.replace('/', '.'), false, parent).isInterface();
+          } catch (ClassNotFoundException | LinkageError e) {
+            return false;
+          }
+        }, all).translate();
+        return defineClass(name, b, 0, b.length);
+      }
+    };
+    String failures = (String) loader.loadClass("fixture.MultiImpl").getMethod("run").invoke(null);
+    if (!failures.isEmpty()) {
+      System.err.print("translator check failed: " + dir.getFileName() + "\n" + failures);
+      return false;
+    }
+    System.out.println("translator check passed: " + dir.getFileName() + " (" + index.size() + " classes in " + dexes.size() + " DEX files)");
     return true;
   }
 

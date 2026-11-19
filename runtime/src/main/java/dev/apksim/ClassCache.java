@@ -28,8 +28,10 @@ import java.util.zip.ZipFile;
  * Translated classes kept between launches. There is one pack per DEX file, named by the DEX's CRC, so a rebuilt
  * APK reuses the classes of every DEX file that did not change (debug builds put each library in its own).
  *
- * <p>A translation reads one thing outside its own class: whether each class it calls is an interface. Each entry
- * records those answers and is used only while they still hold, so a pack stays valid whatever the other DEX files
+ * <p>A translation reads two things outside its own class: whether each class it calls is an interface, and, for a
+ * super call that names an interface, the superclasses and interfaces on the way to it (AppClasses keeps each of
+ * those as a hash under a key that starts with NUL). Each entry records those answers and is used only while they
+ * still hold, so a pack stays valid whatever the other DEX files
  * now contain. Packs live under a directory named for this runtime build and its class path, since a different
  * translator writes different code.
  *

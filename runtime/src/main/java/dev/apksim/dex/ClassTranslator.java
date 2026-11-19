@@ -34,6 +34,7 @@ public final class ClassTranslator implements Opcodes {
   private final DexFile dex;
   private final int def;
   private final Predicate<String> isInterface;
+  private final Hierarchy hierarchy;
   private ClassWriter cw;
   private Set<String> split = Set.of();
   private String name;
@@ -57,7 +58,13 @@ public final class ClassTranslator implements Opcodes {
   private Map<String, Object> annotationDefaults = Map.of();
 
   public ClassTranslator(DexFile dex, int classDefIdx, Predicate<String> isInterface) {
+    this(dex, classDefIdx, isInterface, Hierarchy.of(dex));
+  }
+
+  /** {@code hierarchy} answers for every class of the app, not only this DEX file's. */
+  public ClassTranslator(DexFile dex, int classDefIdx, Predicate<String> isInterface, Hierarchy hierarchy) {
     this.dex = dex;
+    this.hierarchy = hierarchy;
     this.def = dex.classDefOffset(classDefIdx);
     this.isInterface = isInterface;
   }
@@ -315,7 +322,7 @@ public final class ClassTranslator implements Opcodes {
       if (code != 0) {
         try {
           boolean big = split.contains(m.name() + m.descriptor());
-          MethodTranslator mt = new MethodTranslator(dex, mv, big ? cw : null, m.name(), isInterface, code, name, (access & ACC_STATIC) != 0, m.params(), m.ret());
+          MethodTranslator mt = new MethodTranslator(dex, mv, big ? cw : null, m.name(), isInterface, hierarchy, code, name, (access & ACC_STATIC) != 0, m.params(), m.ret());
           if (cov != null) {
             covSlot = cov.method(m.name(), m.descriptor());
             mt.cover(cov, covSlot, isIface);

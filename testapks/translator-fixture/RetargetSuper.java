@@ -4,8 +4,9 @@ import org.objectweb.asm.*;
 /** build.sh: rewrites fixture/SuperCall$Impl's invokespecial of SuperCall$Mid.who to SuperCall$Base.who. */
 public class RetargetSuper {
   public static void main(String[] a) throws Exception {
-    for (String c : new String[] {"SuperCall$Impl.class", "SuperCall2$Impl.class"}) {
+    for (String c : new String[] {"SuperCall$Impl.class", "SuperCall2$Impl.class", "MultiImpl$Impl.class"}) {
     Path p = Path.of(a[0], "fixture", c);
+    if (!Files.exists(p)) continue;
     ClassReader cr = new ClassReader(Files.readAllBytes(p));
     ClassWriter cw = new ClassWriter(0);
     cr.accept(new ClassVisitor(Opcodes.ASM9, cw) {
@@ -16,6 +17,7 @@ public class RetargetSuper {
           public void visitMethodInsn(int op, String o, String mn, String md, boolean itf) {
             if (op == Opcodes.INVOKESPECIAL && o.equals("fixture/SuperCall$Mid")) o = "fixture/SuperCall$Base";
             if (op == Opcodes.INVOKESPECIAL && o.equals("fixture/SuperCall2$J")) { o = "fixture/SuperCall2$Base"; itf = true; }
+            if (op == Opcodes.INVOKESPECIAL && o.equals("fixture/MultiImpl$J")) { o = "fixture/MultiLib$Base"; itf = true; }
             super.visitMethodInsn(op, o, mn, md, itf);
           }
         };

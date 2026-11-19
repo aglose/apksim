@@ -51,6 +51,7 @@ final class MethodTranslator implements Opcodes {
   private final String methodName;
   private boolean inChunk;
   private final Predicate<String> isInterface;
+  private final Hierarchy hierarchy;
   private final int code;
   private final int regs;
   private final int insWords;
@@ -107,13 +108,14 @@ final class MethodTranslator implements Opcodes {
   private List<Local> locals = List.of();
   private LocalRanges tracking; // While emitting a method with locals: told about every register def.
 
-  MethodTranslator(DexFile dex, MethodVisitor mv, ClassVisitor splitInto, String methodName, Predicate<String> isInterface,
+  MethodTranslator(DexFile dex, MethodVisitor mv, ClassVisitor splitInto, String methodName, Predicate<String> isInterface, Hierarchy hierarchy,
       int codeOff, String owner, boolean isStatic, String[] params, String ret) {
     this.dex = dex;
     this.mv = mv;
     this.splitInto = splitInto;
     this.methodName = methodName;
     this.isInterface = isInterface;
+    this.hierarchy = hierarchy;
     this.code = codeOff;
     this.owner = owner;
     this.isStatic = isStatic;
@@ -2530,7 +2532,7 @@ final class MethodTranslator implements Opcodes {
           boolean itf = !"<init>".equals(m.name()) && isInterface.test(ownerName);
           if (itf) {
             String d = directSuperinterface(ownerName, m);
-            if (d.equals(ownerName) && !reachesThroughOwnInterfaces(ownerName)) {
+            if (d.equals(ownerName) && !reachesThroughOwnInterfaces(ownerName, m)) {
               // Reached through the superclass's interfaces (R8): resolution through the direct superclass finds it.
               String sup = superclassReaching(ownerName, m);
               if (sup != null) {
@@ -2566,36 +2568,40 @@ final class MethodTranslator implements Opcodes {
     return target;
   }
 
-  private boolean reachesThroughOwnInterfaces(String target) {
+  private boolean reachesThroughOwnInterfaces(String target, DexFile.MethodRef m) {
     int self = dex.classDefIndex(owner);
     if (self < 0) return true; // unknown: leave the call as it was.
     for (String d : dex.interfacesOf(self)) {
       java.util.Set<String> seen = new java.util.HashSet<>();
       // Any own interface that reaches (or fails to be searched) keeps the interface route, redeclaration or not.
-      if (!closure(d, seen, 0) || seen.contains(target)) return true;
+      if (!closure(d, seen, 0, m) || seen.contains(target)) return true;
     }
     return false;
   }
 
   /**
-   * The direct superclass (found in this DEX) when one of its interfaces, or theirs, is {@code target} and none of
+   * The direct superclass (anywhere in the app) when one of its interfaces, or theirs, is {@code target} and none of
    * those redeclares the method (JVMS 5.4.3.3 then resolves the Methodref to target's default), else null.
    */
   private String superclassReaching(String target, DexFile.MethodRef m) {
     int self = dex.classDefIndex(owner);
     if (self < 0) return null;
-    String sup = dex.superclassOf(self);
-    if (sup == null) return null;
-    for (int depth = 0, def = dex.classDefIndex(sup); def >= 0 && depth < 32; depth++) {
-      if (dex.declaresMethod(def, m.name(), m.descriptor())) return null; // would run its own override, not the interface's default: not expressible.
-      for (String d : dex.interfacesOf(def)) {
-        if (d.equals(target) || reaches(d, target, m, 0)) return sup;
+    String direct = dex.superclassOf(self);
+    String sup = direct;
+    for (int depth = 0; sup != null && depth < 32; depth++) {
+      Hierarchy.Shape s = shape(sup, m);
+      if (s == null) return null; // not the app's: its interfaces cannot be read.
+      if (s.declares()) return null; // would run its own override, not the interface's default: not expressible.
+      for (String d : s.interfaces()) {
+        if (d.equals(target) || reaches(d, target, m, 0)) return direct;
       }
-      String up = dex.superclassOf(def);
-      if (up == null) return null;
-      def = dex.classDefIndex(up);
+      sup = s.superclass();
     }
     return null;
+  }
+
+  private Hierarchy.Shape shape(String cls, DexFile.MethodRef m) {
+    return hierarchy.of(cls, m.name(), m.descriptor());
   }
 
   /**
@@ -2604,26 +2610,26 @@ final class MethodTranslator implements Opcodes {
    */
   private boolean reaches(String from, String target, DexFile.MethodRef m, int depth) {
     java.util.Set<String> seen = new java.util.HashSet<>();
-    if (!closure(from, seen, 0) || !seen.contains(target)) return false;
+    if (!closure(from, seen, 0, m) || !seen.contains(target)) return false;
     java.util.Set<String> below = new java.util.HashSet<>();
-    closure(target, below, 0);
+    closure(target, below, 0, m);
     for (String x : seen) {
       if (x.equals(target) || below.contains(x)) continue;
-      int def = dex.classDefIndex(x);
-      // Not in this DEX (another DEX or the framework): it may redeclare the method, which cannot be told here.
-      if (def < 0 || dex.declaresMethod(def, m.name(), m.descriptor())) return false;
+      Hierarchy.Shape sx = shape(x, m);
+      // Not the app's (the framework): it may redeclare the method, which cannot be told here.
+      if (sx == null || sx.declares()) return false;
     }
     return true;
   }
 
-  /** Adds {@code from} and every superinterface of it this DEX holds to {@code out}; false if too deep. */
-  private boolean closure(String from, java.util.Set<String> out, int depth) {
+  /** Adds {@code from} and every superinterface of it the app holds to {@code out}; false if too deep. */
+  private boolean closure(String from, java.util.Set<String> out, int depth, DexFile.MethodRef m) {
     if (depth > 32) return false;
     if (!out.add(from)) return true;
-    int def = dex.classDefIndex(from);
-    if (def < 0) return true;
-    for (String s : dex.interfacesOf(def)) {
-      if (!closure(s, out, depth + 1)) return false;
+    Hierarchy.Shape sh = shape(from, m);
+    if (sh == null) return true;
+    for (String s : sh.interfaces()) {
+      if (!closure(s, out, depth + 1, m)) return false;
     }
     return true;
   }
