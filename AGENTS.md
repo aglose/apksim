@@ -200,6 +200,17 @@ Read README.md for results and limits; this file covers how to work on the code.
     be the crash) and `Standby.haltNow` always halts with 10, the client told first; `-Dapksim.crashTest.failCleanup=true`
     makes the cache save throw, to check it. Test runs install nothing: AndroidJUnitRunner's handler
     (MonitoringInstrumentation's, set in its onCreate) logs and the test goes on (`UncaughtExceptionTest`).
+  - Fatal signals (a JVM crash in native code, issue 523): the launcher gives every launch that is not serve's or beam's
+    `-XX:ErrorFile=STATE/tmp/PID/hs_err_pid%p.log` (its scratch: writable under the sandbox, kept until the next launch's
+    sweep, which also covers a warm launch's standby, whose PID is the instance's) and `-XX:OnError` running `apksim
+    --crash-summary FILE 134` (awk only, inside the JVM's crash handler, after the report is written): stderr gets
+    `[apksim] exit 134: native crash: SIGSEGV in LIBRARY (FUNCTION)`, the first 15 lines of the report's `Native frames:`
+    and `Java frames:`, and the report's path. 134 is the abort() the JVM ends with (a launch with core dumps disabled
+    would end 1; serve's, which sets `APKSIM_NO_CORE`, reads the report itself in `Session.explainExit`, as beam does
+    from its scratch, and words its end message and log the same way: `Crash.hsErrReason`). A warm launch's client
+    exits 134 as well. A signal HotSpot does not handle (SIGKILL) leaves no report, and a native abort
+    has `bionic.c`'s line instead. No flight-recorder bundle is written for a JVM crash (nothing is left to write
+    it: only Java crashes, `Crashes`, save one). Checked by `kill -SEGV` of an instance (cold, warm, serve).
   - `Exits`: why a running instance ends, one `[apksim] exit N: REASON` line on stderr for every way (issue 116: a
     process ended 0 with nothing in the log). The last activity finishing names it and the call, with the stack of
     the code that made it (`finish`, `finishAffinity`, `finishAndRemoveTask` shadows in `TestActivities.ShadowSimActivity`,
@@ -491,6 +502,11 @@ Read README.md for results and limits; this file covers how to work on the code.
     that logs `[apksim] exit 134: native abort: MESSAGE` (the message from `android_set_abort_message`, a C++ uncaught
     exception's text): before, a native abort ended the process with nothing after the library's own line (issue 477).
     Mac only (Linux has no such line yet). It replaces the JVM's own SIGABRT disposition, so a JVM-internal abort prints it too.
+  - `elfloader.c` logs, once per library as it loads, the imports nothing implements (neither another loaded library,
+    `bionic_lookup` nor the host): `[apksim] lib/arm64-v8a/NAME.so: N imports have no implementation: a, b, c` (names
+    cut at ~400 characters, weak imports left out); each gets a stub that logs `native code called unsupported function:
+    NAME` when called. Before (issue 523) the line named the symbol only, without its library, and every relocation of it.
+    The test app's fixtures print none.
   - `alooper.c` (Mac and Linux): the NDK's `ALooper_*` (prepare, forThread, acquire, release, addFd, removeFd,
     pollOnce, pollAll, wake), which native SDKs run their event loops on (issue 477: Mapbox's common library ended the
     app at `ALooper_prepare`). Watched fds are polled with poll(2), level-triggered as epoll is, with Android's

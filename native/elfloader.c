@@ -200,6 +200,14 @@ static void *resolve(Module *self, const Sym *sym, int is_call) {
   p = bionic_lookup(name);
   if (p) return p;
   if ((sym->info >> 4) == 2 /* weak */) return NULL;
+  // Once per name: a symbol is imported by a GLOB_DAT and a JUMP_SLOT relocation alike.
+  size_t used = strlen(self->missing_names), len = strlen(name);
+  for (const char *q = self->missing_names; (q = strstr(q, name)); q += len) {
+    if ((q == self->missing_names || q[-1] == ' ') && (q[len] == ',' || q[len] == 0)) return missing_stub(name);
+  }
+  if (used + len + 3 < sizeof self->missing_names) snprintf(self->missing_names + used, sizeof self->missing_names - used, "%s%s", used ? ", " : "", name);
+  else self->missing_cut = 1;
+  self->missing_count++;
   return missing_stub(name);
 }
 
@@ -1071,6 +1079,12 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
   if (arela) apply_android_rela(m, (const uint8_t *)at(m, base + arela), arelasz);
   for (size_t i = 0; i < relasz / sizeof(Rela); i++) apply_rela(m, (const Rela *)at(m, base + rela) + i);
   for (size_t i = 0; i < pltsz / sizeof(Rela); i++) apply_rela(m, (const Rela *)at(m, base + jmprel) + i);
+  // One line per library: a call to one of these says which function, but a library that only dies later in its own
+  // code (a function it expected, a NULL it dereferences) is explained by this line (issue 523).
+  if (m->missing_count) {
+    fprintf(stderr, "[apksim] " APK_ENTRY ": %d import%s no implementation: %s%s\n", base_name, m->missing_count,
+            m->missing_count == 1 ? " has" : "s have", m->missing_names, m->missing_cut ? ", ..." : "");
+  }
 #ifdef __APPLE__
   if (m->moved_by) {
     move_dynamic_addresses(m, (uint64_t *)d);

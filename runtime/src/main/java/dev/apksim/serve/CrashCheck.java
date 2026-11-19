@@ -24,7 +24,7 @@ public final class CrashCheck {
     check("no cut mark", l.stream().noneMatch(x -> x.contains("cut)")));
     check("siginfo before frames", l.indexOf("[hs_err] siginfo: si_signo: 11 (SIGSEGV), si_addr: 0x0") < l.indexOf("[hs_err] Native frames: (J=compiled Java code)"));
     check("nothing else", l.stream().noneMatch(x -> x.contains("secret") || x.contains("HOME=") || x.contains("x0=")));
-    check("reason", "SIGSEGV (0xb) in [libsystem_platform.dylib+0x341c] _platform_memmove+0xbc".equals(Crash.hsErrReason(l)));
+    check("reason", "native crash: SIGSEGV in libsystem_platform.dylib (_platform_memmove+0xbc)".equals(Crash.hsErrReason(l)));
 
     List<String> deep = Crash.hsErrLines(report(500, 500));
     check("deep: siginfo kept", has(deep, "[hs_err] siginfo: si_signo: 11 (SIGSEGV), si_addr: 0x0"));
@@ -33,7 +33,7 @@ public final class CrashCheck {
     check("deep: java limit", has(deep, "[hs_err] j  A.m" + (Crash.MAX_JAVA_FRAMES - 1) + "()V+1") && !has(deep, "[hs_err] j  A.m" + Crash.MAX_JAVA_FRAMES + "()V+1"));
     check("deep: cut marks", has(deep, "[hs_err] ... (more native frames cut)") && has(deep, "[hs_err] ... (more Java frames cut)"));
     check("deep: under the log's tail, " + deep.size(), deep.size() + 2 < Crash.TAIL_LINES);
-    check("deep: reason", "SIGSEGV (0xb) in [libsystem_platform.dylib+0x341c] _platform_memmove+0xbc".equals(Crash.hsErrReason(deep)));
+    check("deep: reason", "native crash: SIGSEGV in libsystem_platform.dylib (_platform_memmove+0xbc)".equals(Crash.hsErrReason(deep)));
 
     check("no header", Crash.hsErrLines("not a report\n# a comment later\nHOME=/x\n").isEmpty());
 

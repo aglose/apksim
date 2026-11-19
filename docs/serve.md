@@ -288,9 +288,9 @@ HTTP).
 
 - The tab gets `x the app exited (status N)` followed, when it can be found, by why: the first exception line of a
   `FATAL EXCEPTION` the instance logged (`uncaught exception java.lang.IllegalStateException: ...`), the signal and
-  problematic frame of a JVM crash (`crashed: SIGILL (0x4) in [libz.so+0x1234] deflateInit2_+0x10`, from the
-  `hs_err_pid<N>.log` header), or the instance's own `exit N: REASON` / last `[apksim]` message (an `--activity` the
-  manifest lacks). An instance that dies while starting is explained the same way.
+  problematic frame of a JVM crash (`native crash: SIGILL in libz.so (deflateInit2_+0x10)`, from the
+  `hs_err_pid<N>.log` header; the words of a plain launch's `exit 134: native crash: ...` line), or the instance's own `exit N: REASON` /
+  last `[apksim]` message (an `--activity` the manifest lacks). An instance that dies while starting is explained the same way.
 - A structured form comes first (issue 418): `e {"reason":"crash|exit|idle|busy|no-app|error|other","text":"...",
   "exception":"..."}`, sent just before the plain `x TEXT` (which is unchanged; a page that does not know `e` ignores it).
   `crash` is an instance that ended with a non-zero status (`exception`, when the log showed one, is the uncaught

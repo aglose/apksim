@@ -218,20 +218,34 @@ final class Crash {
     return out;
   }
 
-  /** The signal and frame out of {@link #takeHsErr}'s lines, e.g. "SIGILL (0x4) in C [libz.so+0x1234]", or null. */
+  /**
+   * The reason out of {@link #takeHsErr}'s lines, as the launcher's `--crash-summary` words it: "native crash: SIGSEGV in
+   * libfoo.so (bar+0x10)" (library and function of a C or VM problematic frame; a Java frame has no library), or null.
+   */
   static String hsErrReason(List<String> lines) {
     String signal = null;
     String frame = null;
     for (int i = 0; i < lines.size(); i++) {
       String l = lines.get(i).replaceFirst("^\\[hs_err\\] #\\s*", "");
       Matcher m = SIGNAL.matcher(l);
-      if (signal == null && m.find()) signal = m.group();
+      if (signal == null && m.find()) signal = m.group(1);
       if (l.startsWith("Problematic frame") && i + 1 < lines.size()) {
         frame = lines.get(i + 1).replaceFirst("^\\[hs_err\\] #\\s*", "").replaceFirst("^[A-Za-z] +", "");
       }
     }
     if (signal == null && frame == null) return null;
-    return (signal == null ? "crash" : signal) + (frame == null ? "" : " in " + frame.replaceAll("\\s+", " "));
+    String where = null;
+    if (frame != null) {
+      Matcher m = Pattern.compile("^\\[([^\\]]*?)(?:\\+0x[0-9a-f]+)?\\]\\s*(.*)$").matcher(frame);
+      String fn = frame;
+      if (m.find()) {
+        fn = m.group(2).replaceAll("\\s+", " ").strip();
+        where = m.group(1) + (fn.isEmpty() ? "" : " (" + fn + ")");
+      } else {
+        where = fn.replaceAll(" @ .*", "").replaceAll("\\s+", " ").strip();
+      }
+    }
+    return "native crash: " + (signal == null ? "fatal error" : signal) + (where == null ? "" : " in " + where);
   }
 
   /** Crash files left by earlier runs (core dumps, crash reports) older than a day, and logs older than `logDays`. */

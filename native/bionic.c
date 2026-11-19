@@ -1367,7 +1367,6 @@ __asm__(".text\n.p2align 2\n_stub_common:\n  stp x29, x30, [sp, #-16]!\n  mov x0
         ".set i, 0\n.rept 512\n  mov x16, #i\n  b _stub_common\n.set i, i+1\n.endr\n");
 
 void *missing_stub(const char *name) {
-  fprintf(stderr, "[apksim] unresolved native import: %s\n", name);
   if (stub_count >= STUBS) return NULL;
   stub_names[stub_count] = strdup(name);
   return stub_table + 8 * stub_count++;

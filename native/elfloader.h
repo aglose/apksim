@@ -48,6 +48,9 @@ typedef struct Module {
   uintptr_t moved_lo, moved_hi;
   uintptr_t moved_by;
   int symbols_moved;  // the dynamic symbols' values were moved too: they are addresses as they are
+  // Imports that resolved to nothing (a stub that says so when called): counted, the first names kept, logged once per library.
+  int missing_count, missing_cut;
+  char missing_names[400];
 } Module;
 
 // Bounds of the address range all loaded ELF code lives in; read by the JNI bridge's assembly.
