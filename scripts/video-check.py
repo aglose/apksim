@@ -7,7 +7,7 @@ Linux image has it only when built with VIDEO_DECODERS=h264,hevc), over --contro
    mediacodec part goes up by at least --min-rendered (30; not 60 a second, a shared runner is slower) and
    `decodeErrors` stays 0.
 3. With --hevc: the test app's Settings tab, "Play clip" (ExoPlayer, HEVC + AAC): its `clip:` line reads "ended at
-   3.0 s" and "video video/hevc" (no AAC decoder on Linux: the audio is not checked). Without it: no HEVC decoder is
+   3.0 s" and "video video/hevc" (the audio is not checked). Without it: no HEVC decoder is
    listed (the `video` command's `listed` part, MediaCodecList's video decoders, has video/avc and no HEVC).
 Exit 1 with the reason on the first failure."""
 import argparse, re, socket, sys, time

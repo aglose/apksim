@@ -111,7 +111,7 @@ macOS-only).
 | AGSL shaders | Metal | CPU (correct, slower) |
 | H.264 (WebRTC) | VideoToolbox | None yet (libwebrtc's own software codecs only) |
 | MediaCodec video | VideoToolbox: H.264, HEVC | libavcodec, software, one thread per codec: H.264; HEVC only in an image built with it (see "Video" below) |
-| MediaCodec audio (AAC, MP3), AudioTrack | AudioToolbox, CoreAudio | None for decoders: a player plays a clip's picture without its sound. AudioTrack: a virtual clock (`VirtualOut`) that times writes and feeds serve's sound tap, nothing played |
+| MediaCodec audio (AAC, MP3), AudioTrack | AudioToolbox, CoreAudio | Decoders: libavcodec's AAC (LC; HE-AAC untested) and MP3, software (`libsimaudio.so`, see "Audio" below). AudioTrack: a virtual clock (`VirtualOut`) that times writes and feeds serve's sound tap, nothing played |
 | GLES (test runs, offscreen) | ANGLE on Metal | Mesa llvmpipe (software), EGL's surfaceless platform (`EGL_PLATFORM=surfaceless`): pbuffers; a window surface is a pbuffer of its size, as on the Mac |
 | App native code | `lib/arm64-v8a` | `lib/x86_64` on amd64, `lib/arm64-v8a` on arm64 (most APKs ship both); 4 KB-aligned libraries load too |
 | Sandbox | `sandbox-exec` | The container |
@@ -156,8 +156,24 @@ Not measured: a Linux host, 4K. The image is about 3 to 4 MB bigger for it (`lib
 ExoPlayer plays the Settings tab's HEVC clip to its end.
 
 Limits: a stream whose decoder holds back more than five pictures loses the ones past that at its very end (the Mac
-has the same limit); no local sound (no AAC or MP3 decoder, no audio output; an AudioTrack's PCM still reaches a serve tab); libwebrtc's H.264 is not hooked up, so WebRTC
+has the same limit); no local sound (no audio output; an AudioTrack's PCM still reaches a serve tab, AAC and MP3 are decoded: see "Audio"); libwebrtc's H.264 is not hooked up, so WebRTC
 video uses whatever software codecs the APK's libwebrtc has; VP9 only in an image built with `VIDEO_DECODERS=h264,vp9` (the published one logs `no decoder here` at start), no AV1. `--video blank|off` work as on the Mac.
+
+## Audio
+
+MediaCodec lists `audio/mp4a-latm` (`apksim.aac.decoder`) and `audio/mpeg` (`apksim.mp3.decoder`) on Linux as on the Mac
+(issue 548), so a player's audio renderer gets a decoder and writes the PCM to its AudioTrack, whose `VirtualOut` clock and
+`AudioTap` already carry it to a serve tab. The decoders are FFmpeg's `aac` and `mp3float`, built in the image's build stage
+from the same tarball as the video ones (`--build-arg AUDIO_DECODERS=aac,mp3float`, the default; empty builds none, and
+MediaCodec then lists no audio decoder, as before) and linked statically into `libsimaudio.so` (`native/linux/avaudio_linux.c`:
+the Linux half of `dev.apksim.video.SimAudio`, its decoder natives only; the Mac's library also has the output) with its
+symbols private. Output is 16-bit interleaved PCM (libavcodec's float or planar frames converted in the library). The
+decoder takes the stream's AudioSpecificConfig (csd-0), so an HE-AAC config's doubled rate and parametric stereo's two
+channels are in the output format the app is told; HE-AAC signalled only in the frames (ADTS, MPEG-TS) is decoded with SBR by libavcodec, and the app is told the new rate and channels
+when the first PCM with them arrives (`ShadowSimMediaCodec`, from the decoder's own report; `SimAudio.nativeSniffSbr` answers 0 here). HE-AAC is not
+checked on Linux yet: the fixtures are AAC-LC and MP3.
+The build stage decodes a 440 Hz tone per codec (`native/linux/avaudio_check.c`: access units, rate, channels, pitch, a reset, and
+that an absent decoder does not open); the clips are `testapks/media-fixture/clip.aac` and `clip.mp3`.
 
 ## Measured (M4 Pro, Colima 4 vCPU)
 
