@@ -5738,7 +5738,7 @@ libcore.io.Linux	bind	(Ljava/io/FileDescriptor;Ljava/net/InetAddress;I)V	unshado
 libcore.io.Linux	bind	(Ljava/io/FileDescriptor;Ljava/net/SocketAddress;)V	unshadowed	public
 libcore.io.Linux	capget	(Landroid/system/StructCapUserHeader;)[Landroid/system/StructCapUserData;	unshadowed	public
 libcore.io.Linux	capset	(Landroid/system/StructCapUserHeader;[Landroid/system/StructCapUserData;)V	unshadowed	public
-libcore.io.Linux	chmod	(Ljava/lang/String;I)V	unshadowed	public
+libcore.io.Linux	chmod	(Ljava/lang/String;I)V	shadowed-by dev.apksim.LocalSockets$ShadowSimLinux	public
 libcore.io.Linux	chown	(Ljava/lang/String;II)V	unshadowed	public
 libcore.io.Linux	close	(Ljava/io/FileDescriptor;)V	unshadowed	public
 libcore.io.Linux	connect	(Ljava/io/FileDescriptor;Ljava/net/InetAddress;I)V	unshadowed	public

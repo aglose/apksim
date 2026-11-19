@@ -297,6 +297,41 @@ public final class LocalSockets {
       }
     }
 
+    /**
+     * Os.chmod: the owner's rwx bits of the mode go to the host file; its group and other bits stay as they are, and
+     * setuid, setgid and sticky are ignored. A missing file is ENOENT, as on a device. Robolectric left it with no
+     * shadow (a no-op), so an app that copied a file and set its permissions read them back unchanged. On a device
+     * group and other keep other apps out; here they belong to the host's users and tools reading the slot (ctl.py, a
+     * container's mounted volume, CI): ContextImpl's 0771 applied whole made a root container's slot unlistable for
+     * the host user.
+     */
+    @Implementation
+    protected void chmod(String path, int mode) throws android.system.ErrnoException {
+      applyMode(path, mode);
+    }
+
+    public static void applyMode(String path, int mode) throws android.system.ErrnoException {
+      java.nio.file.attribute.PosixFilePermission[] all = java.nio.file.attribute.PosixFilePermission.values();
+      // PosixFilePermission order: OWNER_READ .. OTHERS_EXECUTE, most significant mode bit first (0..2: the owner's).
+      try {
+        java.nio.file.Path p = java.nio.file.Path.of(path);
+        Set<java.nio.file.attribute.PosixFilePermission> set = java.util.EnumSet.noneOf(java.nio.file.attribute.PosixFilePermission.class);
+        for (java.nio.file.attribute.PosixFilePermission q : java.nio.file.Files.getPosixFilePermissions(p)) {
+          if (q.ordinal() >= 3) set.add(q);
+        }
+        for (int i = 0; i < 3; i++) {
+          if ((mode & (0400 >> i)) != 0) set.add(all[i]);
+        }
+        java.nio.file.Files.setPosixFilePermissions(p, set);
+      } catch (java.nio.file.NoSuchFileException e) {
+        throw new android.system.ErrnoException("chmod", OsConstants.ENOENT);
+      } catch (java.nio.file.AccessDeniedException e) {
+        throw new android.system.ErrnoException("chmod", OsConstants.EPERM);
+      } catch (IOException | UnsupportedOperationException e) {
+        throw new android.system.ErrnoException("chmod", OsConstants.EIO);
+      }
+    }
+
     @Implementation
     protected int poll(StructPollfd[] fds, int timeoutMs) throws android.system.ErrnoException {
       boolean any = false;

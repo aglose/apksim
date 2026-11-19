@@ -413,6 +413,7 @@ public class SimRunner extends RobolectricTestRunner {
       Fold.set(null);  // the launch's --fold again
       FoldExtensions.reset();
       CompatTable.resetCounts();
+      Gaps.reset();
       dev.apksim.camera.FakeCamera.reset();  // a camera a test left streaming stops before the next test
       if (System.getProperty("apksim.instrument") != null) TestActivities.beforeReset();
       Locale.setDefault(ReflectionHelpers.getField(this, "initialLocale"));

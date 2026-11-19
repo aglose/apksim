@@ -45,6 +45,8 @@ public final class Exits {
     ending = true;
     try {
       System.err.println("[apksim] exit " + code + ": " + reason);
+      String gaps = Gaps.exitLine();
+      if (gaps != null) System.err.println(gaps);
       System.err.flush();
     } catch (Throwable ignored) {
       // Ending anyway.

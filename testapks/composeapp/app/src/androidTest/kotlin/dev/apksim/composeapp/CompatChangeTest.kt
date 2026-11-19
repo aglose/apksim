@@ -84,4 +84,34 @@ class CompatChangeTest {
     assertTrue(out, out.contains("RENDERSCRIPT_SCRIPTC_DEPRECATION_CHANGE_ID (297019750): off"))
     assertTrue(out, shell("apksim compat all").contains("target 36"))
   }
+
+  /** Os.chmod changes the file's mode (it was an unshadowed native: a no-op) and a missing file is ENOENT. */
+  @Test
+  fun chmodAppliesTheMode() {
+    val f = java.io.File.createTempFile("chmod", ".txt")
+    try {
+      // Owner bits only: here group and other stay what the host gave (a device applies all nine).
+      fun owner() = java.nio.file.Files.getPosixFilePermissions(f.toPath()).map { it.name }.filter { it.startsWith("OWNER_") }.toSet()
+      android.system.Os.chmod(f.path, 0b100_100_000) // 0440
+      assertEquals(setOf("OWNER_READ"), owner())
+      android.system.Os.chmod(f.path, 0b111_000_000) // 0700
+      assertEquals(setOf("OWNER_READ", "OWNER_WRITE", "OWNER_EXECUTE"), owner())
+    } finally {
+      f.delete()
+    }
+    try {
+      android.system.Os.chmod(f.path, 0b110_100_100)
+      org.junit.Assert.fail("chmod of a missing file did not throw")
+    } catch (e: android.system.ErrnoException) {
+      assertEquals(android.system.OsConstants.ENOENT, e.errno)
+    }
+  }
+
+  /** The gap tripwire's command answers in a test run (the baseline natives are not counted, so only its tail is fixed). */
+  @Test
+  fun gapsCommandAnswers() {
+    if (!onApksim) return
+    val out = shell("apksim gaps")
+    assertTrue(out, out.contains("baseline natives not counted"))
+  }
 }
