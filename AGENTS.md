@@ -1957,6 +1957,7 @@ Not supported yet: `adb shell am instrument` of a test APK (only of a self-targe
 test-services shell calls. A test that reaches a
 server compiled into the app reaches it from here when the Mac is on that network, where an emulator does not;
 `--no-network` keeps only localhost (127.0.0.1 and ::1).
+The device-difference probe catches simple framework getters that Robolectric answers with a default where a device gives a real value: `DeviceProbeTest#probe` (test app androidTest) reads 295 normalised getters (`probe.KEY=VALUE`), `scripts/gen-device-probe.py -s SERIAL` makes `testapks/composeapp/device-probe-api36.tsv` from an API 36 emulator (install the pair, run, uninstall), and `scripts/device-probe-check.py APP TEST [--apksim CMD]` compares apksim's run with it: exit 1 for a difference not in `device-probe-known.tsv` (KEY, apksim's value, reason `(a)` can crash or mislead / `(b)` cosmetic or by design) and for a known one that no longer differs, so fixing one means deleting its line. CI's `tests` leg runs it in the image (16 s). docs/conformance.md "Device-difference probe" lists today's 117 differences, 73 of them (a); add a probe there when a getter bites an app.
 
 ## GLES (offscreen)
 `dev.apksim.gl`: android.opengl.GLES20/GLES30/EGL14 on a real GLES 3 in test runs (or `-Dapksim.gles=true`), for

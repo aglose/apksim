@@ -251,6 +251,13 @@ jobs:
           c = [t for t in ET.parse('tests28/junit.xml').iter('testcase') if 'Target28Test' in t.get('classname', '') and t.find('skipped') is None]
           assert len(c) >= 3, c
           print(len(c), 'Target28Test cases ran')"
+      # The device-difference probe (docs/conformance.md): ~300 simple framework getters against an API 36 emulator's
+      # committed table; fails for a difference the known list lacks and for a known one that no longer differs.
+      - name: Device-difference probe
+        if: matrix.leg == 'tests'
+        run: |
+          python3 scripts/device-probe-check.py app.apk test.apk \
+            --apksim "docker run --rm -v $PWD/tests:/work apksim:ci"
       # --uia engine (opt-in, docs/uiautomator-engine.md): UiAutomator's idle waits, gesture time and accessibility
       # events decided in-process. Every UiAutomator test with it, on both clocks; UiaEngineTest's engine-only tests
       # run with -e uiaEngine true.

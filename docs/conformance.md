@@ -364,3 +364,62 @@ including issue 506's `floating-tall`: 640x1686 at 91,48) except:
 
 Not compared: dimming (the table has FLAG_DIM_BEHIND, `windows` does not show it) and insets. After `restart`, `windows`
 still lists the windows of the destroyed activities (`{stopped,destroyed}`), which a device removes; the check skips them.
+
+## Device-difference probe (2026-11-18)
+
+Several bugs were a wrong value from a simple getter that Robolectric answers with a default: `WifiManager.getMaxSignalLevel()` 0
+(issue 96), the Bluetooth adapter's state (98), `PackageInfo.firstInstallTime` 0 (505), `Visualizer.getCaptureSizeRange()` null
+(514). Each was found by an app. `DeviceProbeTest#probe` (test app, androidTest) reads 295 such values and prints each as
+`probe.KEY=VALUE` (instrumentation status, and on stdout for a test run, as `Target28Test#probe`); it asserts nothing. Values are
+normalised to a class (`>0`, `non-null`, `1..100`, a boolean, `ok` for a Build field that is not empty, `unknown` or
+`robolectric`, `EXCEPTION:ClassName`), so the table is about behaviour, not about one emulator. Areas: WifiManager,
+ConnectivityManager (network, flags), PackageManager/PackageInfo of the app, AudioManager, PowerManager, BatteryManager and the
+sticky battery/Wi-Fi/connectivity broadcasts, Display, TelephonyManager, Visualizer, MediaCodecList, Vibrator, IMM,
+KeyguardManager, ActivityManager, UiModeManager, locale, accessibility, notifications, clipboard, storage, Build, 52 Settings keys.
+
+- `scripts/gen-device-probe.py [-s SERIAL]` runs the installed test with `am instrument -e class ...DeviceProbeTest` and writes
+  `testapks/composeapp/device-probe-api36.tsv` (KEY, VALUE, sorted; refuses keys or values that look like they identify a
+  machine, user or network). It installs nothing: install `app-debug.apk` and `app-debug-androidTest.apk` on the emulator, run
+  it, uninstall them. Two runs on the API 36 emulator gave the same table.
+- `scripts/device-probe-check.py APP TEST [--apksim CMD]` runs the test on apksim (`./apksim --instrument`, or a `docker run ...`
+  line), prints every differing key (device value, apksim's) and exits 1 for a difference not in
+  `testapks/composeapp/device-probe-known.tsv` (KEY, apksim's value, reason: `(a)` can crash or mislead an app, `(b)` cosmetic or
+  by design), for a known one whose value moved and for a known one that no longer differs, so a fix removes its line. A reason
+  starting `linux:` or `mac:` binds a line to one OS (none today: the Mac and the Linux image gave the same 117). CI's `tests`
+  leg runs it against the image (16 s under Rosetta).
+- The check expects the host to have a network interface: the `conn.*` and `wifi.*` keys come from the host's networks.
+- A new probe: add it to the test, regenerate the table on an emulator, run the check and classify what it shows.
+
+Today, in a test run: 117 of 295 differ, 73 of them (a). Not fixed here, recorded.
+
+(a) Likely to crash or mislead:
+
+| Area | Difference |
+|---|---|
+| Settings | 37 of the 52 probed keys absent (null: `getInt` throws `SettingNotFoundException`): Global `adb_enabled`, `airplane_mode_on`, `auto_time`, `auto_time_zone`, `device_name`, `device_provisioned`, `wifi_on`, `mobile_data`, `zen_mode`, `boot_count`, `stay_on_while_plugged_in`, the two other animation scales...; Secure `default_input_method`, `accessibility_enabled`, `long_press_timeout`, `user_setup_complete`, `ui_night_mode`...; System `screen_brightness`, `screen_off_timeout`, `font_scale`, `ringtone`, `volume_music`... (a device has them all) |
+| Storage | `getExternalStorageState` is `removed`, not emulated, 0 bytes free on the external and internal paths (`StatFs`), `StorageManager.getStorageVolumes()` empty (`getPrimaryStorageVolume().state` and `isExternalStorageManager` throw `ArrayIndexOutOfBounds`), `getCacheQuotaBytes` NPE. A running instance mounts `/sdcard` (`SlotDevice`) and was not probed |
+| Battery | `BatteryManager` CAPACITY and CHARGE_COUNTER are `Integer.MIN_VALUE` (device: 1..100, positive); the sticky broadcast is right |
+| ActivityManager | `getMemoryInfo` totalMem and availMem 0 (a ratio divides by zero); `deviceConfigurationInfo.reqGlEsVersion` 0 |
+| Audio | `getProperty(OUTPUT_SAMPLE_RATE / OUTPUT_FRAMES_PER_BUFFER)` null (`toInt()` throws); `getDevices` empty for inputs and outputs |
+| Display | `getHdrCapabilities()` null (NPE on `.supportedHdrTypes`); `getSupportedModes()` empty |
+| Package | `getInstallSourceInfo(self)` throws `NameNotFoundException` (device: installer null); `signingInfo` null; `nativeLibraryDir` null |
+| WifiManager | `getDhcpInfo()` null |
+| IMM | no enabled or listed input method |
+| MediaCodecList | empty in a test run (running instances list H.264, HEVC, VP9, AAC, MP3): `codec.*` 8 keys |
+| Build | `Build.TIME` negative |
+
+(b) Cosmetic or by design: `Build` MANUFACTURER, MODEL, BRAND, DEVICE, PRODUCT, BOARD, HARDWARE, TAGS, FINGERPRINT are
+`robolectric` and HOST, USER, TYPE, SOC_MODEL, INCREMENTAL `unknown` (`--build`; FINGERPRINT stays in test runs), `getRadioVersion` null,
+`Build.getSerial()` answers where a device throws; features camera, camera.any (without `--camera fake`), microphone, telephony,
+webview, device_admin, print, picture_in_picture not listed; `areNotificationsEnabled` true without POST_NOTIFICATIONS (device
+false at target 33+); `canWrite` true; TelephonyManager (no SIM, data disconnected, no READ_PHONE_STATE check); UiModeManager
+`currentModeType` 0 and `nightMode` 0 (device 1, 1); `hasAmplitudeControl`, `is5GHzBandSupported` false; stream minimum volumes 0
+for alarm and voice; `isDefaultNetworkActive` true; no DNS servers or bandwidth estimates on the active network; default display
+lacks FLAG_SECURE; the battery is not charging.
+
+Matching (the earlier bugs stay fixed): Wi-Fi state, `getMaxSignalLevel` 4 and `calculateSignalLevel`, connection info,
+connectivity capabilities, first-install and update times, Visualizer ranges, the sticky broadcasts, `isInteractive`, thermal
+status, locale, the Build version fields.
+
+Probed in test runs only: a running instance (`apksim serve` page, `--control`) may answer differently, as its Host sets some of
+these up (storage, features, settings). Run the test with `--instrument` only; a probe of a running instance is not done.
