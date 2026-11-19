@@ -975,7 +975,14 @@ static void s_set_abort_message(const char *m) {
 }
 // A native abort (std::terminate from an uncaught C++ exception, abort(), a failed assert) ends the process with
 // nothing in the log after the library's own line: say why, as Exits does for every other way (issue 477).
+static char reported_marker[1100];  // the crash summary's note that a JVM fatal error was already explained
 static void abort_handler(int sig) {
+  // The JVM ends a fatal error (which apksim --crash-summary has explained) with abort(): not a native library's abort.
+  if (reported_marker[0] && access(reported_marker, F_OK) == 0) {
+    signal(SIGABRT, SIG_DFL);
+    raise(SIGABRT);
+    return;
+  }
   static const char a[] = "[apksim] exit 134: native abort";
   write(2, a, sizeof a - 1);
   if (abort_msg[0]) {
@@ -987,7 +994,11 @@ static void abort_handler(int sig) {
   raise(SIGABRT);
 }
 static pthread_once_t abort_once = PTHREAD_ONCE_INIT;
-static void install_abort_handler(void) { signal(SIGABRT, abort_handler); }
+static void install_abort_handler(void) {
+  const char *dir = getenv("APKSIM_SCRATCH");
+  if (dir) snprintf(reported_marker, sizeof reported_marker, "%s/crash-reported", dir);
+  signal(SIGABRT, abort_handler);
+}
 
 // ---------------------------------------------------------------- timerfd (Linux's; macOS has none)
 // A datagram socket pair the reader sees one 8-byte expiration count on, fed by a thread per timer. At each expiry
@@ -1367,7 +1378,6 @@ __asm__(".text\n.p2align 2\n_stub_common:\n  stp x29, x30, [sp, #-16]!\n  mov x0
         ".set i, 0\n.rept 512\n  mov x16, #i\n  b _stub_common\n.set i, i+1\n.endr\n");
 
 void *missing_stub(const char *name) {
-  fprintf(stderr, "[apksim] unresolved native import: %s\n", name);
   if (stub_count >= STUBS) return NULL;
   stub_names[stub_count] = strdup(name);
   return stub_table + 8 * stub_count++;

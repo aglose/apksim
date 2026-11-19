@@ -200,6 +200,18 @@ static void *resolve(Module *self, const Sym *sym, int is_call) {
   p = bionic_lookup(name);
   if (p) return p;
   if ((sym->info >> 4) == 2 /* weak */) return NULL;
+  // Once per name: a symbol is imported by a GLOB_DAT and a JUMP_SLOT relocation alike.
+  for (int i = 0; i < self->missing_count; i++) {
+    if (!strcmp(self->missing_seen[i], name)) return missing_stub(name);
+  }
+  if (self->missing_count >= self->missing_cap) {
+    self->missing_cap = self->missing_cap ? self->missing_cap * 2 : 16;
+    self->missing_seen = realloc(self->missing_seen, self->missing_cap * sizeof(char *));
+  }
+  self->missing_seen[self->missing_count++] = strdup(name);
+  size_t used = strlen(self->missing_names), len = strlen(name);
+  if (!self->missing_cut && used + len + 3 < sizeof self->missing_names) snprintf(self->missing_names + used, sizeof self->missing_names - used, "%s%s", used ? ", " : "", name);
+  else self->missing_cut = 1;
   return missing_stub(name);
 }
 
@@ -1066,11 +1078,31 @@ Module *elf_load(const char *path, char *err, size_t errlen) {
   }
   m->next = modules;
   modules = m;
+  // For the crash summary (apksim --crash-summary): a library's addresses are anonymous mappings to the JVM's report, so
+  // each load adds `BASE SIZE APK-ENTRY` to a file in the process's scratch folder (the launcher names it).
+  {
+    const char *dir = getenv("APKSIM_SCRATCH");
+    char path[1100], line[400];
+    if (dir && snprintf(path, sizeof path, "%s/elf-modules", dir) < (int)sizeof path) {
+      int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0600);
+      if (fd >= 0) {
+        int n = snprintf(line, sizeof line, "0x%lx 0x%lx " APK_ENTRY "\n", (unsigned long)base, (unsigned long)total, base_name);
+        if (n > 0 && n < (int)sizeof line) (void)!write(fd, line, n);
+        close(fd);
+      }
+    }
+  }
 
   if (relr) apply_relr(m, (const uint64_t *)at(m, base + relr), relrsz);
   if (arela) apply_android_rela(m, (const uint8_t *)at(m, base + arela), arelasz);
   for (size_t i = 0; i < relasz / sizeof(Rela); i++) apply_rela(m, (const Rela *)at(m, base + rela) + i);
   for (size_t i = 0; i < pltsz / sizeof(Rela); i++) apply_rela(m, (const Rela *)at(m, base + jmprel) + i);
+  // One line per library: a call to one of these says which function, but a library that only dies later in its own
+  // code (a function it expected, a NULL it dereferences) is explained by this line (issue 523).
+  if (m->missing_count) {
+    fprintf(stderr, "[apksim] " APK_ENTRY ": %d import%s no implementation: %s%s\n", base_name, m->missing_count,
+            m->missing_count == 1 ? " has" : "s have", m->missing_names, m->missing_cut ? " (list cut)" : "");
+  }
 #ifdef __APPLE__
   if (m->moved_by) {
     move_dynamic_addresses(m, (uint64_t *)d);

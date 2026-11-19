@@ -64,6 +64,51 @@ EOF
   # Builds the startup cache now, in the foreground (an installed release otherwise builds it in the background on
   # its first launch).
   --train) shift; exec "$ROOT/scripts/train.sh" "$@" ;;
+  # The JVM's -XX:OnError, run inside its crash handler (below): the crash report's signal, library and function, and
+  # the first frames of its native and Java stacks, on this process's stderr (issue 523). awk only: it runs while the
+  # JVM dies. FILE is the report (the launcher's -XX:ErrorFile); STATUS the exit the JVM is about to make (abort: 134).
+  --crash-summary)
+    [[ -r "${2:-}" ]] || { echo "[apksim] exit ${3:-134}: native crash (no report at ${2:-?})" >&2; exit 0; }
+    # The marker tells the SIGABRT handler (bionic.c) that the JVM's abort() that follows is this crash, explained here.
+    : > "${2%/*}/crash-reported" 2>/dev/null || true
+    exec awk -v file="$2" -v status="${3:-134}" '
+      function hex(s,   i, n, c) { n = 0; s = tolower(s); sub(/^0x/, "", s); for (i = 1; i <= length(s); i++) { c = index("0123456789abcdef", substr(s, i, 1)); if (!c) return -1; n = n * 16 + c - 1 } return n }
+      function tohex(n,   r, d) { if (n < 1) return "0"; r = ""; while (n >= 1) { d = n - 16 * int(n / 16); r = substr("0123456789abcdef", d + 1, 1) r; n = int(n / 16) } return r }
+      # An address in a library the ELF loader mapped (anonymous memory to the JVM) as ENTRY+0xOFFSET, from the loader'"'"'s list.
+      function mapped(a,   v, i) {
+        v = hex(a); if (v < 0) return ""
+        for (i = 1; i <= nmod; i++) if (v >= mbase[i] && v < mbase[i] + msize[i]) return ment[i] "+0x" tohex(v - mbase[i])
+        return ""
+      }
+      BEGIN {
+        dir = file; sub(/[^\/]*$/, "", dir)
+        while ((getline l < (dir "elf-modules")) > 0) { split(l, f, " "); nmod++; mbase[nmod] = hex(f[1]); msize[nmod] = hex(f[2]); ment[nmod] = f[3] }
+      }
+      /^# +SIG[A-Z0-9]+ \(0x/ && !sig { sig = $0; sub(/^# +/, "", sig); sub(/ .*/, "", sig) }
+      want { f2 = $0; sub(/^# +[A-Za-z] +/, "", f2); frame = f2; want = 0 }
+      /^# Problematic frame:/ { want = 1 }
+      /^(Native|Java) frames:/ { sec = ($1 == "Native") ? "n" : "j"; left = 16 }
+      /^$/ { sec = "" }
+      sec != "" && left > 0 {
+        line = $0
+        if (sec == "n" && line ~ /^[A-Za-z] +0x[0-9a-f]+/) { t = line; sub(/^[A-Za-z] +/, "", t); sub(/ .*/, "", t); m = mapped(t); if (m != "") line = substr(line, 1, 1) "  [" m "]" }
+        body[sec] = body[sec] "[apksim]   " line "\n"; left--
+      }
+      END {
+        lib = ""; fn = frame
+        if (frame ~ /^\[/) {
+          lib = frame; sub(/^\[/, "", lib); sub(/\].*/, "", lib); sub(/\+0x[0-9a-fA-F]+$/, "", lib)
+          fn = frame; sub(/^\[[^]]*\] */, "", fn)
+        } else if (frame ~ /^0x[0-9a-f]+/) {
+          t = frame; sub(/ .*/, "", t); m = mapped(t); if (m != "") { fn = ""; lib = m }
+        }
+        sub(/ @ .*/, "", fn); gsub(/[ \t]+/, " ", fn); sub(/^ /, "", fn); sub(/ $/, "", fn)
+        where = lib != "" ? lib (fn != "" ? " (" fn ")" : "") : fn
+        printf "[apksim] exit %s: native crash: %s%s\n", status, (sig != "" ? sig : "fatal error"), (where != "" ? " in " where : "")
+        printf "%s%s", body["n"], body["j"]
+        printf "[apksim] the full report: %s\n", file
+      }' "$2" >&2 2>/dev/null
+    exit 0 ;;
   # APKs in a browser tab (docs/serve.md): an HTTP server that starts an instance per tab. Runs on a plain JVM below.
   serve) SERVE=1; shift ;;
   # An MCP server over stdio so AI agents can drive instances (docs/mcp.md): a stdlib Python script.
@@ -678,6 +723,18 @@ fi
 NOCORE=()
 # The core-size limit too: a native abort (libc abort() from an app's library) never reaches HotSpot's crash handling.
 if [[ -n "${APKSIM_NO_CORE:-}" ]]; then NOCORE=(-XX:-CreateCoredumpOnCrash); ulimit -c 0 2>/dev/null || true; fi
+# A crash report in this process's scratch (not the working directory the JVM would pick, or none it can write), and
+# its summary on stderr from inside the crash handler (--crash-summary above; issue 523): `exit 134: native crash: SIGNAL
+# in LIBRARY (FUNCTION)` and the first native and Java frames. Not for serve (APKSIM_NO_CORE) and beam, whose servers
+# read the report themselves after the instance has gone. OnError goes through `sh -c` and HotSpot expands `%` in it, so
+# the hook is only set when both paths are made of plain characters. APKSIM_SCRATCH is where the ELF loader lists the
+# libraries it mapped (their addresses are anonymous to the JVM) and the summary leaves its marker for the abort handler.
+unset APKSIM_SCRATCH
+CRASHREPORT=()
+if [[ -z "${APKSIM_NO_CORE:-}" && -z "${APKSIM_BEAM_SANDBOX:-}" && "$ROOT" =~ ^[A-Za-z0-9_./+@:,=-]+$ && "$STATE" =~ ^[A-Za-z0-9_./+@:,=-]+$ ]]; then
+  export APKSIM_SCRATCH="$STATE/tmp/$$"
+  CRASHREPORT=("-XX:ErrorFile=$STATE/tmp/$$/hs_err_pid%p.log" "-XX:OnError=$ROOT/apksim --crash-summary $STATE/tmp/$$/hs_err_pid%p.log 134")
+fi
 # macOS's malloc keeps freed memory mapped, dirty and counted against the process (after 100 MB allocated and freed, 98
 # MB of footprint stay, for good; malloc_zone_pressure_relief returns none of it). The JIT's arenas alone leave 20-50 MB
 # so after a launch, and a busy screen's buffers more. In its space-efficient mode (iOS's default) freed pages go back
@@ -697,7 +754,7 @@ if [[ "$OS" == Linux ]]; then MALLOC_TRIM=(-XX:TrimNativeHeapInterval=5000); fi
 # flag and 1.7 s with it on a simulated 128 GB Mac, 2.3 s and 1.2 s in the Linux image at 256 GB. Asked for, it caps
 # that default heap at ~30 GB instead; on smaller machines the heap is what it was (docs/perf-plan.md, "Memory in the
 # Linux image"). An --jvm -Xmx of 32 GB or more still turns them off, with a warning, and loses the cache.
-exec "${SANDBOX[@]+"${SANDBOX[@]}"}" "${ENVP[@]+"${ENVP[@]}"}" "$JAVA" "${NOCORE[@]+"${NOCORE[@]}"}" \
+exec "${SANDBOX[@]+"${SANDBOX[@]}"}" "${ENVP[@]+"${ENVP[@]}"}" "$JAVA" "${NOCORE[@]+"${NOCORE[@]}"}" "${CRASHREPORT[@]+"${CRASHREPORT[@]}"}" \
   -XX:+UnlockDiagnosticVMOptions -XX:+UseSerialGC -XX:+UseCompressedOops -Xmn64m -Xms512m -XX:MetaspaceSize=256m -XX:-BytecodeVerificationRemote -Xss4m \
   --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
   --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED \

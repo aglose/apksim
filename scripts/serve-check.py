@@ -893,7 +893,7 @@ def rejoin_check(url, token, app, device, first_frame_timeout):
     check(st is None or st.get("stopping"), "rejoin: a close without a hold still ends the session")
 
 
-def crash_check(url, token, app, device, expect=("uncaught exception", "crashed:"), want_rec=False):
+def crash_check(url, token, app, device, expect=("uncaught exception", "native crash:"), want_rec=False):
     """A session whose app crashes: the tab gets the reason and the log's last lines, and the log endpoint the tail."""
     s = Session(url, token, app, device)
     check(s.ws.status == 101, "crash app: session WebSocket open")

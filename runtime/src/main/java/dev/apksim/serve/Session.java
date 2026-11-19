@@ -1553,7 +1553,7 @@ final class Session {
       // Its frames go to the log file only: the tab's last lines stay the app's own output and the report's header.
       for (String l : hs) logLine(l, l.startsWith("[hs_err] #") || l.startsWith("[hs_err] unreadable"));
       String reason = Crash.hsErrReason(hs);
-      if (reason != null) reason = "crashed: " + reason;
+      if (reason != null) logLine("[apksim] exit " + status + ": " + reason, false);  // as a launch's own --crash-summary words it
       else if (crash.text() != null) reason = crash.text();
       if (reason != null) why += ": " + reason;
     }

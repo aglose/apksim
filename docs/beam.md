@@ -620,7 +620,7 @@ could print; `beam run` holds a lock `forget` and the expiry sweep need exclusiv
 appearance, locale and font scale its tab last set, which `run` applies after the app's own options; the benches make
 sure a session is on this Mac and read the state folder the launcher uses. A beamed JVM writes its crash report in its
 scratch (`-XX:ErrorFile`), which the agent renames into its own folder before reading its header (never through a
-link), so a crash still reaches the tab ("crashed: SIGSEGV ...", `beam-check.py`).
+link), so a crash still reaches the tab ("native crash: SIGSEGV in ...", `beam-check.py`).
 
 Second review: the beam profile denies every write but its own (above), reads of other instances' scratch, and IPv6
 (mapped loopback); the agent renames an instance's out folder into its own `beam/import/` before reading it, so a link
