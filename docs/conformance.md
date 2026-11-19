@@ -340,3 +340,27 @@ The `build` job builds the target-28 pair after the default one and the `tests` 
 on the Mac (cold in CI an estimate of 30-60 s on the 93 s build step, one more Gradle invocation); the whole 418-test suite
 on apksim is 48 s on the Mac and the default suite's CI step 281 s under Rosetta, so this subset is estimated at 30-60 s in
 the image. The CI addition is estimated at about 1.5-2 min in all and was not measured in CI before this PR.
+
+## Window frames (2026-11-18)
+
+`scripts/gen-window-frames.py -s SERIAL APK` opens each scene of `scripts/window-frames-scenes.txt` (19 deep links of the
+test app that open their windows without a tap: `dialogs?open=*`, `floating*`, `floating-tall` with and without
+`bars=hide`, `bottomsheet?kind=*`, the overlays, `popup-trace`, `systembars`, the main activity) on the API 36 emulator
+(822x1782, density 320, checked and never changed; `am force-stop` of the test app between scenes), waits until
+`dumpsys window windows` stops changing and writes each visible window of the test app (type, `frame=`, focus,
+FLAG_DIM_BEHIND) bottom to top to `testapks/composeapp/window-frames-api36.tsv` (33 windows; two runs identical).
+`scripts/window-frames-check.py APK` needs no emulator: it runs `restart URL`, `settle` and `windows` on a headless phone
+instance, matches windows to the table's rows by position (stopped or destroyed activities' windows left out) and prints
+each difference in pixels (kind is only panel against window: `windows` cannot tell an activity from a dialog); a difference not in `testapks/composeapp/window-frames-known.tsv`, or a known one that stopped
+differing, exits 1. ~12 s. Not in CI yet (only run on the Mac; the Linux image's time is unmeasured).
+
+Frames match for every scene (position and size of activities, dialogs, popups, sheets, overlays, floating windows,
+including issue 506's `floating-tall`: 640x1686 at 91,48) except:
+- `floating-tall-barshide`: the device's window is the whole display height (91,0-731,1782, parent frame 0,0-822,1782);
+  apksim's stays inside the bars (91,48-731,1734), 48 px short at each end. Issue 506's open part.
+- window focus: a running instance gives no window the focus (`Host.focusTopWindow` is `--snapshot` only), 18 rows (with the frame rows above, 20 differences). The
+  device's `floating-tall-barshide` window is not focused either (the system's ImmersiveModeConfirmation takes it), so that
+  row agrees by accident.
+
+Not compared: dimming (the table has FLAG_DIM_BEHIND, `windows` does not show it) and insets. After `restart`, `windows`
+still lists the windows of the destroyed activities (`{stopped,destroyed}`), which a device removes; the check skips them.

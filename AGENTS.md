@@ -574,6 +574,10 @@ Read README.md for results and limits; this file covers how to work on the code.
   `make-media.sh` (test clips), `docker-build.sh` and `ci-smoke.sh` (Linux image, CI), `network-check.sh` and
   `network-fixture.py` (record, replay and conditions against the test app, see "Network"), `package-release.sh` (see
   "Releases"),
+  `gen-window-frames.py` and `window-frames-check.py` (each window's frame of the test app's window screens on an API 36
+  emulator, `testapks/composeapp/window-frames-api36.tsv`, against apksim's `windows`; scenes in `window-frames-scenes.txt`,
+  known differences in `testapks/composeapp/window-frames-known.tsv`; docs/conformance.md "Window frames"; the check is
+  not in CI yet),
   `hooks/` (`pre-push`: no direct pushes to main; `pre-commit`/`pre-push` run `check-private`, see "Git and pull
   requests").
 - `docs/`: `architecture.svg` (the README's system design diagram, a hand-edited SVG with light and dark colours:

@@ -1,0 +1,21 @@
+# Scenes for gen-window-frames.py and window-frames-check.py: NAME<TAB>deep link of the test app.
+# Each opens its windows from the link alone (no taps), phone portrait (822x1782 at density 320).
+main	apksim://composeapp/home
+main-overlay-small	apksim://composeapp/trips?overlay=1
+main-overlay-full	apksim://composeapp/trips?overlay=full
+dialog-full	apksim://dialogs?open=full
+dialog-inscreen	apksim://dialogs?open=inscreen
+dialog-modal	apksim://dialogs?open=modal
+dialog-nonmodal	apksim://dialogs?open=nonmodal
+dialog-compose	apksim://dialogs?open=compose
+dialog-popupfull	apksim://dialogs?open=popupfull
+floating	apksim://floating
+floating-popup	apksim://floating?popup=1
+floating-popup-offscreen	apksim://floating?popup=offscreen
+floating-tall	apksim://floating-tall
+floating-tall-barshide	apksim://floating-tall?bars=hide
+bottomsheet-material	apksim://bottomsheet?kind=material
+bottomsheet-compose	apksim://bottomsheet?kind=compose
+bottomsheet-plain	apksim://bottomsheet?kind=plain
+popup-trace	apksim://popup-trace
+systembars	apksim://systembars

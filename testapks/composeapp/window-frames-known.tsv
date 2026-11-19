@@ -1,0 +1,21 @@
+# scene	window	field	device	apksim	reason (window: bottom to top, 0 first; docs/conformance.md "Window frames")
+main	0	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
+main-overlay-small	0	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
+main-overlay-full	0	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
+dialog-full	1	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
+dialog-inscreen	1	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
+dialog-modal	1	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
+dialog-nonmodal	1	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
+dialog-compose	1	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
+dialog-popupfull	2	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
+floating	0	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
+floating-popup	0	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
+floating-popup-offscreen	0	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
+floating-tall	0	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
+floating-tall-barshide	0	top	0	48	issue 506: a floating window that hides the bars itself stays inside them; the device gives it the whole display (parent frame 0,0-822,1782)
+floating-tall-barshide	0	bottom	1782	1734	issue 506: a floating window that hides the bars itself stays inside them; the device gives it the whole display (parent frame 0,0-822,1782)
+bottomsheet-material	1	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
+bottomsheet-compose	1	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
+bottomsheet-plain	1	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
+popup-trace	0	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
+systembars	0	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
