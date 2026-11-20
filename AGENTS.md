@@ -2072,12 +2072,12 @@ names: six of the seven Noto Sans CJK weights and some Latin families are never 
 `work/jre` (`work/jdk.path`), `work/testapp.sha256`, and `work/release` (the version). The test app is not in it
 (`dist/apksim-testapp-VERSION.apk` beside it, a release file of its own): the first `train.sh` of an install downloads
 it into `STATE/testapp-VERSION.apk` (`APKSIM_DOWNLOAD_URL` for a mirror or `file://` folder) and checks it against
-that hash; offline, training fails with a line saying so and touches `STATE/train.failed`: a launch tries again at most once an hour (the launcher passes `--background` and stays quiet meanwhile), `apksim --train` at once. 471 MB → ~312 MB (0.32.0 against this
+that hash; offline, training fails with a line saying so and touches `STATE/train.failed` (so does a failed record or create stage of a background training): a launch tries again at most once an hour (the launcher passes `--background` and stays quiet meanwhile), `apksim --train` at once. 471 MB → ~312 MB (0.32.0 against this
 change, measured locally). `work/release` makes the launcher keep its state (`STATE`: AOT cache,
 `cache/`, `tmp/`, screenshots, autofill) in `~/.apksim` rather than `work/` (`APKSIM_HOME` overrides either way;
 `train.sh` and `ctl.py` follow the same rule), so the install folder can be read-only. The sandbox allows writes to
 `STATE`. Standbys are keyed by install folder plus `STATE`. A release has no AOT cache (it is tied to its folder and
-JDK): the first launch without one starts `train.sh --headless` detached (`STATE/train.pid`, log `STATE/train.log`)
+JDK): the first launch without one, and the beam agent when it starts (`start_training` in the launcher; never a beamed launch, whose sandbox refuses the record stage's writes: issue 559), starts `train.sh --headless` detached (`STATE/train.pid`, log `STATE/train.log`)
 and goes on without it; a headless-trained cache is as fast as a windowed one (1.73 against 1.72 s). The launcher
 follows a symlink to itself (Homebrew's and install.sh's `bin/apksim`).
 `.github/workflows/release.yml`: a `v*` tag builds and checks the tarball on an Apple Silicon runner and makes a

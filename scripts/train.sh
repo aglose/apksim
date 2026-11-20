@@ -78,6 +78,7 @@ if [[ -n "$RELEASE_APK" && ! -f "$RELEASE_APK" ]]; then
 fi
 if [[ ! -f "$APK" ]]; then
   echo "train.sh: no APK to train on: $APK does not exist" >&2
+  [[ -n "$BACKGROUND" ]] && touch "$STATE/train.failed"
   echo "train.sh: build the test app (./gradlew :app:assembleDebug in testapks/composeapp), run scripts/fetch-testapp.sh, or pass an APK: train.sh [--headless] APP.apk" >&2
   exit 1
 fi

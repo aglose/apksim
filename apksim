@@ -148,7 +148,7 @@ EOF
     export APKSIM_LAUNCHER_PATH
     # The agent itself (not `beam config`, `beam saved`...) is not sandboxed: it builds the startup cache after an
     # upgrade, which a beamed launch cannot (issue 559).
-    [[ -z "${2:-}" || "${2:-}" == --* ]] && start_training ;;
+    [[ ( -z "${2:-}" || "${2:-}" == --* ) && "${2:-}" != --help && "${2:-}" != -h ]] && start_training ;;
 esac
 # Warm launches: a standby is a JVM that has already booted the framework and waits for an APK (Standby.java). It
 # is per apksim folder and sandbox flags. Instances start one in the background after their first
