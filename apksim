@@ -182,7 +182,9 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --exit-after-first-frame) EXTRA+=("-Dapksim.exitAfterFirstFrame=true"); shift ;;
     --control) EXTRA+=("-Dapksim.control=$2"); shift 2 ;;
     --control-bind) EXTRA+=("-Dapksim.controlBind=$2"); shift 2 ;;
-    --control-token-file) EXTRA+=("-Dapksim.controlTokenFile=$2"); shift 2 ;;
+    --control-token-file)
+      CONTROL_TOKEN_FILE="$2"; [[ "$2" == /* ]] || CONTROL_TOKEN_FILE="$PWD/$2"
+      EXTRA+=("-Dapksim.controlTokenFile=$CONTROL_TOKEN_FILE"); shift 2 ;;
     --adb) EXTRA+=("-Dapksim.adb=$2"); shift 2 ;;
     --jvm) EXTRA+=("$2"); shift 2 ;;
     # A JDWP port for IntelliJ/Android Studio "Remote JVM Debug" (attach any time; the app does not wait), and app
@@ -609,6 +611,12 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && ( -n "${APKSIM_BEAM_SANDBOX:-}"
 (deny file-read* (subpath \"$HOME/.ssh\") (subpath \"$HOME/.aws\") (subpath \"$HOME/.gnupg\") (subpath \"$HOME/.config\")
   (subpath \"$HOME/Library/Keychains\") (subpath \"$HOME/Library/Cookies\") (subpath \"$HOME/Documents\") (subpath \"$HOME/Desktop\")
   (subpath \"$HOME/Library/Application Support/Google\") (subpath \"$HOME/Library/Application Support/Firefox\"))"
+  # The control token may be kept in one of those folders (~/.config): that one file is readable. A warm launch's
+  # standby has the profile it was started with, so there such a file stops the launch with a line saying so.
+  if [[ -n "${CONTROL_TOKEN_FILE:-}" && "$CONTROL_TOKEN_FILE" != *[\"\\]* ]]; then
+    PROFILE="$PROFILE
+(allow file-read* (literal \"$CONTROL_TOKEN_FILE\"))"
+  fi
   if [[ -n "${NO_NET:-}" ]]; then
     PROFILE="$PROFILE
 (deny network-outbound (remote ip))

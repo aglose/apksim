@@ -68,6 +68,12 @@ docker run -d --rm --name sim -p 127.0.0.1:7400:7400 -v "$PWD:/work" \
   apksim:latest --control 7400 --control-bind 0.0.0.0 app.apk
 sleep 10   # docker's port proxy accepts before the app listens: wait for the app, then connect
 python3 scripts/drive.py 7400 'tap 733 1533' 'shot /work/after.png' 'quit'
+
+# The same, answering only clients that have the token (any process that can reach the published port otherwise can)
+head -c 24 /dev/urandom | xxd -p > control-token
+docker run -d --rm --name sim -p 127.0.0.1:7400:7400 -v "$PWD:/work" \
+  apksim:latest --control 7400 --control-bind 0.0.0.0 --control-token-file /work/control-token app.apk
+APKSIM_CONTROL_TOKEN_FILE=control-token python3 scripts/drive.py 7400 'tap 733 1533' 'quit'
 ```
 
 Test runs work as on the Mac. `scripts/instrument.py --apksim` runs the image for each process, with the APKs in the

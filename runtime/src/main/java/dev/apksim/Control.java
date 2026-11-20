@@ -151,7 +151,7 @@ final class Control {
   static final int REFUSED = 0, AUTHENTICATED = 1, COMMAND = 2;
 
   private static final java.util.regex.Pattern HTTP_REQUEST =
-      java.util.regex.Pattern.compile("^(GET|POST|PUT|HEAD|OPTIONS|DELETE|PATCH|CONNECT|TRACE) \\S+ HTTP/\\d.*");
+      java.util.regex.Pattern.compile("^\\s*\\S+\\s+\\S+\\s+HTTP/\\d.*");  // any method: no command ends in HTTP/<digit>
 
   /** Whether a connection's first line is an HTTP request line: a browser, sent here by a web page. */
   static boolean looksLikeHttp(String line) {

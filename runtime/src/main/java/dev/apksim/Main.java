@@ -53,7 +53,20 @@ public final class Main {
     ApkCache.Taking taking = ApkCache.start(BeamSandbox.ON ? BeamSandbox.apkCacheRoot() : Path.of(System.getProperty("apksim.cacheRoot")),
         Path.of(args[0]).toAbsolutePath());
     String control = System.getProperty("apksim.control");
-    if (control != null) Control.start(control.equals("auto") ? 0 : Integer.parseInt(control));
+    if (control != null) {
+      String tokenFile = System.getProperty("apksim.controlTokenFile");
+      try {
+        Control.start(control.equals("auto") ? 0 : Integer.parseInt(control), tokenFile);
+      } catch (java.io.IOException e) {
+        if (tokenFile == null) throw e;
+        // No channel without its token. In a warm launch the standby's sandbox may be what keeps the file unread
+        // (~/.config, ~/Documents, ~/Desktop): keep it elsewhere, or launch cold (APKSIM_STANDBY=0).
+        System.err.println("[apksim] --control-token-file: cannot use " + tokenFile + ": " + e
+            + " (the sandbox keeps ~/.config, ~/Documents and ~/Desktop from a warm launch)");
+        Standby.halt(2);
+        return;
+      }
+    }
     String adb = System.getProperty("apksim.adb");
     if (adb != null) AdbServer.start(adb.equals("auto") ? 0 : Integer.parseInt(adb));
     String testApk = System.getProperty("apksim.instrument");

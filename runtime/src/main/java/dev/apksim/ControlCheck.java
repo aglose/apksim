@@ -37,7 +37,9 @@ final class ControlCheck {
 
   public static void main(String[] args) throws Exception {
     expect("an HTTP request line is recognised", Control.looksLikeHttp("POST / HTTP/1.1") && Control.looksLikeHttp("GET /x?y HTTP/1.0"));
-    expect("commands are not taken for HTTP", !Control.looksLikeHttp("tap 100 200") && !Control.looksLikeHttp("open http://x/ HTTP/1.1")
+    expect("any method, any case, leading space", Control.looksLikeHttp("PROPFIND / HTTP/1.1") && Control.looksLikeHttp(" post /x HTTP/1.1")
+        && Control.looksLikeHttp("PRI * HTTP/2.0"));
+    expect("commands are not taken for HTTP", !Control.looksLikeHttp("tap 100 200") && !Control.looksLikeHttp("open http://x/")
         && !Control.looksLikeHttp("POST"));
     expect("no token: a command is a command", Control.admit("ping", null) == Control.COMMAND);
     expect("no token: auth is answered, so clients may always send it", Control.admit("auth anything", null) == Control.AUTHENTICATED);
@@ -72,6 +74,8 @@ final class ControlCheck {
     Control.start(0, file.toString());
     int port = Integer.parseInt(Files.readString(dir.resolve("control.port")).strip());
     expect("over the socket: the token is answered ok", "ok".equals(say(port, "auth " + token + "\n")));
+    expect("over the socket: after the token, a stream command is served, not refused",
+        "ok".equals(say(port, "auth " + token + "\nrelaywatch\n")));
     String refused = say(port, "quit\n");
     expect("over the socket: a command without the token gets an error and nothing else", refused != null && refused.startsWith("error:"));
     expect("over the socket: a wrong token gets an error", String.valueOf(say(port, "auth wrong-wrong-wrong-wrong\n")).startsWith("error:"));

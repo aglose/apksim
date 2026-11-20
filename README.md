@@ -393,6 +393,7 @@ rate. It is the biggest saving for many headless instances: the test app's Shade
 |---|---|
 | `--control PORT\|auto` | Open the [control channel](#automation) |
 | `--control-bind ADDR` | The address the control channel and adb listen on (containers) |
+| `--control-token-file FILE` | The control channel answers only connections that first send `auth` and the token in FILE (16+ characters): for a port other programs can reach |
 | `--adb PORT\|auto` | Make the instance an [adb device](#adb-device) |
 | `--shot FILE` | Save a screenshot of the first frame |
 | `--exit-after-first-frame` | Quit once the first frame is shown (benchmarks, smoke tests) |
