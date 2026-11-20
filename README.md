@@ -16,7 +16,7 @@ apksim app-debug.apk
 ```
 
 **Documentation: [apksim.web.app](https://apksim.web.app)**, starting with the
-[quick start](https://apksim.web.app/quickstart/).
+[quick start](https://apksim.web.app/latest/quickstart/).
 
 New to it? The [system design](#system-design) diagram shows what runs inside that process and every way to drive
 it, and [How it was built](#how-it-was-built) covers the order it came together in and what was hard.

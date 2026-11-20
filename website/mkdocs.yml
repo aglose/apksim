@@ -3,7 +3,9 @@
 # docs/*.md) into work/site/docs, copies this file beside them and builds there.
 #   scripts/docs-site.py            build into work/site/out
 #   scripts/docs-site.py --serve    live preview on http://localhost:8000
-#   scripts/docs-site.py --deploy   build, then publish to Firebase Hosting (project apksim, website/firebase.json)
+#   scripts/docs-site.py --all-versions --deploy   build a copy per release, dev and latest, then publish them to
+#                                   Firebase Hosting (project apksim, website/firebase.json)
+# site_url and extra.version are set per copy by the script: keep the site_url line and the extra: block as they are.
 
 site_name: apksim
 site_url: https://apksim.web.app/
@@ -152,6 +154,7 @@ nav:
       - 'iOS Simulator Parity': ios-simulator-parity.md
       - 'API Levels': api-levels.md
       - 'App Corpus': corpus.md
+  - 'Changelog': changelog.md
   - 'Project':
       - 'System Design': system-design.md
       - 'How It Was Built': how-it-was-built.md

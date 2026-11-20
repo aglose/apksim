@@ -93,8 +93,13 @@ then delete and re-push the tag.
 3. Watch those in the foreground too, as in step 5 (`gh run list --workflow release.yml --limit 3`, the run whose
    event is `release`). Confirm the tap received the version:
    `gh api repos/aglose/homebrew-apksim/contents/Casks/apksim.rb --jq .content | base64 -d | grep version`.
+4. Publishing also runs the `docs` workflow, which builds the documentation site with a copy for this release and
+   moves `/latest/` to it (`gh run list --workflow docs.yml --limit 3`, the run whose event is `release`). Confirm:
+   `curl -s https://apksim.web.app/versions.json` lists VERSION first with the alias `latest`, and
+   `curl -sI https://apksim.web.app/VERSION/` answers 200. If the run failed, `gh run rerun RUN_ID` once the cause is
+   fixed; nothing else depends on it.
 
 ## 7. Report
-Reply with: version and release URL, PRs merged (links), PRs left open and why, docs changed, whether the tap and
-`:latest` image updated, and anything not verified (the Mac-only parts CI does not cover). Remove the temporary
+Reply with: version and release URL, PRs merged (links), PRs left open and why, docs changed, whether the tap, the
+`:latest` image and the documentation site (https://apksim.web.app/VERSION/) updated, and anything not verified (the Mac-only parts CI does not cover). Remove the temporary
 worktrees you made (`git worktree remove`).

@@ -281,6 +281,11 @@
 [data-md-color-scheme="slate"] .only-light {
   display: none !important;
 }
+.hero-release {
+  font-size: 0.74rem;
+  color: var(--md-default-fg-color--light);
+  margin: 0.4rem 0 0;
+}
 .hero-note {
   font-size: 0.7rem;
   color: var(--md-default-fg-color--light);

@@ -22,6 +22,8 @@ apksim app-debug.apk
 [Quick start](quickstart.md){ .md-button .md-button--primary }
 [What it can't do](limitations.md){ .md-button }
 
+<p class="hero-release">Release <a href="https://github.com/aglose/apksim/releases/tag/v@VERSION@">@VERSION@</a>: <a href="changelog/">what changed</a>.</p>
+
 </div>
 <div class="device-wrap" markdown>
 <figure class="device" markdown>

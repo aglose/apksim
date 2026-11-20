@@ -1,10 +1,14 @@
 # The documentation site: https://apksim.web.app (Firebase Hosting, Google Cloud project "apksim").
 # scripts/docs-site.py assembles the pages from website/pages, the README's sections and docs/*.md, and Zensical
-# builds them. Only main deploys. A pull request that touches a source only builds, failing on a link between pages
-# with no target.
+# builds them.
+# - A pull request that touches a source only builds, failing on a link between pages with no target.
+# - A push to main that touches a source, and every published release, deploys the whole site: a copy of the docs per
+#   release tag (/X.Y.Z/, built from the tag by the tag's own script), /dev/ from main, /latest/ (the newest
+#   release's copy) and the version picker's list. Nothing is stored between runs: each deploy builds every copy
+#   again, so the tags are the only record. Publishing a release is what moves /latest/ to it.
 # The deploy signs in with the FIREBASE_SERVICE_ACCOUNT repository secret: the JSON key of a service account that
 # may deploy to Firebase Hosting in that project and nothing else. Without the secret the deploy step is skipped
-# with a warning, and `scripts/docs-site.py --deploy` from a signed-in machine publishes instead.
+# with a warning, and `scripts/docs-site.py --all-versions --deploy` from a signed-in machine publishes instead.
 name: docs
 
 on:
@@ -23,20 +27,30 @@ on:
       - 'website/**'
       - 'scripts/docs-site.py'
       - '.github/workflows/docs.yml'
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# Deploys run one after another and are never cancelled; a pull request's newer push replaces its older build.
 concurrency:
-  group: docs-${{ github.ref }}
+  group: ${{ github.event_name == 'pull_request' && format('docs-pr-{0}', github.ref) || 'docs-deploy' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # reads the release notes for the changelog page (public data; the token only lifts the rate limit)
+      GITHUB_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # a release's event is on its tag: the site is always built from main, with every tag at hand
+          ref: ${{ github.event_name == 'release' && 'main' || '' }}
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -44,18 +58,20 @@ jobs:
           cache-dependency-path: website/requirements.txt
       - run: pip install -r website/requirements.txt
       - name: Build, and fail on a broken link between pages
+        if: github.event_name == 'pull_request'
         run: scripts/docs-site.py --strict
-      - name: Deploy to Firebase Hosting
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+      - name: Build every version and deploy to Firebase Hosting
+        if: github.event_name == 'release' || (github.event_name != 'pull_request' && github.ref == 'refs/heads/main')
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
           if [ -z "$FIREBASE_SERVICE_ACCOUNT" ]; then
-            echo "::warning::FIREBASE_SERVICE_ACCOUNT is not set: the site was built but not deployed"
+            echo "::warning::FIREBASE_SERVICE_ACCOUNT is not set: the site is built but not deployed"
+            scripts/docs-site.py --strict --all-versions
             exit 0
           fi
           key="$RUNNER_TEMP/firebase-key.json"
           printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$key"
           npm install --global firebase-tools@15.12.0
-          GOOGLE_APPLICATION_CREDENTIALS="$key" scripts/docs-site.py --strict --deploy
+          GOOGLE_APPLICATION_CREDENTIALS="$key" scripts/docs-site.py --strict --all-versions --deploy
           rm -f "$key"

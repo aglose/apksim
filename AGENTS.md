@@ -693,13 +693,23 @@ Read README.md for results and limits; this file covers how to work on the code.
   `website/mkdocs.yml` into `work/site/out`. A new README section or `docs/*.md` file must be given a place in the
   script's table or the nav: the build says which. `--strict` (CI) fails on a link between pages with no target;
   `--serve` previews; `--deploy` builds and publishes (the firebase CLI, signed in as the owner, or CI's
-  `FIREBASE_SERVICE_ACCOUNT` secret). Needs Zensical on the PATH or in `work/site-venv` (`python3 -m venv work/site-venv && work/site-venv/bin/pip install -r
+  `FIREBASE_SERVICE_ACCOUNT` secret). The published site is versioned as mike lays a MkDocs site out, without a
+  branch of built pages: `--all-versions` builds `work/site/tree` with a copy per release tag that has the script
+  (`/X.Y.Z/`, the tag's README, docs and website exported and built by the tag's own `docs-site.py --version X.Y.Z
+  --out DIR`: keep that command line working, later versions of the script call earlier ones with it), `/dev/` from
+  the checkout, `/latest/` (a copy of the newest release's, or of dev while no tag has the script), `versions.json`
+  for the theme's version picker and a root redirect to `/latest/`. Each deploy builds every copy again, so the
+  tags are the only record; a copy that fails to build is left out with a `::warning::`. `changelog.md` is
+  generated from GitHub's release notes (`fetch`: the API, with CI's token; no notes offline, and the page says
+  so), in a release's copy only up to that release; `@VERSION@` in a `website/pages` file is the copy's release, or
+  the newest. Needs Zensical on the PATH or in `work/site-venv` (`python3 -m venv work/site-venv && work/site-venv/bin/pip install -r
   website/requirements.txt`; nothing else of apksim needs it).
   In a table, a code span's `\|` becomes `|` with a break allowed after it. `website/assets/site.css` holds the
   site's colours (light and a blue-grey dark), type and table styling; `app-light.png`/`app-dark.png` there are the
   test app's `shot` output (Home, and Trips with `appearance dark`), shown on the landing page: retake them when the
   test app's look changes.
-  The workflow builds on pull requests that touch a source and deploys on `main`. Its `build` job is not a required
+  The workflow builds on pull requests that touch a source, and deploys every version on a push to `main` that
+  touches one and whenever a release is published (which is what moves `/latest/`). Its `build` job is not a required
   check (ci.yml skips its jobs for these paths), so look at it before merging a docs change. The README's headings
   must all differ (the build says so): a repeated one takes the first's anchor on github.com.
 - `.github/workflows/ci.yml`: `build` (the runtime, the test app and the Linux image, once, plus the quick checks),

@@ -19,20 +19,36 @@ Usage:
     --serve    live preview (zensical serve); pages are assembled once, so run again after editing a source
     --strict   exit 1 when a link between pages has no target (CI)
     --no-build only assemble work/site/docs and check links
-    --deploy   build, then publish the site to Firebase Hosting (https://apksim.web.app)
+    --version V   build the copy that is served under /V/ (a release's number, or "dev"), with the version picker
+    --all-versions  build the whole published tree into work/site/tree: one copy per release tag, "dev" from this
+                  checkout, "latest" (the newest release's copy), versions.json and the root redirect
+    --deploy   build, then publish to Firebase Hosting (https://apksim.web.app); with --all-versions the tree
+
+Versions. The site keeps a snapshot of the docs for each release, as mike does for MkDocs sites, but without a branch
+of built pages: every deploy builds each release again from its tag. A tag is a snapshot when it has this script
+(`git cat-file -e TAG:scripts/docs-site.py`); its sources (README.md, docs/, website/) are exported and built by the
+tag's OWN copy of this script, run as `docs-site.py --version X.Y.Z --out DIR` with zensical on the PATH and
+APKSIM_RELEASES_JSON naming a file of GitHub's release list. Keep that command line working: future versions of this
+script call past ones with it.
+
 Needs Zensical, on the PATH or in work/site-venv (once):
   python3 -m venv work/site-venv && work/site-venv/bin/pip install -r website/requirements.txt
 """
 import argparse
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO = "https://github.com/aglose/apksim"
 FIREBASE_PROJECT = "apksim"   # its Hosting site is https://apksim.web.app
+SITE = "https://apksim.web.app/"
+API_RELEASES = "https://api.github.com/repos/aglose/apksim/releases?per_page=100"
+RELEASE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 
 # README '## ' heading -> page. A section not listed here stops the build: decide where a new one goes.
 README_PAGES = {
@@ -161,6 +177,71 @@ def fix_lists(lines):
     return out
 
 
+def vkey(version):
+    m = RELEASE_TAG.match("v" + version.lstrip("v"))
+    return tuple(int(x) for x in m.groups()) if m else (0, 0, 0)
+
+
+def fetch(url):
+    """GitHub's API answer for url, with CI's token when there is one."""
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "apksim-docs-site"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=20) as r:
+            return r.read().decode("utf-8")
+    except OSError:
+        # a python.org Python on a Mac has no root certificates until its installer's script is run: curl has the
+        # system's
+        args = ["curl", "-fsSL", "--max-time", "20"]
+        for k, v in headers.items():
+            args += ["-H", "%s: %s" % (k, v)]
+        return subprocess.run(args + [url], capture_output=True, text=True, check=True).stdout
+
+
+def releases():
+    """GitHub's published releases, newest first, or None when they cannot be read (offline, rate limit)."""
+    path = os.environ.get("APKSIM_RELEASES_JSON")
+    try:
+        if path:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        else:
+            data, page = [], 1
+            while True:
+                batch = json.loads(fetch("%s&page=%d" % (API_RELEASES, page)))
+                data += batch
+                page += 1
+                if len(batch) < 100:
+                    break
+    except Exception as e:     # the site builds without a changelog rather than not at all
+        print("docs-site: release notes not read (%s): the changelog page only links to GitHub" % e, file=sys.stderr)
+        return None
+    data = [r for r in data if not r.get("draft") and not r.get("prerelease") and RELEASE_TAG.match(r["tag_name"])]
+    return sorted(data, key=lambda r: vkey(r["tag_name"]), reverse=True)
+
+
+def changelog(rels, upto=None):
+    """The changelog page: each release's notes as GitHub has them, newest first, none newer than `upto`."""
+    lines = ["# Changelog", "",
+             "What changed in each release, from the [release notes on GitHub](%s/releases)." % REPO, ""]
+    if not rels:
+        return lines + ["The notes could not be read when this page was built."]
+    for r in rels:
+        version = r["tag_name"].lstrip("v")
+        if upto and vkey(version) > vkey(upto):
+            continue
+        lines += ["## " + version, "",
+                  "Released %s. [Downloads on GitHub](%s)" % ((r.get("published_at") or "")[:10], r["html_url"]), ""]
+        body = (r.get("body") or "").replace("\r", "").split("\n")
+        for _, line, fenced in outside_fences(body):
+            m = None if fenced else HEADING.match(line)
+            lines.append("#" * min(6, len(m.group(1)) + 1) + " " + m.group(2) if m else line)
+        lines.append("")
+    return lines
+
+
 class Site:
     def __init__(self):
         self.pages = {}      # name -> lines
@@ -253,8 +334,11 @@ class Site:
 
     def convert(self, page):
         lines = self.pages[page]
-        if getattr(self, "origin", {}).get(page, "").startswith("website"):
+        origin = getattr(self, "origin", {}).get(page, "")
+        if origin.startswith("website"):
             return lines                                  # written for the site's Markdown already
+        if origin == "generated":
+            return fix_lists(lines)                       # GitHub's release notes: their links are absolute
         out = []
         for _, line, fenced in outside_fences(lines):
             if not fenced:
@@ -275,6 +359,8 @@ class Site:
         return fix_lists(out)
 
     def check(self, page, lines):
+        if getattr(self, "origin", {}).get(page) == "generated":
+            return
         for _, line, fenced in outside_fences(lines):
             if fenced:
                 continue
@@ -299,11 +385,112 @@ def nav_pages(config):
     return set(re.findall(r":\s+([\w.-]+\.md)\s*$", config, re.M))
 
 
+def find_zensical():
+    venv = os.path.join(ROOT, "work", "site-venv", "bin", "zensical")
+    tool = shutil.which("zensical") or (venv if os.path.exists(venv) else None)
+    if not tool:
+        sys.exit("docs-site: zensical is not installed. Once:\n"
+                 "  python3 -m venv work/site-venv && work/site-venv/bin/pip install -r website/requirements.txt")
+    return tool
+
+
+def git(*args):
+    return subprocess.run(["git", "-C", ROOT] + list(args), capture_output=True, text=True)
+
+
+def snapshot_tags():
+    """Release tags whose commit has this script, newest first: the releases the site keeps a copy of."""
+    names = [t for t in git("tag", "--list", "v*").stdout.split() if RELEASE_TAG.match(t)]
+    names = [t for t in names if git("cat-file", "-e", t + ":scripts/docs-site.py").returncode == 0
+             and git("cat-file", "-e", t + ":website/mkdocs.yml").returncode == 0]
+    return sorted(names, key=vkey, reverse=True)
+
+
+def export(tag, dest):
+    """A tag's sources for the site, and an empty file for every other path it has, so that the tag's script can
+    tell which of its links name a file and which a folder."""
+    shutil.rmtree(dest, ignore_errors=True)
+    os.makedirs(dest)
+    archive = subprocess.Popen(["git", "-C", ROOT, "archive", tag, "README.md", "docs", "website",
+                                "scripts/docs-site.py"], stdout=subprocess.PIPE)
+    untar = subprocess.run(["tar", "-x", "-C", dest], stdin=archive.stdout)
+    if archive.wait() != 0 or untar.returncode != 0:
+        return False
+    for name in git("ls-tree", "-r", "--name-only", tag).stdout.split("\n"):
+        path = os.path.join(dest, name)
+        if name and not os.path.exists(path):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            open(path, "w").close()
+    return True
+
+
+def build_tree(args, work, tool):
+    """Every published copy of the site under one folder, as Firebase serves it."""
+    tree = os.path.join(work, "tree")
+    shutil.rmtree(tree, ignore_errors=True)
+    os.makedirs(tree)
+    env = dict(os.environ)
+    env["PATH"] = os.path.dirname(os.path.abspath(tool)) + os.pathsep + env.get("PATH", "")
+    rels = releases()
+    if rels is not None:
+        env["APKSIM_RELEASES_JSON"] = os.path.join(work, "releases.json")
+        with open(env["APKSIM_RELEASES_JSON"], "w", encoding="utf-8") as f:
+            json.dump(rels, f)
+
+    built, failed = [], []
+    for tag in snapshot_tags():
+        version = tag[1:]
+        src = os.path.join(work, "tags", version)
+        ok = export(tag, src) and subprocess.call(
+            [sys.executable, os.path.join(src, "scripts", "docs-site.py"), "--version", version,
+             "--out", os.path.join(tree, version)], env=env) == 0
+        (built if ok else failed).append(version)
+        shutil.rmtree(src, ignore_errors=True)
+    status = subprocess.call([sys.executable, os.path.abspath(__file__), "--version", "dev",
+                              "--out", os.path.join(tree, "dev")] + (["--strict"] if args.strict else []), env=env)
+    if status != 0:
+        return status
+
+    newest = built[0] if built else "dev"
+    shutil.copytree(os.path.join(tree, newest), os.path.join(tree, "latest"))
+    versions = [{"version": v, "title": v, "aliases": ["latest"] if v == newest else []} for v in built]
+    versions.append({"version": "dev", "title": "dev (main)", "aliases": ["latest"] if newest == "dev" else []})
+    with open(os.path.join(tree, "versions.json"), "w", encoding="utf-8") as f:
+        json.dump(versions, f, indent=1)
+    with open(os.path.join(tree, "index.html"), "w", encoding="utf-8") as f:
+        f.write('<!doctype html>\n<meta charset="utf-8">\n<title>apksim</title>\n'
+                '<link rel="canonical" href="%slatest/">\n<meta http-equiv="refresh" content="0; url=latest/">\n'
+                '<p><a href="latest/">apksim documentation</a></p>\n' % SITE)
+    page404 = os.path.join(tree, "latest", "404.html")
+    if os.path.exists(page404):
+        shutil.copy(page404, os.path.join(tree, "404.html"))
+    for v in failed:
+        # GitHub Actions shows this on the run; the other copies are still published
+        print("::warning::docs-site: release %s's copy of the site did not build and is left out" % v)
+    print("docs-site: tree in %s: %s; latest is %s" % (os.path.relpath(tree, ROOT), ", ".join(built + ["dev"]), newest))
+    return 0
+
+
+def deploy(work, public):
+    firebase = shutil.which("firebase")
+    if not firebase:
+        sys.exit("docs-site: the firebase CLI is not installed: npm install -g firebase-tools")
+    with open(os.path.join(ROOT, "website", "firebase.json"), encoding="utf-8") as f:
+        config = json.load(f)
+    config["hosting"]["public"] = public
+    with open(os.path.join(work, "firebase.json"), "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+    return subprocess.call([firebase, "deploy", "--only", "hosting", "--project", FIREBASE_PROJECT], cwd=work)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--serve", action="store_true")
     ap.add_argument("--strict", action="store_true")
     ap.add_argument("--no-build", action="store_true")
+    ap.add_argument("--version", help='build the copy served under /VERSION/: a release number, or "dev"')
+    ap.add_argument("--all-versions", action="store_true",
+                    help="build every published copy into work/site/tree (see this file's header)")
     ap.add_argument("--deploy", action="store_true",
                     help="after a build with no problems, publish to Firebase Hosting (needs the firebase CLI, "
                          "signed in or with GOOGLE_APPLICATION_CREDENTIALS set)")
@@ -311,12 +498,32 @@ def main():
     args = ap.parse_args()
 
     work = os.path.join(ROOT, "work", "site")
+    if args.all_versions:
+        if args.serve or args.version or args.out or args.no_build:
+            sys.exit("docs-site: --all-versions goes with --strict and --deploy only")
+        status = build_tree(args, work, find_zensical())
+        return deploy(work, "tree") if status == 0 and args.deploy else status
+
     src = os.path.join(work, "docs")
     shutil.rmtree(src, ignore_errors=True)
     os.makedirs(src)
 
     site = Site()
     site.load()
+    rels = releases()
+    release = args.version if args.version and RELEASE_TAG.match("v" + args.version) else None
+    site.pages["changelog.md"] = changelog(rels, upto=release)
+    site.origin["changelog.md"] = "generated"
+    site.anchors["changelog.md"] = {h[3] for h in headings(site.pages["changelog.md"])}
+    site.repeated["changelog.md"] = set()
+    # @VERSION@ in a page written for the site is the release it describes: this copy's, else the newest one.
+    # A line that has it goes when no release is known.
+    shown = release or (rels[0]["tag_name"].lstrip("v") if rels else None)
+    for page, folder in site.origin.items():
+        if folder.startswith("website"):
+            site.pages[page] = [l.replace("@VERSION@", shown or "") for l in site.pages[page]
+                                if shown or "@VERSION@" not in l]
+
     for page in sorted(site.pages):
         lines = site.convert(page)
         site.check(page, lines)
@@ -328,11 +535,16 @@ def main():
     shutil.copytree(os.path.join(ROOT, "website", "assets"), os.path.join(src, "site-assets"))
     with open(os.path.join(ROOT, "website", "mkdocs.yml"), encoding="utf-8") as f:
         config = f.read()
+    listed = nav_pages(config)
+    if args.version:
+        # served under /VERSION/, where the theme's version picker reads ../versions.json (mike's layout)
+        if "site_url: " + SITE + "\n" not in config or "\nextra:\n" not in config:
+            sys.exit("docs-site: website/mkdocs.yml has no 'site_url: %s' or no 'extra:' to set a version in" % SITE)
+        config = config.replace("site_url: " + SITE + "\n", "site_url: %s%s/\n" % (SITE, args.version))
+        config = config.replace("\nextra:\n", "\nextra:\n  version:\n    provider: mike\n", 1)
     with open(os.path.join(work, "mkdocs.yml"), "w", encoding="utf-8") as f:
         f.write(config)
-    shutil.copy(os.path.join(ROOT, "website", "firebase.json"), work)
 
-    listed = nav_pages(config)
     for page in sorted(set(site.pages) - listed):
         site.problems.append("%s: not in website/mkdocs.yml's nav" % page)
     for page in sorted(listed - set(site.pages)):
@@ -340,19 +552,14 @@ def main():
 
     for p in site.problems:
         print("docs-site: " + p, file=sys.stderr)
-    print("docs-site: %d pages in %s, %d problems" % (len(site.pages), os.path.relpath(src, ROOT), len(site.problems)))
+    print("docs-site: %s%d pages in %s, %d problems" % (args.version + ": " if args.version else "", len(site.pages),
+                                                       os.path.relpath(src, ROOT), len(site.problems)))
     if (args.strict or args.deploy) and site.problems:
         return 1
     if args.no_build:
         return 0
 
-    venv = os.path.join(ROOT, "work", "site-venv")
-    tool = shutil.which("zensical")
-    if not tool and os.path.exists(os.path.join(venv, "bin", "zensical")):
-        tool = os.path.join(venv, "bin", "zensical")
-    if not tool:
-        sys.exit("docs-site: zensical is not installed. Once:\n"
-                 "  python3 -m venv work/site-venv && work/site-venv/bin/pip install -r website/requirements.txt")
+    tool = find_zensical()
     if args.serve:
         return subprocess.call([tool, "serve"], cwd=work)
     status = subprocess.call([tool, "build", "--clean"], cwd=work)
@@ -360,10 +567,7 @@ def main():
         shutil.rmtree(args.out, ignore_errors=True)
         shutil.copytree(os.path.join(work, "out"), args.out)
     if status == 0 and args.deploy:
-        firebase = shutil.which("firebase")
-        if not firebase:
-            sys.exit("docs-site: the firebase CLI is not installed: npm install -g firebase-tools")
-        status = subprocess.call([firebase, "deploy", "--only", "hosting", "--project", FIREBASE_PROJECT], cwd=work)
+        status = deploy(work, "out")
     return status
 
 
