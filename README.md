@@ -15,6 +15,9 @@ brew tap aglose/apksim && brew trust aglose/apksim && brew install apksim
 apksim app-debug.apk
 ```
 
+**Documentation: [apksim.web.app](https://apksim.web.app)**, starting with the
+[quick start](https://apksim.web.app/latest/quickstart/).
+
 New to it? The [system design](#system-design) diagram shows what runs inside that process and every way to drive
 it, and [How it was built](#how-it-was-built) covers the order it came together in and what was hard.
 
@@ -46,22 +49,55 @@ it, and [How it was built](#how-it-was-built) covers the order it came together 
 
 ## What it offers
 
-| | |
-|---|---|
-| **Fast launches** | Warm launches put the app's first frame on screen in ~0.2-0.5 s, and the window in ~10 ms. A stock emulator takes 8-18 s from a snapshot or boot. |
-| **Real Android** | The AOSP Android 16 (API 36) framework, Skia and HWUI rendering, SQLite, the app's own DEX code and its arm64 native libraries. |
-| **A simulator, not just a runner** | Device types and live window resizing, rotation, dark mode, locale, text size, location, biometrics, permissions, notifications, deep links, a shared clipboard, screenshots and screen recording. |
-| **In a browser tab** | `apksim serve` runs an APK per browser tab and streams it, so QA, design and product people can try a build without Android tools: first frame in ~0.3 s on a Mac, a tap shows in ~30 ms. Compare mode puts two builds side by side under the same input, with the pixels that differ marked, and a GitHub Action comments preview links on pull requests. A report button and a network inspector are there when the server allows them. A running session can be shared as a view-only link (`--allow-share`): 1,500 viewers have watched one session from another machine. |
-| **Scriptable** | An MCP server for AI agents (`apksim mcp`), a line-based control channel, `ctl.py` for `simctl`-style control of running instances, and an adb device that standard tools (`adb`, the Android CLI) can drive. |
-| **Instrumented tests** | Compose UI tests, Espresso, ActivityScenario and UiAutomator suites run as `am instrument` would. JUnit XML output, one process per test if you want it, and a Linux image for CI. |
-| **CI triage and speed** | A failure bundle for every failing test (its screen, accessibility tree, log, threads and a script that reruns it), only the tests a change can reach, shards balanced by measured time, `--isolate` processes booted ahead of their tests (29-47% less wall time on the test app's suite at `-j 3`), code coverage without rebuilding the app, and a flake hunter that says whether a flaky test depends on order or timing. |
-| **Replay a session** | A flight recording plays again from its checkpoint, with the network answered from the recording, and says where the screen first differed; the same recording bisects a list of builds to the first that changed, becomes a test that finds elements by text or id, and opens in a static trace viewer with failure bundles. |
-| **Explore without tests** | A crawler walks an APK's screens through the accessibility tree, maps them, captures each across a device, appearance and locale matrix, and compares two builds screen by screen; its resilience sweep puts every screen through process death, rotation, offline, permission denial, large text, right-to-left and dark mode. |
-| **Devices that talk to each other** | Scripted Bluetooth LE peripherals the app scans for, connects to and reads, writes and subscribes to over GATT, and scenes that drive several instances (two users of one backend, a phone and its watch) step by step through one script. |
-| **Hermetic network** | Record an app's HTTP(S) traffic and replay it with no backend, or give it an offline, 3G, lossy or slow network, in a running instance or a test run. |
-| **Screenshot tests** | Golden screenshots of the real APK across devices, dark mode, locales and text sizes, pixel-identical run to run, with an HTML diff report. |
-| **Debuggable** | Breakpoints in the app's own Kotlin and Java sources from Android Studio or IntelliJ, logcat, and a per-stage frame profile. |
-| **GPU where it counts** | AGSL shaders, shader effects on Compose layers, and scaled bitmaps run on Metal; video decodes on VideoToolbox. |
+**Run an app**
+
+- **Fast launches.** A warm launch puts the app's first frame on screen in ~0.2-0.5 s, and the window in ~10 ms. A
+  stock emulator takes 8-18 s from a snapshot or boot.
+- **Real Android.** The AOSP Android 16 (API 36) framework, Skia and HWUI rendering, SQLite, the app's own DEX code
+  and its arm64 native libraries.
+- **A simulator, not just a runner.** Device types and live window resizing, rotation, dark mode, locale, text size,
+  location, biometrics, permissions, notifications, deep links, a shared clipboard, screenshots and screen recording.
+- **GPU where it counts.** AGSL shaders, shader effects on Compose layers and scaled bitmaps run on Metal, and video
+  decodes on VideoToolbox.
+- **Debuggable.** Breakpoints in the app's own Kotlin and Java sources from Android Studio or IntelliJ, logcat, and a
+  per-stage frame profile.
+
+**Drive it**
+
+- **Scriptable.** An MCP server for AI agents (`apksim mcp`), a line-based control channel, `ctl.py` for
+  `simctl`-style control of running instances, and an adb device that standard tools (`adb`, the Android CLI) can
+  drive.
+- **In a browser tab.** `apksim serve` runs an APK per browser tab and streams it, so QA, design and product people
+  can try a build without Android tools: first frame in ~0.3 s on a Mac, and a tap shows in ~30 ms.
+    - Compare mode puts two builds side by side under the same input, with the pixels that differ marked.
+    - A GitHub Action comments preview links on pull requests.
+    - A report button and a network inspector are there when the server allows them.
+    - A running session can be shared as a view-only link (`--allow-share`): 1,500 viewers have watched one session
+      from another machine.
+- **Hermetic network.** Record an app's HTTP(S) traffic and replay it with no backend, or give it an offline, 3G,
+  lossy or slow network, in a running instance or a test run.
+- **Devices that talk to each other.** Scripted Bluetooth LE peripherals that the app scans for, connects to and
+  reads, writes and subscribes to over GATT. Scenes drive several instances (two users of one backend, a phone and
+  its watch) step by step through one script.
+
+**Test with it**
+
+- **Instrumented tests.** Compose UI tests, Espresso, ActivityScenario and UiAutomator suites run as `am instrument`
+  would. JUnit XML output, one process per test if you want it, and a Linux image for CI.
+- **CI triage.** A failure bundle for every failing test: its screen, accessibility tree, log, threads and a script
+  that reruns it. A flake hunter says whether a flaky test depends on order or on timing.
+- **CI speed.** Only the tests a change can reach, shards balanced by measured time, and `--isolate` processes booted
+  ahead of their tests (29-47% less wall time on the test app's suite at `-j 3`). Code coverage needs no rebuild of
+  the app.
+- **Screenshot tests.** Golden screenshots of the real APK across devices, dark mode, locales and text sizes,
+  pixel-identical run to run, with an HTML diff report.
+- **Replay a session.** A flight recording plays again from its checkpoint, with the network answered from the
+  recording, and says where the screen first differed. The same recording bisects a list of builds to the first that
+  changed, becomes a test that finds elements by text or id, and opens in a static trace viewer with failure bundles.
+- **Explore without tests.** A crawler walks an APK's screens through the accessibility tree, maps them, captures
+  each across a device, appearance and locale matrix, and compares two builds screen by screen. Its resilience sweep
+  puts every screen through process death, rotation, offline, permission denial, large text, right-to-left and dark
+  mode.
 
 It is a fast UI and logic check, not a compatibility guarantee: system services are stand-ins (see
 [Limitations](#limitations)).
@@ -74,19 +110,26 @@ That trade is where both the speed and the limits come from.
 
 | | apksim | Android emulator |
 |---|---|---|
-| **What runs** | One process: AOSP Android 16 framework classes, the app's DEX translated to JVM bytecode, its native libraries for the host's ABI loaded directly | A full virtual device: Linux kernel, system server, ART, system apps |
+| **What runs** | One process: the AOSP Android 16 framework, the app's DEX translated to JVM bytecode, its native libraries loaded directly | A full virtual device: Linux kernel, system server, ART, system apps |
 | **To first frame** | ~0.2-0.5 s warm, ~1.1-1.6 s cold; the window opens in ~10 ms | 8-9 s from a Quick Boot snapshot, ~18 s for a full boot |
-| **Memory** | ~175-250 MB for an idle instance, 350-500 MB while bitmap-heavy or video screens draw; a ~170-210 MB standby waits for the next launch | 3-4 GB |
+| **Memory** | ~175-250 MB idle, 350-500 MB on bitmap-heavy or video screens; a ~170-210 MB standby waits for the next launch | 3-4 GB |
 | **Install step** | None: `apksim app.apk` | `adb install` onto a booted device |
-| **Many at once** | 32 headless instances of the test app ran at once in about 7 GB on a 12-core Mac ([docs/parallel.md](docs/parallel.md)) | A few, each with its own multi-GB VM |
+| **Many at once** | 32 headless instances of the test app in about 7 GB on a 12-core Mac ([docs/parallel.md](docs/parallel.md)) | A few, each with its own multi-GB VM |
 | **Frame rate** | Up to 120 fps, paced to the display's vsync | Depends on the host's GPU emulation |
-| **Device tests** | Same test APKs, JUnit XML; a large app's 4,107 device tests took ~4.7 min on a Mac and 8.3 min in the Linux image under Rosetta, against ~19 min on two CI emulators | Runs the tests as a device does |
-| **CI cost** | No hardware acceleration or KVM needed: a container on an ordinary runner. In that app's CI, about 55% fewer runner-minutes per pull request | Needs a runner with KVM or a macOS runner |
+| **Device tests** | Same test APKs, JUnit XML. A large app's 4,107 tests: ~4.7 min on a Mac, 8.3 min in the Linux image under Rosetta | Runs the tests as a device does. The same suite: ~19 min on two CI emulators |
+| **CI cost** | A container on an ordinary runner, with no KVM. In that app's CI, about 55% fewer runner-minutes per pull request | Needs a runner with KVM, or a macOS runner |
 | **Failure triage** | A bundle per failing test: screen, accessibility tree, log, threads, a rerun script | Screenshots and logcat you arrange to collect |
 | **API levels and devices** | API 36 only, whatever the app targets; phone, foldable, tablet, desktop, TV and watch profiles | Any system image, many API levels |
-| **System services** | Stand-ins: no Play Services; Health Connect with scripted records (`--health week`), simulated sensors (an emulator's list, events at the requested rate, set with `sensor`) and a simulated camera (test pattern or a still image, `--camera fake`); no other apps | The real ones, and Google Play images |
-| **Native libraries** | arm64-v8a on the Mac and in the arm64 Linux image (16 KB-aligned on macOS; Linux also loads 4 KB-aligned ones); x86_64 in the x86_64 Linux image | arm64 or x86_64, matching the system image; 4 KB or 16 KB pages |
-| **Fidelity** | The framework and rendering are Android's own, but behaviour that depends on the rest of a device is simulated | A real Android system |
+| **System services** | Stand-ins, and no other apps (details below) | The real ones, and Google Play images |
+| **Native libraries** | arm64-v8a on the Mac and in the arm64 Linux image; x86_64 in the x86_64 Linux image (details below) | arm64 or x86_64, matching the system image; 4 KB or 16 KB pages |
+| **Fidelity** | The framework and rendering are Android's own; behaviour that depends on the rest of a device is simulated | A real Android system |
+
+Two rows in more detail:
+- **System services.** There is no Play Services. Health Connect holds scripted records (`--health week`). Sensors
+  are simulated: an emulator's list, events at the requested rate, values set with `sensor`. The camera is simulated
+  too (`--camera fake`: a test pattern or a still image).
+- **Native libraries.** On macOS a library must be 16 KB-aligned, with the exceptions under
+  [Limitations](#limitations); Linux also loads 4 KB-aligned ones.
 
 In practice:
 - **Use apksim** for the inner loop (launch, look, tap, rotate, repeat), for UI and logic tests in CI, for screenshot
@@ -185,12 +228,31 @@ In a release, the scripts live in the install folder's `scripts/` (Homebrew:
 |---|---|---|
 | `phone` (default) | 411 × 891 | System bars and gesture navigation |
 | `foldable` | 841 × 701 | System bars and gesture navigation |
-| `pixel-10-pro-fold` | 852 × 883 open, 443 × 970 closed | A folding phone at 390 dpi: the inner display (2076 × 2152 px) with a fold down its middle, or the cover display (1079 × 2364 px). `--fold open\|half\|closed` at launch, `fold open\|half\|closed\|toggle\|angle DEGREES` or Device > Fold / Unfold while it runs: the app gets the display change as on a device, and Jetpack WindowManager (`WindowInfoTracker`, Compose's adaptive posture) reports the fold, flat or half-opened, through a stand-in `androidx.window.extensions` library; half-open and rotated is tabletop. A hinge-angle sensor (`TYPE_HINGE_ANGLE`) reports the angle. The density is the Pixel 9 Pro Fold emulator's, not measured on the device. `--skin pixel-10-pro-fold` (built in) draws the device around it, open and closed, and the Mac window plays the fold as the device closing like a book: the left half swings over about the hinge with the cover display on its back |
+| `pixel-10-pro-fold` | 852 × 883 open, 443 × 970 closed | A folding phone at 390 dpi, with an inner and a cover display (below) |
 | `tablet` | 1280 × 800 | 2560 × 1600 px, the Nexus 10 profile |
 | `desktop` | 1440 × 900 | No system bars |
 | `tv` | 960 × 540 | 1080p; television UI mode, D-pad, no touchscreen |
-| `watch`, `watch-small`, `watch-large` | 227 × 227, 192 × 192, 240 × 240 | Wear OS: round screen (`isScreenRound`), watch UI mode and `android.hardware.type.watch`, no system bars. The wheel is the crown (rotary input; `rotary N`), `key STEM_1` / `STEM_2` / `STEM_PRIMARY` are the buttons, `ambient on\|off` enters ambient mode through a stand-in `com.google.android.wearable` library. `serve` streams the frame with the corners cleared (the Mac window shows a square) |
+| `watch`, `watch-small`, `watch-large` | 227 × 227, 192 × 192, 240 × 240 | Wear OS: a round screen, watch UI mode, no system bars (below) |
 | `WxH[@density]` | custom | For example `1024x768@1.5` |
+
+**The folding phone** (`pixel-10-pro-fold`):
+- **Displays:** the inner display is 2076 × 2152 px with a fold down its middle, and the cover display 1079 × 2364
+  px. The density is the Pixel 9 Pro Fold emulator's, not measured on the device.
+- **Folding:** `--fold open|half|closed` at launch; `fold open|half|closed|toggle|angle DEGREES` or Device > Fold /
+  Unfold while it runs. The app gets the display change as on a device.
+- **What the app sees:** Jetpack WindowManager (`WindowInfoTracker`, Compose's adaptive posture) reports the fold,
+  flat or half-opened, through a stand-in `androidx.window.extensions` library. Half-open and rotated is tabletop. A
+  hinge-angle sensor (`TYPE_HINGE_ANGLE`) reports the angle.
+- **Skin:** `--skin pixel-10-pro-fold` (built in) draws the device around the screen, open and closed. The Mac
+  window plays the fold as the device closing like a book: the left half swings over about the hinge, with the cover
+  display on its back.
+
+**Watches** (`watch`, `watch-small`, `watch-large`):
+- **What the app sees:** `isScreenRound`, watch UI mode and `android.hardware.type.watch`.
+- **Input:** the wheel is the crown (rotary input; `rotary N`), and `key STEM_1`, `STEM_2` and `STEM_PRIMARY` are
+  the buttons.
+- **Ambient mode:** `ambient on|off` enters it through a stand-in `com.google.android.wearable` library.
+- **Shape:** `serve` streams the frame with the corners cleared; the Mac window shows a square.
 
 Density is 2 (xhdpi) unless given (the Pixel fold has its own). You can also switch devices while the app runs, from the Device menu or with the
 `device` command.
@@ -199,63 +261,188 @@ Density is 2 (xhdpi) unless given (the Pixel fold has its own). You can also swi
 
 `apksim [OPTIONS] app.apk`
 
-| Area | Option | Effect |
-|---|---|---|
-| Start | `--activity PKG/.Act\|.Act\|CLASS` | Start this activity instead of the manifest's first launcher one, as `am start -n` would: exported or not, by package and class, `.Act`, a full class name, or a simple name when one activity has it. For a home app whose debug manifest lists a test launcher first, or a screen deep inside the app. `restart` starts it again. An activity the manifest lacks stops the launch with the list of those it has. (An app with no launcher activity starts its MAIN/HOME one.) |
-| Display | `--device NAME\|WxH[@density]\|WxHpx@Ndpi` | The device to simulate (table above); `1920x1080px@240dpi` takes `wm size`/`wm density` output |
-| Device profile | `--device-profile FILE` | Display, `Build` fields, features and settings of a real device, captured with `scripts/device-profile.py [-s SERIAL] > FILE` over adb; options after it win |
-| | `--headless` | No window; the app still runs and renders |
-| | `--window-x N` | The window's horizontal position on screen |
-| | `--window front\|nofocus\|background\|minimized\|hidden` | How the window shows itself. `front` (default) takes focus like any app; the others never take focus from the app you are in: `nofocus` shows it on top, `background` behind your other windows, `minimized` in the Dock, `hidden` not at all. The app runs and renders the same; click the Dock icon to bring the window forward. `APKSIM_WINDOW=MODE` sets a default for every launch |
-| Look and locale | `--appearance dark\|light` | Dark or light mode |
-| | `--locale TAG` | For example `fr-FR`; `ar-XB` is the right-to-left pseudo-locale |
-| | `--timezone ZONE` | For example `America/New_York` (JDK, `android.icu`, `user.timezone` for Joda-Time) |
-| | `--font-scale N` | For example `1.3` |
-| Device state | `--permissions ask\|grant\|deny` | Runtime permission prompts; `grant` is like `adb install -g` |
-| | `--biometrics enrolled` | Start with a fingerprint enrolled |
-| | `--soft-keyboard` | Draw a soft keyboard for text fields, with real IME insets |
-| | `--status-bar on\|off`, `--nav-bar gesture\|off` | Whether the device has a status bar and a gesture navigation bar (default: phone, foldable and tablet have both, desktop and TV neither). A bar that is off is not drawn and gives the app no inset |
-| | `--fresh` | Erase the app's data first, with the data slot's `/sdcard` and Settings values: a new device with the app just installed |
-| | `--setting NS:KEY=VALUE` | A `Settings.Global`, `Secure` or `System` value (`global:my_flag=1`) set before `Application.onCreate`, as `adb shell settings put` before a first launch would. Repeatable |
-| | `--sdcard-file PATH=VALUE` | A file written to `/sdcard/PATH` in the data slot before the app starts, over any file the slot had, for apps that read a config file once in `Application.onCreate`. `VALUE` is `text:TEXT` or base64, never a host file; at most 64 KB a file and 72 KB in all. Repeatable; allowed in `serve` catalog lines and URL adds and in beam |
-| | `--broadcast 'ACTION;es:K=V;ez:K=true'` | Sends one broadcast to the app's own package after `Application.onCreate` and before the first activity, for debug receivers that set flag overrides (what `adb shell am broadcast -a ACTION --es/--ez/--ei/--el/--ef` does). Extras are `es`, `ez`, `ei`, `el` or `ef:KEY=VALUE`, separated by `;` (no spaces in `serve` catalog lines). Reaches receivers registered at run time and manifest ones; logs `[apksim] broadcast ACTION: result=N`. Repeatable (64 at most, 1024 characters each); allowed in `serve` catalog lines and URL adds and in beam |
-| | `--sysfs /sys/PATH=VALUE` | A hardware state file under `/sys` that the app reads itself (a camera privacy cover's state, say) answers with `VALUE`; the `sysfs` command changes it while the app runs. Repeatable |
-| Device identity | `--serial VALUE` | `Build.getSerial()` and `Build.SERIAL`. By default 16 letters and digits, the same every launch of one data slot (and in test runs), not Robolectric's `unknown` |
-| | `--feature NAME[=false]` | A system feature `PackageManager.hasSystemFeature` (and `pm list features`) reports, for example `android.hardware.camera.any`; `=false` takes one away, a default too. Repeatable. By default the device has what an emulator of its kind lists for what apksim simulates: Bluetooth and BLE, Wi-Fi, location, multitouch, a fingerprint sensor, audio output (a TV: leanback, no touchscreen); no camera |
-| | `--camera off\|fake\|fake=IMAGE` | Simulated cameras (default off): declares `android.hardware.camera`, `.any` and `.front` and lists a back camera (id `0`) and a front one (`1`) in `CameraManager`, with 16:9 and 4:3 YUV_420_888/JPEG/PRIVATE streams (1920x1080, 1440x1080, 1280x720, 1024x768, 960x720, 640x480; `--camera-sizes WxH[,WxH...]` lists exactly the ones named instead). Opening one needs the `CAMERA` permission; Camera2 sessions and CameraX (`Preview`, `ImageAnalysis`, `ImageCapture`) get 30 fps frames of a moving test pattern, or of the still `IMAGE`. The `camera pattern\|image PATH\|off` command and Features > Camera switch it while the app runs (`off`: black frames, as Android's camera privacy toggle) |
-| | `--bluetooth on\|off` | The Bluetooth adapter at launch (default on, as an emulator boots) |
-| Per-instance costs | `--max-fps N` | At most N frames a second (1-120), not the display's rate. Animations keep their speed in fewer frames, and the app still sees the display's refresh rate. The biggest saving for many headless instances: the test app's Shader tab costs about 0.7 of a core at 120 fps and 0.2 at 30 |
-| | `--video on\|blank\|off` | `blank`: players play at their pace but nothing is decoded or drawn (TextureViews stay empty). `off`: no video decoders are listed, as on a device without them. Launch only for `off` |
-| | `--audio on\|mute\|off` | `mute` keeps the timing and plays silence; `off` lists no AAC or MP3 decoders |
-| | `--anim-scale N` | The animator duration scale from the start: 0 jumps animations to their end, 10 slows them. In test runs it is set again at each test's setup |
-| | `--gles on\|off` | Offscreen GLES (on in test runs by default; off falls back to Robolectric's stand-ins) |
-| | `--skip-library NAME` | The app's `System.loadLibrary(NAME)` throws `UnsatisfiedLinkError`, as for a library the APK lacks, for an SDK whose native part is optional and that catches it. Repeatable |
-| | `--move-shared-data` | macOS: load a 4 KB-aligned native library whose writable data shares a 16 KB page with its code by moving that data (experimental). Without it such a library fails with a catchable `UnsatisfiedLinkError` |
-| | `--build FIELD=VALUE` | Any `Build` or `Build.VERSION` field, for example `MODEL=Pixel 9` or `VERSION.SECURITY_PATCH=2026-10-05` (not `VERSION.SDK_INT`: the framework is API 36). Repeatable. In test runs leave `FINGERPRINT` alone: with a device's, Compose's test rule waits for draw passes that never come |
-| Network and safety | `--no-network` | Only localhost (127.0.0.1 and ::1) is reachable. macOS only, enforced by the sandbox (not with `--no-sandbox`); in a Linux container use `docker run --network none` |
-| | `--no-sandbox` | Run without the `sandbox-exec` profile (macOS) |
-| | `--network record\|replay FILE` | Record the app's HTTP(S) into a HAR file, or answer from one with no backend ([below](#network-record-replay-and-conditions)) |
-| | `--network-profile NAME` | Start with `offline`, `3g`, `lossy`, `latency:MS` or `bandwidth:KBPS` |
-| | `--network-host H=ADDR[:PORT]` | Send connections for host H to a fixture server instead (`--network-trust CERT` for its certificate) |
-| Automation | `--control PORT\|auto` | Open the [control channel](#automation) |
-| | `--control-bind ADDR` | The address the control channel and adb listen on (containers) |
-| | `--adb PORT\|auto` | Make the instance an [adb device](#adb-device) |
-| | `--shot FILE` | Save a screenshot of the first frame |
-| | `--exit-after-first-frame` | Quit once the first frame is shown (benchmarks, smoke tests) |
-| | `--rec all\|CHANNEL,...` | The flight recorder: keep the last 2 minutes (`--rec-window SECONDS`) of input, logcat, network, SQLite calls and the screen, with checkpoints to start a replay from, saved as one shareable `.apkrec` file by `rec save`, File > Save Replay, or by itself when the app crashes. `scripts/replay-adb.py FILE.apkrec -s SERIAL --yes` plays one on a device over adb, to tell an app bug from a simulator one. It replaces the app's data, `/sdcard` files and Settings values on that device (hence `--yes`; the app's current data is backed up first), so look at the plan with `--dry-run` before ([docs/flight-recorder.md](docs/flight-recorder.md)) |
-| Testing | `--instrument TEST.apk` | Run a test APK against the app ([below](#instrumented-tests-and-ci)) |
-| | `-e KEY VALUE` | An instrumentation argument (`class`, `package`, or any your tests read) |
-| | `--realtime-clock` | In test runs, the clock follows real time instead of skipping idle time |
-| | `--precise-waits on\|off\|auto` | With `--realtime-clock`, spin the last part of short waits where the OS wakes sleeps late (VM CI runners); `auto` probes and does nothing on a desktop Mac |
-| | `--uia engine\|classic` | In test runs, UiAutomator's idle waits, gesture time and accessibility events decided in-process (`engine`, experimental: docs/uiautomator-engine.md); `classic` is the default |
-| | `--start-activities` | In test runs, an activity the app starts comes up, as on a device, instead of only being recorded |
-| | `--test-outputs DIR` | In test runs, the Test Storage service's files (what a report library such as Allure writes) go under DIR, laid out as a device's `/sdcard/googletest` |
-| | `--mock-maker auto\|keep\|subclass\|inline\|NAME` | Mockito's mock maker for the tests. `auto` (default) swaps the ART makers a test APK names (mockito-android, dexmaker) for Mockito's subclass maker; `keep` leaves the APK's; `subclass`/`inline` force `mock-maker-subclass`/`mock-maker-inline` (`inline` needs Byte Buddy's agent and mocks JDK types only, not the APK's translated classes); any other value is used as given |
-| | `--bundles DIR` | In test runs, a [failure bundle](#failure-bundles) in DIR for each failing test. `--bundles-on all` for passing tests too, `--bundles-max N` (default 50 a process), `--bundles-redact REGEX` |
-| | `--clock ISO\|epoch-ms\|real` | The wall clock the app sees starts there and runs on (screenshot tests) |
-| | `--snapshot` | Deterministic drawing for [screenshot tests](#screenshot-tests): CPU only, carets that don't blink |
-| Debugging | `--debug PORT` | A JDWP port for "Remote JVM Debug", with source-level debug info |
-| | `--jvm ARG` | Pass a JVM option, for example `--jvm -Dapksim.timing=verbose` |
+Options are grouped by what they set. A long explanation sits under its table.
+
+#### Start
+
+| Option | Effect |
+|---|---|
+| `--activity PKG/.Act\|.Act\|CLASS` | Start this activity instead of the manifest's first launcher one, as `am start -n` would |
+
+**`--activity`** takes an activity that is exported or not, named by package and class, as `.Act`, by its full
+class name, or by a simple name when only one activity has it. It is for a home app whose debug manifest lists a
+test launcher first, or for a screen deep inside the app. `restart` starts it again. An activity the manifest lacks
+stops the launch and lists those it has. An app with no launcher activity starts its MAIN/HOME one.
+
+#### Display
+
+| Option | Effect |
+|---|---|
+| `--device NAME\|WxH[@density]\|WxHpx@Ndpi` | The device to simulate (table above); `1920x1080px@240dpi` takes `wm size`/`wm density` output |
+| `--device-profile FILE` | Display, `Build` fields, features and settings of a real device, captured with `scripts/device-profile.py [-s SERIAL] > FILE` over adb; options after it win |
+
+#### Window
+
+| Option | Effect |
+|---|---|
+| `--headless` | No window; the app still runs and renders |
+| `--window-x N` | The window's horizontal position on screen |
+| `--window front\|nofocus\|background\|minimized\|hidden` | How the window shows itself; `front` is the default |
+
+**`--window`** modes: `front` takes focus like any app, and the others never take focus from the app you are in.
+`nofocus` shows the window on top, `background` behind your other windows, `minimized` in the Dock, and `hidden` not
+at all. The app runs and renders the same in each; click the Dock icon to bring the window forward.
+`APKSIM_WINDOW=MODE` sets a default for every launch.
+
+#### Look and locale
+
+| Option | Effect |
+|---|---|
+| `--appearance dark\|light` | Dark or light mode |
+| `--locale TAG` | For example `fr-FR`; `ar-XB` is the right-to-left pseudo-locale |
+| `--timezone ZONE` | For example `America/New_York` (JDK, `android.icu`, `user.timezone` for Joda-Time) |
+| `--font-scale N` | For example `1.3` |
+
+#### Device state
+
+| Option | Effect |
+|---|---|
+| `--permissions ask\|grant\|deny` | Runtime permission prompts; `grant` is like `adb install -g` |
+| `--biometrics enrolled` | Start with a fingerprint enrolled |
+| `--soft-keyboard` | Draw a soft keyboard for text fields, with real IME insets |
+| `--status-bar on\|off`, `--nav-bar gesture\|off` | Whether the device has a status bar and a gesture navigation bar (default: phone, foldable and tablet have both, desktop and TV neither). A bar that is off is not drawn and gives the app no inset |
+| `--fresh` | Erase the app's data first, with the data slot's `/sdcard` and Settings values: a new device with the app just installed |
+| `--setting NS:KEY=VALUE` | A `Settings.Global`, `Secure` or `System` value (`global:my_flag=1`) set before `Application.onCreate`, as `adb shell settings put` before a first launch would. Repeatable |
+| `--sdcard-file PATH=VALUE` | A file written to `/sdcard/PATH` in the data slot before the app starts. Repeatable |
+| `--broadcast 'ACTION;es:K=V;ez:K=true'` | One broadcast to the app's own package, after `Application.onCreate` and before the first activity. Repeatable |
+| `--sysfs /sys/PATH=VALUE` | A hardware state file under `/sys` that the app reads itself (a camera privacy cover's state, say) answers with `VALUE`; the `sysfs` command changes it while the app runs. Repeatable |
+
+**`--sdcard-file`** is for apps that read a config file once in `Application.onCreate`. It replaces any file the
+slot had. `VALUE` is `text:TEXT` or base64, never a host file, with at most 64 KB a file and 72 KB in all. It is
+allowed in `serve` catalog lines and URL adds, and in beam.
+
+**`--broadcast`** is for debug receivers that set flag overrides: what
+`adb shell am broadcast -a ACTION --es/--ez/--ei/--el/--ef` does. Extras are `es`, `ez`, `ei`, `el` or
+`ef:KEY=VALUE`, separated by `;` (no spaces in `serve` catalog lines). It reaches receivers registered at run time
+and manifest ones, and logs `[apksim] broadcast ACTION: result=N`. At most 64 broadcasts of 1024 characters each. It
+is allowed in `serve` catalog lines and URL adds, and in beam.
+
+#### Device identity
+
+| Option | Effect |
+|---|---|
+| `--serial VALUE` | `Build.getSerial()` and `Build.SERIAL`. By default 16 letters and digits, the same every launch of one data slot (and in test runs), not Robolectric's `unknown` |
+| `--feature NAME[=false]` | A system feature that `PackageManager.hasSystemFeature` reports; `=false` takes one away. Repeatable |
+| `--camera off\|fake\|fake=IMAGE` | Simulated cameras, a back and a front one (default off) |
+| `--bluetooth on\|off` | The Bluetooth adapter at launch (default on, as an emulator boots) |
+| `--build FIELD=VALUE` | Any `Build` or `Build.VERSION` field, for example `MODEL=Pixel 9`. Repeatable |
+
+**`--feature`** names a feature such as `android.hardware.camera.any`, which `pm list features` then lists too.
+`=false` also removes a default. By default the device has what an emulator of its kind lists for what apksim
+simulates: Bluetooth and BLE, Wi-Fi, location, multitouch, a fingerprint sensor and audio output (a TV has leanback
+and no touchscreen), and no camera.
+
+**`--camera fake`** declares `android.hardware.camera`, `.any` and `.front`, and lists a back camera (id `0`) and
+a front one (`1`) in `CameraManager`.
+
+- **Streams:** 16:9 and 4:3 in YUV_420_888, JPEG and PRIVATE: 1920x1080, 1440x1080, 1280x720, 1024x768, 960x720
+  and 640x480. `--camera-sizes WxH[,WxH...]` lists exactly the sizes named instead.
+- **Frames:** opening a camera needs the `CAMERA` permission. Camera2 sessions and CameraX (`Preview`,
+  `ImageAnalysis`, `ImageCapture`) get 30 fps frames of a moving test pattern, or of the still `IMAGE`.
+- **While the app runs:** the `camera pattern|image PATH|off` command and Features > Camera switch the source.
+  `off` gives black frames, as Android's camera privacy toggle does.
+
+**`--build`** takes fields such as `VERSION.SECURITY_PATCH=2026-10-05`, but not `VERSION.SDK_INT`: the framework
+is API 36. In test runs leave `FINGERPRINT` alone: with a device's, Compose's test rule waits for draw passes that
+never come.
+
+#### Per-instance costs
+
+| Option | Effect |
+|---|---|
+| `--max-fps N` | At most N frames a second (1-120), not the display's rate |
+| `--video on\|blank\|off` | `blank`: players play at their pace but nothing is decoded or drawn (TextureViews stay empty). `off`: no video decoders are listed, as on a device without them. Launch only for `off` |
+| `--audio on\|mute\|off` | `mute` keeps the timing and plays silence; `off` lists no AAC or MP3 decoders |
+| `--anim-scale N` | The animator duration scale from the start: 0 jumps animations to their end, 10 slows them. In test runs it is set again at each test's setup |
+| `--gles on\|off` | Offscreen GLES (on in test runs by default; off falls back to Robolectric's stand-ins) |
+
+**`--max-fps`** keeps animations at their speed in fewer frames, and the app still sees the display's refresh
+rate. It is the biggest saving for many headless instances: the test app's Shader tab costs about 0.7 of a core at
+120 fps and 0.2 at 30.
+
+#### Native library options
+
+| Option | Effect |
+|---|---|
+| `--skip-library NAME` | The app's `System.loadLibrary(NAME)` throws `UnsatisfiedLinkError`, as for a library the APK lacks, for an SDK whose native part is optional and that catches it. Repeatable |
+| `--move-shared-data` | macOS: load a 4 KB-aligned native library whose writable data shares a 16 KB page with its code by moving that data (experimental). Without it such a library fails with a catchable `UnsatisfiedLinkError` |
+
+#### Network and safety
+
+| Option | Effect |
+|---|---|
+| `--no-network` | Only localhost (127.0.0.1 and ::1) is reachable. macOS only, enforced by the sandbox (not with `--no-sandbox`); in a Linux container use `docker run --network none` |
+| `--no-sandbox` | Run without the `sandbox-exec` profile (macOS) |
+| `--network record\|replay FILE` | Record the app's HTTP(S) into a HAR file, or answer from one with no backend ([below](#network-record-replay-and-conditions)) |
+| `--network-profile NAME` | Start with `offline`, `3g`, `lossy`, `latency:MS` or `bandwidth:KBPS` |
+| `--network-host H=ADDR[:PORT]` | Send connections for host H to a fixture server instead (`--network-trust CERT` for its certificate) |
+
+#### Automation options
+
+| Option | Effect |
+|---|---|
+| `--control PORT\|auto` | Open the [control channel](#automation) |
+| `--control-bind ADDR` | The address the control channel and adb listen on (containers) |
+| `--adb PORT\|auto` | Make the instance an [adb device](#adb-device) |
+| `--shot FILE` | Save a screenshot of the first frame |
+| `--exit-after-first-frame` | Quit once the first frame is shown (benchmarks, smoke tests) |
+
+#### Recording
+
+| Option | Effect |
+|---|---|
+| `--rec all\|CHANNEL,...` | The flight recorder: keep the last 2 minutes of input, logcat, network, SQLite calls and the screen |
+
+**`--rec`** takes `all` or a list of channels, and `--rec-window SECONDS` sets how much is kept. The recording
+has checkpoints to start a replay from, and is saved as one shareable `.apkrec` file by `rec save`, by File > Save
+Replay, or by itself when the app crashes ([docs/flight-recorder.md](docs/flight-recorder.md)).
+
+`scripts/replay-adb.py FILE.apkrec -s SERIAL --yes` plays a recording on a device over adb, to tell an app bug
+from a simulator one. It replaces the app's data, `/sdcard` files and Settings values on that device, hence `--yes`,
+and backs the app's current data up first. Look at the plan with `--dry-run` before.
+
+#### Testing
+
+| Option | Effect |
+|---|---|
+| `--instrument TEST.apk` | Run a test APK against the app ([below](#instrumented-tests-and-ci)) |
+| `-e KEY VALUE` | An instrumentation argument (`class`, `package`, or any your tests read) |
+| `--realtime-clock` | In test runs, the clock follows real time instead of skipping idle time |
+| `--precise-waits on\|off\|auto` | With `--realtime-clock`, spin the last part of short waits where the OS wakes sleeps late (VM CI runners); `auto` probes and does nothing on a desktop Mac |
+| `--uia engine\|classic` | In test runs, UiAutomator's idle waits, gesture time and accessibility events decided in-process (`engine`, experimental: docs/uiautomator-engine.md); `classic` is the default |
+| `--start-activities` | In test runs, an activity the app starts comes up, as on a device, instead of only being recorded |
+| `--test-outputs DIR` | In test runs, the Test Storage service's files (what a report library such as Allure writes) go under DIR, laid out as a device's `/sdcard/googletest` |
+| `--mock-maker auto\|keep\|subclass\|inline\|NAME` | Mockito's mock maker for the tests; `auto` is the default |
+| `--bundles DIR` | In test runs, a [failure bundle](#failure-bundles) in DIR for each failing test. `--bundles-on all` for passing tests too, `--bundles-max N` (default 50 a process), `--bundles-redact REGEX` |
+
+**`--mock-maker`** values: `auto` swaps the ART makers a test APK names (mockito-android, dexmaker) for Mockito's
+subclass maker. `keep` leaves the APK's. `subclass` and `inline` force `mock-maker-subclass` and
+`mock-maker-inline`; `inline` needs Byte Buddy's agent and mocks JDK types only, not the APK's translated classes.
+Any other value is used as given.
+
+#### Screenshot test options
+
+| Option | Effect |
+|---|---|
+| `--clock ISO\|epoch-ms\|real` | The wall clock the app sees starts there and runs on (screenshot tests) |
+| `--snapshot` | Deterministic drawing for [screenshot tests](#screenshot-tests): CPU only, carets that don't blink |
+
+#### Debugging options
+
+| Option | Effect |
+|---|---|
+| `--debug PORT` | A JDWP port for "Remote JVM Debug", with source-level debug info |
+| `--jvm ARG` | Pass a JVM option, for example `--jvm -Dapksim.timing=verbose` |
 
 Other commands: `apksim --version`, `apksim --train` (build the startup cache now), and `apksim --stop-standbys`
 (stop this install's warm-launch standbys).
@@ -267,20 +454,79 @@ layouts (window size classes, `BoxWithConstraints`) respond live. Activities get
 on a device: they're recreated, or resized in place if they declare `screenSize` in `configChanges`. With a
 [skin](#skins) on, the window is the frame's size and only zooms (Window menu).
 
-The menus follow the iOS Simulator wherever Android has the same thing:
+### Menus
 
-| Menu | Items |
+The menus follow the iOS Simulator wherever Android has the same thing.
+
+**File**
+
+| Item | Shortcut |
 |---|---|
-| File | Save Screen (Cmd+S), Save Screen with Skin (Cmd+Opt+S), Record Screen (Cmd+R), Save Replay (Cmd+Shift+S: the flight recorder's last minutes) |
-| Device | Device Type: Phone, Foldable, Tablet, Desktop, TV (Cmd+Shift+1-5); Skin: None and every stored skin; Back; Home (Cmd+Shift+H); Lock (Cmd+L); Volume (Cmd+Opt+= / -); Rotate (Cmd+Left / Right); Software Keyboard (Cmd+K) |
-| Features | Dark Appearance (Cmd+Shift+A); Larger, Smaller and Default Text (Cmd+Shift+= / - / 0); Language and Region; Location (None, Custom, City Run, Bicycle, Freeway); Fingerprint (Enrolled, Matching Cmd+Opt+M, Non-matching Cmd+Opt+N); Open URL (Cmd+Shift+O) |
-| Window | Actual Size (Cmd+1), Fit Screen (Cmd+3), Zoom In / Out (Cmd+= / -) |
-| Debug | Slow Animations (Cmd+T), Simulate Memory Warning (Cmd+Shift+M), Show Layout Bounds, Accessibility Audit |
+| Save Screen | Cmd+S |
+| Save Screen with Skin | Cmd+Opt+S |
+| Record Screen | Cmd+R |
+| Save Replay (the flight recorder's last minutes) | Cmd+Shift+S |
 
-**Also in the window:**
-- **Input:** Option-drag pinches around the centre, and Option-Shift-drag pans with two fingers. Trackpad pinch and rotate map to two fingers, and the keyboard sends Android key events, Control shortcuts included.
-- **System UI:** a status bar and gesture handle are drawn over the app, each only while the device has it (`--status-bar`, `--nav-bar`, `bars`) and the app has not hidden it (`WindowInsetsController.hide`, the legacy fullscreen and immersive flags); a swipe in from the edge shows hidden bars as on a device, transiently in immersive-sticky mode. Permission requests and biometric prompts appear as sheets, and notifications as banners.
-- **The Mac:** the clipboard is shared with the Mac both ways, http(s) and mailto links open in the Mac's browser and mail app, sharing goes to the Mac's share menu, and document pickers open the Mac's file panel.
+**Device**
+
+| Item | Shortcut |
+|---|---|
+| Device Type: Phone, Foldable, Tablet, Desktop, TV | Cmd+Shift+1-5 |
+| Skin: None and every stored skin | |
+| Back | |
+| Home | Cmd+Shift+H |
+| Lock | Cmd+L |
+| Volume | Cmd+Opt+= / - |
+| Rotate | Cmd+Left / Right |
+| Software Keyboard | Cmd+K |
+
+**Features**
+
+| Item | Shortcut |
+|---|---|
+| Dark Appearance | Cmd+Shift+A |
+| Larger, Smaller and Default Text | Cmd+Shift+= / - / 0 |
+| Language and Region | |
+| Location: None, Custom, City Run, Bicycle, Freeway | |
+| Fingerprint: Enrolled, Matching, Non-matching | Cmd+Opt+M (matching), Cmd+Opt+N (non-matching) |
+| Open URL | Cmd+Shift+O |
+
+**Window**
+
+| Item | Shortcut |
+|---|---|
+| Actual Size | Cmd+1 |
+| Fit Screen | Cmd+3 |
+| Zoom In / Out | Cmd+= / - |
+
+**Debug**
+
+| Item | Shortcut |
+|---|---|
+| Slow Animations | Cmd+T |
+| Simulate Memory Warning | Cmd+Shift+M |
+| Show Layout Bounds | |
+| Accessibility Audit | |
+
+### Input
+
+- Option-drag pinches around the centre, and Option-Shift-drag pans with two fingers.
+- Trackpad pinch and rotate map to two fingers.
+- The keyboard sends Android key events, Control shortcuts included.
+
+### System UI
+
+- A status bar and a gesture handle are drawn over the app, each only while the device has it (`--status-bar`,
+  `--nav-bar`, `bars`) and the app has not hidden it (`WindowInsetsController.hide`, the legacy fullscreen and
+  immersive flags).
+- A swipe in from the edge shows hidden bars as on a device, transiently in immersive-sticky mode.
+- Permission requests and biometric prompts appear as sheets, and notifications as banners.
+
+### The Mac
+
+- The clipboard is shared with the Mac both ways.
+- http(s) and mailto links open in the Mac's browser and mail app.
+- Sharing goes to the Mac's share menu, and document pickers open the Mac's file panel.
 
 Screenshots and recordings are saved to `work/screenshots` (`~/.apksim/screenshots` in a release). Gaps relative
 to the iOS Simulator are tracked in [docs/ios-simulator-parity.md](docs/ios-simulator-parity.md).
@@ -334,10 +580,14 @@ scripts/ctl.py @myapp appearance dark ';' wait 500 ';' shot /tmp/dark.png  # by 
 ```
 
 `ctl.py` also manages app data: `ctl.py apps` lists the apps that have data, `ctl.py container PKG` shows a
-package's data folder, and `ctl.py erase PKG` deletes it, refusing while an instance is using it. Coordinates are
-device pixels: the phone is 822 × 1782. File paths in commands resolve against the launch's working directory. On
-macOS, the sandbox only lets apksim write inside your home folder to its state folder, so save to `/tmp` or the
-state folder.
+package's data folder, and `ctl.py erase PKG` deletes it, refusing while an instance is using it.
+
+Three things to know before scripting:
+- **Coordinates** are device pixels: the phone is 822 × 1782.
+- **File paths** in commands resolve against the launch's working directory.
+- **Where captures may be written:** on macOS, the sandbox lets `shot` and `record` write anywhere outside your home
+  folder (`/tmp`, say) or into apksim's state folder. Any other folder under your home folder is denied, and the
+  command answers `error:`.
 
 | Group | Commands |
 |---|---|
@@ -353,8 +603,6 @@ state folder.
 | Screenshot tests | `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]` (answers once the UI is idle), `restart [URL]` (a fresh activity, no saved state), `clock [ISO\|epoch-ms\|real]`, `diff GOLDEN ACTUAL [MAP] [DELTA]` |
 | Performance | `frames` (frame-interval percentiles), `fps` (cost per stage), `shaders` (GPU or CPU), `video [blank\|on]` (decode counts; sets the mode for the next codec), `maxfps [N]` (the frame rate cap, 1-120), `stats` |
 | Other | `logcat on\|off`, `selftest [FILE]`, `ping`, `quit` |
-
-Captures written by the sandboxed app (`shot`, `record`) may go anywhere outside your home folder, or into apksim's state folder; any other folder under your home folder is denied, and `shot` and `record` answer `error:` for it.
 
 A command that fails answers `error: ...`, and the app keeps running.
 
@@ -400,37 +648,62 @@ apksim serve --apps builds/            # http://localhost:8080/: pick an APK (or
 apksim serve --bind 0.0.0.0 --token token.txt --apps builds/   # for others: they open /?token=... once
 ```
 
-For people without Android tools: each tab runs the APK in its own instance on the server and streams its screen
-(JPEG frames, or H.264 where the browser decodes it, sent only when the screen changes; a tab that decodes slower
-than the app draws gets fewer frames, not freezes); clicks, drags, the wheel and the keyboard go back as touches and
-keys. Back, Home, rotation, dark mode, device type, text size, locale and deep links are buttons, and "Copy link"
-gives a URL that opens the same app in the same settings. A page that drives the stream itself can also mute audio,
-blank video and change animation speed in a running session (`audio`, `video`, `animscale`; docs/serve.md), push a
-file into the app's storage (`POST /api/sessions/ID/files?path=`), and, when the server runs with `--allow-rec`, save
-a flight recording and download it. On a Mac a session's first frame comes in 0.2-0.4 s, a tap
-shows in ~30 ms on the same machine, and animations stream at up to 120 fps. Loopback only unless a token is set;
-sessions end when the tab closes or after 10 minutes idle, and their app data is erased, unless the server keeps
-sessions (`--keep-max N`) and the session named a key (`keep=KEY`): then the next session with that key starts
-signed in where the last one left off. See
-[docs/serve.md](docs/serve.md).
+This is for people without Android tools. Each tab runs the APK in its own instance on the server and streams its
+screen; clicks, drags, the wheel and the keyboard go back as touches and keys. [docs/serve.md](docs/serve.md) is the
+full guide.
 
-Many people watching one session: with `--allow-share`, or after `POST /api/share?allow=on` on a running server, a
-session's tab has "Copy view-only link". Whoever opens it sees that screen live, without the server's token, and can
-press nothing; the link dies with the session or when sharing is turned off. The server sends the same encoded frames
-to every viewer, so it does not encode again per viewer: 1,000 viewers on the same Mac got 60-120 fps, and 1,500 on
-another machine got every frame of a 9 fps stream (at 2,000 the server's 1 Gbit/s link was nearly full and they fell
-behind). See
-[docs/serve.md](docs/serve.md) "Shared sessions".
+- **The stream:** JPEG frames, or H.264 where the browser decodes it, sent only when the screen changes. A tab that
+  decodes slower than the app draws gets fewer frames, not freezes.
+- **Controls:** Back, Home, rotation, dark mode, device type, text size, locale and deep links are buttons. "Copy
+  link" gives a URL that opens the same app in the same settings.
+- **Speed:** on a Mac a session's first frame comes in 0.2-0.4 s, a tap shows in ~30 ms on the same machine, and
+  animations stream at up to 120 fps.
+- **Access:** loopback only, unless a token is set.
+- **Sessions:** a session ends when its tab closes or after 10 minutes idle, and its app data is erased. If the
+  server keeps sessions (`--keep-max N`) and the session named a key (`keep=KEY`), the next session with that key
+  starts signed in where the last one left off.
 
-Two builds side by side: `/?compare=BASE_ID,NEW_ID` starts a session for each, sends every tap, drag, key and device
-control to both, and shows a third screen marking the pixels that differ. `scripts/pr-preview.py` and the
-`.github/actions/preview` Action put a pull request's build on a server and keep one comment on the pull request with
-its preview and compare links; added apps can expire (`ttl`). With `--allow-rec` a tab's report button packs a
-recording, the device's settings and a note into one zip (and with `--issue-url` opens an issue in the reviewer's own
-browser); with `--inspect-network` a panel lists the app's requests as they happen and can rewrite a response or merge a JSON patch into a real one;
-`--inspect-network optional` (and `apksim beam config inspect-network optional`) gives it only to a session that asks. Both are
-off by default. A page can also forward chosen requests to another server; on `apksim beam` the Mac's owner lists the allowed targets with
-`apksim beam config forward-allow URL_PREFIX` and the agent sends them, so a backend on that Mac's loopback works (docs/beam.md "Forward rules"). See [docs/pr-preview.md](docs/pr-preview.md).
+### For a page that drives the stream itself
+
+- Mute audio, blank video and change animation speed in a running session (`audio`, `video`, `animscale`;
+  docs/serve.md).
+- Push a file into the app's storage (`POST /api/sessions/ID/files?path=`).
+- Save a flight recording and download it, when the server runs with `--allow-rec`.
+
+### Many people watching one session
+
+With `--allow-share`, or after `POST /api/share?allow=on` on a running server, a session's tab has "Copy view-only
+link". Whoever opens it sees that screen live, without the server's token, and can press nothing. The link dies with
+the session, or when sharing is turned off.
+
+The server sends the same encoded frames to every viewer, so it does not encode again per viewer:
+- 1,000 viewers on the same Mac got 60-120 fps;
+- 1,500 on another machine got every frame of a 9 fps stream;
+- at 2,000 the server's 1 Gbit/s link was nearly full and they fell behind.
+
+See [docs/serve.md](docs/serve.md) "Shared sessions".
+
+### Two builds side by side, and pull request previews
+
+`/?compare=BASE_ID,NEW_ID` starts a session for each build, sends every tap, drag, key and device control to both,
+and shows a third screen marking the pixels that differ.
+
+`scripts/pr-preview.py` and the `.github/actions/preview` Action put a pull request's build on a server and keep one
+comment on the pull request with its preview and compare links. Added apps can expire (`ttl`). See
+[docs/pr-preview.md](docs/pr-preview.md).
+
+### Reports, the network inspector and forwarding
+
+The report button and the inspector are off by default, and forwarding reaches only targets that were allowed.
+
+- **Report button (`--allow-rec`):** packs a recording, the device's settings and a note into one zip. With
+  `--issue-url` it opens an issue in the reviewer's own browser.
+- **Network inspector (`--inspect-network`):** a panel lists the app's requests as they happen, and can rewrite a
+  response or merge a JSON patch into a real one. `--inspect-network optional` (and
+  `apksim beam config inspect-network optional`) gives it only to a session that asks.
+- **Forwarding:** a page can forward chosen requests to another server. On `apksim beam` the Mac's owner lists the
+  allowed targets with `apksim beam config forward-allow URL_PREFIX` and the agent sends them, so a backend on that
+  Mac's loopback works (docs/beam.md "Forward rules").
 
 ## Instrumented tests and CI
 
@@ -444,29 +717,82 @@ scripts/instrument.py app-debug.apk app-debug-androidTest.apk --isolate -j 4 --x
 `--instrument` runs a test APK against the app the way `am instrument -w -r` does, and prints the same output. A
 library's device-test APK, such as a KMP `androidDeviceTest`, instruments itself: pass it as both APKs.
 
-`scripts/instrument.py` wraps it for CI:
-- **Output:** it writes JUnit XML and exits 1 if any test failed.
-- **`--isolate`:** gives each test a fresh process, N at a time, as the AndroidX Test Orchestrator with `clearPackageData` does.
-- **`--shards N`:** splits the suite over N processes at once, with AndroidJUnitRunner's `-e numShards`/`shardIndex` (which `--instrument` takes too), into one report. Prefer it, and running suites side by side, to `--isolate`: every process pays a JVM and app start. On a large app's 4,134 tests, the whole set went from 167 s to 58 s on a Mac and from 670 s to about 135 s on 4 CPUs in the Linux image; in the app's own CI, on a GitHub runner, from a median 310 s to 140 s ([docs/parallel.md](docs/parallel.md)).
-- **Groups (`--isolate --group-size N`):** between the two: a process runs up to N tests of one class, then exits. `--group-seconds T` also ends a group at T s of measured time (`--timings`), `--isolate-classes REGEX` keeps classes that need a fresh process on one per test, and `--retry-isolated N` runs a test that failed in a shared process again in a process of its own, the last attempt winning (marked in the JUnit XML). Each test's entry has its process's CPU seconds (`apksim.cpu_seconds`). On the test app's 471 tests at `-j 4`: 196 s and 1,866 CPU-s a process per test, 60 s and 461 CPU-s in groups of up to 10 ([docs/parallel.md](docs/parallel.md)).
-- **Start order (`--order`):** with `--isolate` and `--timings`, tests start interleaved by default, the longest and shortest remaining alternating, so the heaviest tests do not all run at once (`longest-first`, `suite` for the others).
-- **Exit time (`--exit-marks`, `--reap-early SEC`):** with `--isolate`, see where each process's exit time goes, and free a process's slot as soon as its result is in, finishing its teardown in the background.
-- **Crash recovery:** without `--isolate`, if the process dies mid-run (a native crash, or a test that ignores its timeout), the test that was running is reported failed and the rest run in a new process.
-- **`--test-timeout SEC`:** a process that goes SEC seconds (default 900, 0 for none) without a test starting or ending, such as a hang in teardown, gets a thread dump and is killed. The running test fails with the dump's JUnit stacks, and the rest run in a new process.
-- **Arguments:** `-e` passes instrumentation arguments: `class`, `notClass`, `package`, `notPackage`, `log`, and anything your tests read. Options after `--` go to apksim.
-- **Failure bundles (`--bundles DIR`):** what each failing test left, so a red check can be read without a rerun ([below](#failure-bundles)).
-- **Only the affected tests (`--record-deps`, `--affected-by`):** record once on main which classes each test reaches, then on a pull request run only the tests the branch's changes can reach ([below](#affected-tests-and-balanced-shards)).
-- **Balanced shards (`--shards N --timings XML`):** split by each test's time in an earlier run instead of by name hash; `--shard I` runs one shard, for a CI matrix on separate machines.
+`scripts/instrument.py` wraps it for CI: it writes JUnit XML and exits 1 if any test failed. `-e` passes
+instrumentation arguments (`class`, `notClass`, `package`, `notPackage`, `log`, and anything your tests read), and
+options after `--` go to apksim.
 
-**What works:**
-- **Test frameworks:** Compose UI tests (`createComposeRule`, `createAndroidComposeRule`), Espresso, ActivityScenario, UiAutomator (window tree, clicks, gestures, `setOrientation`, `waitForIdle`) and AndroidX Test rules.
+### Splitting a suite over processes
+
+| Option | What it does |
+|---|---|
+| `--shards N` | Splits the suite over N processes at once, into one report |
+| `--shards N --timings XML` | Balances the shards by each test's time in an earlier run, instead of by name hash |
+| `--shard I` | Runs one shard, for a CI matrix on separate machines |
+| `--isolate` | Gives each test a fresh process, N at a time (`-j N`) |
+| `--isolate --group-size N` | A process runs up to N tests of one class, then exits |
+
+- **Prefer `--shards`,** and running suites side by side, to `--isolate`: every process pays a JVM and app start.
+  It uses AndroidJUnitRunner's `-e numShards` and `shardIndex`, which `--instrument` takes too. On a large app's
+  4,134 tests, the whole set went from 167 s to 58 s on a Mac, and from 670 s to about 135 s on 4 CPUs in the Linux
+  image. In the app's own CI, on a GitHub runner, it went from a median 310 s to 140 s
+  ([docs/parallel.md](docs/parallel.md)).
+- **`--isolate`** does what the AndroidX Test Orchestrator with `clearPackageData` does.
+    - **Pre-warmed processes:** `instrument.py` boots twice `-j` processes ahead of their tests and hands each test
+      to one that is ready, so a test no longer waits for its process's JVM, sandbox and native runtime. Each test
+      still runs in a process nothing else ran in. `--prewarm N` sets how many, and `--prewarm off` starts each
+      cold. On the test app's suite at `-j 3` a run took 29-47% less time than cold, for ~10-15% more CPU
+      ([docs/test-pool.md](docs/test-pool.md)).
+    - **Start order (`--order`):** with `--timings`, tests start interleaved by default, the longest and shortest
+      remaining alternating, so the heaviest tests do not all run at once. `longest-first` and `suite` are the
+      other orders.
+    - **Exit time (`--exit-marks`, `--reap-early SEC`):** see where each process's exit time goes, and free a
+      process's slot as soon as its result is in, finishing its teardown in the background.
+- **Groups** sit between the two.
+    - `--group-seconds T` also ends a group at T s of measured time (`--timings`).
+    - `--isolate-classes REGEX` keeps classes that need a fresh process on one per test.
+    - `--retry-isolated N` runs a test that failed in a shared process again in a process of its own. The last
+      attempt wins, and is marked in the JUnit XML.
+    - Each test's entry has its process's CPU seconds (`apksim.cpu_seconds`).
+    - On the test app's 471 tests at `-j 4`: 196 s and 1,866 CPU-s with a process per test, 60 s and 461 CPU-s in
+      groups of up to 10 ([docs/parallel.md](docs/parallel.md)).
+
+### When a process dies or hangs
+
+- **Crash recovery:** without `--isolate`, if the process dies mid-run (a native crash, or a test that ignores its
+  timeout), the test that was running is reported failed and the rest run in a new process.
+- **`--test-timeout SEC`:** a process that goes SEC seconds (default 900, 0 for none) without a test starting or
+  ending, such as a hang in teardown, gets a thread dump and is killed. The running test fails with the dump's JUnit
+  stacks, and the rest run in a new process.
+
+### What works
+
+- **Test frameworks:** Compose UI tests (`createComposeRule`, `createAndroidComposeRule`), Espresso,
+  ActivityScenario, UiAutomator (window tree, clicks, gestures, `setOrientation`, `waitForIdle`) and AndroidX Test
+  rules.
 - **Runner and rules:** a custom runner's `newApplication`, and JUnit's `Timeout` rule.
-- **Shell commands:** UiAutomation shell commands: `settings` (animation scales included), `getprop`, `logcat -c`/`-d`, `touch`, `ls`, `am broadcast`.
+- **Shell commands:** UiAutomation shell commands: `settings` (animation scales included), `getprop`,
+  `logcat -c`/`-d`, `touch`, `ls`, `am broadcast`.
 - **Rendering:** offscreen GLES20/30 and EGL14 on a real GLES 3 (ANGLE on Metal, Mesa in the Linux image).
-- **Device behaviour suites rely on:** before the app starts, an `ANDROID_ID`, normal permissions granted and content providers created (AndroidX Startup runs); a connected, validated network; the test APK's own context and assets; `Parameterized` inside the test environment; views drawn after each layout, dialogs taking the window focus, and Espresso waiting for Compose; `--start-activities` for flows that go through a second activity.
-- **Running on the main thread:** tests run as Robolectric runs them: the test body on the main thread, with a simulated clock that skips idle time. `--realtime-clock` makes the clock follow real time instead, for suites whose timed UI must last, such as a banner that closes itself after a few seconds. `--timezone` and `--device tablet` match a CI emulator's configuration.
+- **Device behaviour that suites rely on:**
+    - before the app starts: an `ANDROID_ID`, normal permissions granted, and content providers created (AndroidX
+      Startup runs);
+    - a connected, validated network;
+    - the test APK's own context and assets;
+    - `Parameterized` inside the test environment;
+    - views drawn after each layout, dialogs taking the window focus, and Espresso waiting for Compose;
+    - `--start-activities` for flows that go through a second activity.
+- **The clock:** tests run as Robolectric runs them, with the test body on the main thread and a simulated clock
+  that skips idle time. `--realtime-clock` makes the clock follow real time instead, for suites whose timed UI must
+  last, such as a banner that closes itself after a few seconds.
+- **Matching a CI emulator:** `--timezone` and `--device tablet` match its configuration.
 
-On a large app's suite, the same APKs its CI runs on two API 34 emulators, the results were:
+**Not supported yet:** accessibility events for UiAutomator, and `adb shell am instrument` of a test APK. Tests that
+wait for another process won't work either. See AGENTS.md, "Instrumentation tests", for the details, and
+[docs/plan.md](docs/plan.md) for what's planned.
+
+### A large app's suite
+
+The same APKs that the app's CI runs on two API 34 emulators:
 
 | Run | Tests | Time | Emulators |
 |---|---|---|---|
@@ -477,7 +803,9 @@ On a large app's suite, the same APKs its CI runs on two API 34 emulators, the r
 With two fixes to the app's own tests, every test passed, and none was flaky in the app's CI. Methods and costs:
 [docs/ci-testbed.md](docs/ci-testbed.md).
 
-A GitHub Actions job using the released image:
+### In GitHub Actions
+
+A job using the released image:
 
 ```yaml
 - name: Device tests on apksim
@@ -494,38 +822,35 @@ A GitHub Actions job using the released image:
       out/bundles
 ```
 
-With `--isolate` (one process per test), `instrument.py` boots twice `-j` processes ahead of their tests and hands
-each test to one that is ready, so a test no longer waits for its process's JVM, sandbox and native runtime; each
-still runs in a process nothing else ran in. `--prewarm N` sets how many, `--prewarm off` starts each cold as before.
-On the test app's suite at `-j 3` a run took 29-47% less time than cold, for ~10-15% more CPU. See
-[docs/test-pool.md](docs/test-pool.md).
-
-Code coverage needs no rebuild of the app: `instrument.py ... --coverage cov` counts the methods and lines each test
-run reached and writes JaCoCo XML, LCOV and an HTML page, merged across processes and shards (`--mapping` for an R8
-build). See [docs/coverage.md](docs/coverage.md).
-
-`scripts/flake-hunt.py` runs chosen tests many times under shuffled order, isolation, CPU pressure and the real-time
-clock, and says which are order-dependent (with the fewest earlier tests that make one fail) and which depend on
-timing. See [docs/flake-hunt.md](docs/flake-hunt.md).
-
-The test app's suite also checks AndroidX libraries' documented behaviour (activity, fragment, lifecycle, navigation,
-Compose UI and foundation, material3, recyclerview) against an API 36 emulator with `scripts/conformance.py`; each
-difference found is traced and fixed with its own repro. See [docs/conformance.md](docs/conformance.md).
-
 ### Failure bundles
 
 ```bash
 scripts/instrument.py app-debug.apk app-debug-androidTest.apk --xml out/junit.xml --bundles out/bundles
 ```
 
-Every failing test leaves `out/bundles/<class>/<method>-<hash>/`:
-- `screen.png` and `nodes.txt`: the screen and its accessibility tree when the test failed, for a failure in the test body or in Espresso's failure handler, which are captured before the test's teardown closes the activity. A failure in `@After`, a rule or a class with its own runner is captured after teardown, so its screen may be gone, and a test the timeout watchdog ends has no screen at all. `failure.txt` says which capture point wrote the bundle;
-- `failure.txt`: the stack trace, the device and settings, and how many tests ran before it in the same process;
-- `logcat.txt`: the app's log during that test only. `threads.txt`, `looper.txt`: every thread, and what the main thread still had queued;
-- `repro.sh`: reruns that one test with the same options;
-- `process.txt`: when the process died during the test, its exit status and the end of its stderr.
+Every failing test leaves a folder, `out/bundles/<class>/<method>-<hash>/`, so a red check can be read without a
+rerun:
 
-`out/bundles/index.html` shows every bundle with its screenshot, and the JUnit XML links each test to its folder (GitLab and Jenkins show the screenshot with the test). Capturing costs nothing until a test fails, and its time never counts against a test's timeout. A bundle holds what the app logged and showed, and secrets can end up in it. `-- --bundles-redact REGEX` blanks matches in `logcat.txt`, `nodes.txt`, `failure.txt`, `process.txt` and the index page's previews, but not in `repro.sh` (it keeps the run's arguments), `threads.txt`, `looper.txt`, `windows.txt` or the screenshots. Check those before uploading bundles anywhere public. Reading one: [docs/ci-testbed.md](docs/ci-testbed.md#failure-bundles).
+| File | Contents |
+|---|---|
+| `screen.png`, `nodes.txt` | The screen and its accessibility tree when the test failed |
+| `failure.txt` | The stack trace, the device and settings, how many tests ran before it in the same process, and which capture point wrote the bundle |
+| `logcat.txt` | The app's log during that test only |
+| `threads.txt`, `looper.txt` | Every thread, and what the main thread still had queued |
+| `repro.sh` | Reruns that one test with the same options |
+| `process.txt` | When the process died during the test: its exit status and the end of its stderr |
+
+- **When the screen is captured:** a failure in the test body or in Espresso's failure handler is captured before
+  the test's teardown closes the activity. A failure in `@After`, a rule or a class with its own runner is captured
+  after teardown, so its screen may be gone. A test the timeout watchdog ends has no screen at all.
+- **Reading them:** `out/bundles/index.html` shows every bundle with its screenshot, and the JUnit XML links each
+  test to its folder (GitLab and Jenkins show the screenshot with the test). More in
+  [docs/ci-testbed.md](docs/ci-testbed.md#failure-bundles).
+- **Cost:** capturing costs nothing until a test fails, and its time never counts against a test's timeout.
+- **Secrets:** a bundle holds what the app logged and showed, and secrets can end up in it.
+  `-- --bundles-redact REGEX` blanks matches in `logcat.txt`, `nodes.txt`, `failure.txt`, `process.txt` and the
+  index page's previews. It does not touch `repro.sh` (which keeps the run's arguments), `threads.txt`,
+  `looper.txt`, `windows.txt` or the screenshots: check those before uploading bundles anywhere public.
 
 ### Affected tests and balanced shards
 
@@ -537,13 +862,24 @@ scripts/instrument.py app.apk app-androidTest.apk --affected-by deps.json.gz --d
   --ignore '*.md' --ignore '*/src/test/*' --shards 4 --timings timings.xml --xml out.xml
 ```
 
-apksim translates every class itself, so recording which classes each test runs costs nothing measurable. A change to a
-Kotlin or Java file selects the tests that reached a class compiled from it; a change the class map can't see (resources,
-manifests, build files) runs the whole suite and says why. How it works, its limits and measurements on a large app:
-[docs/affected-tests.md](docs/affected-tests.md).
+apksim translates every class itself, so recording which classes each test runs costs nothing measurable.
+- A change to a Kotlin or Java file selects the tests that reached a class compiled from it.
+- A change the class map can't see (resources, manifests, build files) runs the whole suite and says why.
 
-**Not supported yet:** accessibility events for UiAutomator and `adb shell am instrument` of a test APK. Tests that wait for another process won't work either. See AGENTS.md,
-"Instrumentation tests", for the details, and [docs/plan.md](docs/plan.md) for what's planned.
+How it works, its limits and measurements on a large app: [docs/affected-tests.md](docs/affected-tests.md).
+
+### Coverage, flaky tests and conformance
+
+- **Code coverage** needs no rebuild of the app. `instrument.py ... --coverage cov` counts the methods and lines
+  each test run reached and writes JaCoCo XML, LCOV and an HTML page, merged across processes and shards
+  (`--mapping` for an R8 build). See [docs/coverage.md](docs/coverage.md).
+- **Flaky tests:** `scripts/flake-hunt.py` runs chosen tests many times under shuffled order, isolation, CPU
+  pressure and the real-time clock. It says which are order-dependent, with the fewest earlier tests that make one
+  fail, and which depend on timing. See [docs/flake-hunt.md](docs/flake-hunt.md).
+- **Conformance:** the test app's suite also checks AndroidX libraries' documented behaviour (activity, fragment,
+  lifecycle, navigation, Compose UI and foundation, material3, recyclerview) against an API 36 emulator with
+  `scripts/conformance.py`. Each difference found is traced and fixed with its own repro. See
+  [docs/conformance.md](docs/conformance.md).
 
 ## Screenshot tests
 
@@ -720,11 +1056,18 @@ because the standby read them when it booted. Of the switches above, only `timin
 |---|---|
 | `app.aot` | The JVM startup cache (`apksim --train` builds it) |
 | `cache/classes/` | Translated app classes, per DEX file |
-| `cache/NAME.apk-KEY/` | Each APK's manifest, native libraries and inflated DEX files, keyed by the APK's contents (a copy or re-download of the same build reuses it). Entries unused for 14 days go, then the least recently used until they fit in 2 GB (`--jvm -Dapksim.apkCacheMB=N`); one a running instance uses is never removed. Entries from earlier versions (`NAME.apk-MTIME`, no `in-use.lock`) go only after 14 days unused. Safe to delete while nothing runs |
+| `cache/NAME.apk-KEY/` | Each APK's manifest, native libraries and inflated DEX files, keyed by the APK's contents (below) |
 | `cache/data/PKG/` | Each app's persistent data (`default`, or `instance-N` for extra instances) |
 | `cache/data/PKG/SLOT.device/` | What that data slot keeps of the device: `sdcard/` (the app's `/sdcard`) and `settings.properties` (Settings values that differ from the defaults) |
 | `tmp/PID/` | Per-instance scratch, including `control.port` and `adb.port` |
 | `screenshots/` | Saved screenshots, recordings and flight recorder bundles (`.apkrec`) |
+
+The per-APK cache is keyed by contents, so a copy or re-download of the same build reuses its entry:
+- Entries unused for 14 days go, then the least recently used until the rest fit in 2 GB
+  (`--jvm -Dapksim.apkCacheMB=N`).
+- An entry a running instance uses is never removed.
+- Entries from earlier versions (`NAME.apk-MTIME`, no `in-use.lock`) go only after 14 days unused.
+- It is safe to delete while nothing runs.
 
 ## Performance
 
@@ -852,19 +1195,61 @@ What is still open is under [Limitations](#limitations) and in [AGENTS.md](AGENT
 
 ## Limitations
 
-- **It isn't a device.**
-  - **System services** are stand-ins: no Play Services; Health Connect holds scripted records (`--health`), not a phone's or a watch's; sensors are simulated (`sensor`: the accelerometer follows the rotation, light, proximity, steps, shake); the camera (`--camera fake`) shows
-    a test pattern or a still image, not the Mac's webcam.
-  - **Other apps** don't exist. Intents that leave the app go to the Mac (links, sharing) or nowhere. A stand-in
-    browser is installed so that SDKs that look for one before signing in (OAuth) find it.
-  - **Background work** does run: started and bound services, JobScheduler and WorkManager, alarms, and FCM pushes delivered with `push`.
-- **Which of these an app needs:** `scripts/subsystem-audit.py app.apk` lists the device subsystems an APK's code refers to (sensors, Play Services location, Health Connect, Bluetooth, NFC, telephony, camera, ...) with apksim's status for each and the option that drives it. What an app's `targetSdk` switches on follows the table in `compat` (gates are answered per target); other API levels than 36 are not run (docs/api-levels.md is the spike).
-- **One API level:** everything runs as API 36, whatever the app targets.
-- **Native libraries:** they must be arm64-v8a (x86_64 on x86_64 Linux). On macOS, which maps 16 KB pages and never makes one writable and executable at once, a 4 KB-aligned library (an NDK before r27) loads when what shares a page with its code is read-only data or RELRO (the GOT, vtables: read-only once relocated, as on a device), which is how lld lays out most. One whose writable `.data` or `.bss` shares a page with code (a small RELRO, such as libevent's in Flipper's debug build) fails with an `UnsatisfiedLinkError` naming its APK entry, which the app's `System.loadLibrary` can catch: rebuild it for 16 KB pages. `--move-shared-data` (experimental) loads such a library by moving that data to pages of its own and repointing what reaches it; it is off by default because some references to data carry no relocation (relative lookup tables, for one) and cannot all be found. `--skip-library NAME` makes a `System.loadLibrary(NAME)` throw without trying. libjnigraphics's `AndroidBitmap_*` calls work (getInfo, lock and unlock pixels, compress; no hardware bitmaps). Native GLES, OpenSL ES and AAudio are stubs: Java's AudioTrack plays, but nothing presents native GLES in the window.
+apksim isn't a device. `scripts/subsystem-audit.py app.apk` lists the device subsystems an APK's code refers to
+(sensors, Play Services location, Health Connect, Bluetooth, NFC, telephony, camera, ...) with apksim's status for
+each and the option that drives it, so you can see which of these limits an app meets.
+
+### What stands in for the device
+
+- **System services** are stand-ins.
+    - There is no Play Services.
+    - Health Connect holds scripted records (`--health`), not a phone's or a watch's.
+    - Sensors are simulated (`sensor`): the accelerometer follows the rotation, and light, proximity, steps and
+      shake can be set.
+    - The camera (`--camera fake`) shows a test pattern or a still image, not the Mac's webcam.
+- **Other apps** don't exist. Intents that leave the app go to the Mac (links, sharing) or nowhere. A stand-in
+  browser is installed so that SDKs that look for one before signing in (OAuth) find it.
+- **Background work** does run: started and bound services, JobScheduler and WorkManager, alarms, and FCM pushes
+  delivered with `push`.
+
+### One API level
+
+Everything runs as API 36, whatever the app targets. What an app's `targetSdk` switches on follows the table in
+`compat` (gates are answered per target). Other API levels are not run; docs/api-levels.md is the spike.
+
+### Native libraries
+
+- **ABI:** libraries must be arm64-v8a (x86_64 on x86_64 Linux).
+- **Page size on macOS:** macOS maps 16 KB pages and never makes one writable and executable at once.
+    - A 4 KB-aligned library (an NDK before r27) loads when what shares a page with its code is read-only data or
+      RELRO (the GOT, vtables: read-only once relocated, as on a device). That is how lld lays out most libraries.
+    - One whose writable `.data` or `.bss` shares a page with code (a small RELRO, such as libevent's in Flipper's
+      debug build) fails with an `UnsatisfiedLinkError` naming its APK entry, which the app's `System.loadLibrary`
+      can catch. Rebuild it for 16 KB pages.
+    - `--move-shared-data` (experimental) loads such a library by moving that data to pages of its own and
+      repointing what reaches it. It is off by default because some references to data carry no relocation
+      (relative lookup tables, for one) and cannot all be found.
+    - `--skip-library NAME` makes a `System.loadLibrary(NAME)` throw without trying.
+- **libjnigraphics:** the `AndroidBitmap_*` calls work (getInfo, lock and unlock pixels, compress); there are no
+  hardware bitmaps.
+- **Stubs:** native GLES, OpenSL ES and AAudio. Java's AudioTrack plays, but nothing presents native GLES in the
+  window.
+- **The C library shim is partial.** It covers what real APKs import, sockets included, and an unsupported call
+  prints its name.
+
+### Rendering and tests
+
 - **Rasterising runs on the CPU,** on one core, which limits busy full-screen frames.
-- **Test runs are Robolectric-style:** the test body runs on the main thread. A `runBlocking` or `Thread.sleep` there runs the main queue while it waits, as the device's main thread would beside the test thread, but accessibility events aren't sent.
-- **The C library shim is partial.** It covers what real APKs import, sockets included, and an unsupported call prints its name.
-- **Security:** an APK runs as code in this process. `sandbox-exec` confines it: inside your home folder it can write only to apksim's state folder, and it can't read `~/.ssh`, `~/Documents`, `~/Desktop`, keychains, browser data or similar. Apple has deprecated `sandbox-exec`, and the sandbox is a safeguard for your own apps, not a boundary for hostile ones.
+- **Test runs are Robolectric-style:** the test body runs on the main thread. A `runBlocking` or `Thread.sleep` there
+  runs the main queue while it waits, as the device's main thread would beside the test thread, but accessibility
+  events aren't sent.
+
+### Security
+
+An APK runs as code in this process. `sandbox-exec` confines it: inside your home folder it can write only to
+apksim's state folder, and it can't read `~/.ssh`, `~/Documents`, `~/Desktop`, keychains, browser data or similar.
+Apple has deprecated `sandbox-exec`, and the sandbox is a safeguard for your own apps, not a boundary for hostile
+ones.
 
 ## Building from source and contributing
 

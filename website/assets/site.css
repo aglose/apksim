@@ -1,0 +1,330 @@
+/* apksim's site: colours, type and tables tuned for long reference pages. The theme does the rest.
+   Light is white paper with blue-grey ink; dark is a blue-grey slate, not black, so long pages do not glare.
+   One accent, a deep teal, marks links and the current place and nothing else. */
+
+:root {
+  --apk-prose: 46rem;          /* the longest line of running text: ~80 characters */
+}
+
+[data-md-color-scheme="default"] {
+  --md-default-bg-color: #ffffff;
+  --md-default-fg-color: #1d2733;
+  --md-default-fg-color--light: #55616f;
+  --md-default-fg-color--lighter: #8a95a1;
+  --md-default-fg-color--lightest: #dde3e8;
+  --md-typeset-color: #1d2733;
+  --md-typeset-a-color: #0a6a5d;
+  --md-accent-fg-color: #0a6a5d;
+  --md-accent-fg-color--transparent: #0a6a5d14;
+  --md-code-bg-color: #f1f4f6;
+  --md-code-fg-color: #24313f;
+  --md-primary-fg-color: #ffffff;
+  --md-primary-bg-color: #1d2733;
+  --md-primary-bg-color--light: #55616f;
+  --md-footer-bg-color: #1d2733;
+  --md-footer-bg-color--dark: #151d26;
+  --apk-row: #f7f9fa;
+  --apk-head: #eef2f4;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: #161c23;
+  --md-default-fg-color: #dbe2e9;
+  --md-default-fg-color--light: #a3afbb;
+  --md-default-fg-color--lighter: #74808d;
+  --md-default-fg-color--lightest: #2c3642;
+  --md-typeset-color: #dbe2e9;
+  --md-typeset-a-color: #74d6c5;
+  --md-accent-fg-color: #74d6c5;
+  --md-accent-fg-color--transparent: #74d6c51a;
+  --md-code-bg-color: #1f2730;
+  --md-code-fg-color: #d3dbe3;
+  --md-primary-fg-color: #161c23;
+  --md-primary-bg-color: #dbe2e9;
+  --md-primary-bg-color--light: #a3afbb;
+  --md-footer-bg-color: #11161c;
+  --md-footer-bg-color--dark: #0d1116;
+  --apk-row: #1a2129;
+  --apk-head: #202932;
+}
+
+/* Header and tabs sit on the page, parted from it by a line. */
+.md-header,
+.md-tabs {
+  background-color: var(--md-default-bg-color);
+  color: var(--md-default-fg-color);
+}
+.md-header {
+  box-shadow: none;
+  border-bottom: 0.05rem solid var(--md-default-fg-color--lightest);
+}
+.md-header--shadow {
+  box-shadow: none;
+}
+.md-tabs {
+  border-bottom: 0.05rem solid var(--md-default-fg-color--lightest);
+}
+.md-tabs__link {
+  opacity: 1;
+  color: var(--md-default-fg-color--light);
+}
+.md-tabs__item--active .md-tabs__link,
+.md-tabs__link:hover {
+  color: var(--md-accent-fg-color);
+}
+.md-nav__link--active,
+.md-nav__item .md-nav__link--active {
+  color: var(--md-accent-fg-color);
+  font-weight: 600;
+}
+
+/* Room for reference tables; running text keeps a readable measure inside it. */
+.md-grid {
+  max-width: 82rem;
+}
+.md-typeset {
+  font-size: 0.82rem;
+  line-height: 1.7;
+}
+.md-typeset > p,
+.md-typeset > ul,
+.md-typeset > ol,
+.md-typeset > blockquote,
+.md-typeset > .admonition,
+.md-typeset > details,
+.md-typeset > .highlight,
+.md-typeset > .tabbed-set {
+  max-width: var(--apk-prose);
+}
+.md-typeset h1 {
+  color: var(--md-default-fg-color);
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  max-width: var(--apk-prose);
+  text-wrap: balance;
+}
+.md-typeset h2 {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-top: 2.4em;
+  padding-top: 1.2em;
+  border-top: 0.05rem solid var(--md-default-fg-color--lightest);
+}
+.md-typeset h1 + h2 {
+  border-top: 0;
+  padding-top: 0;
+  margin-top: 1.2em;
+}
+.md-typeset h3 {
+  font-weight: 700;
+  margin-top: 1.8em;
+}
+.md-typeset li + li {
+  margin-top: 0.55em;
+}
+.md-typeset a {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-underline-offset: 0.18em;
+}
+.md-typeset a:hover {
+  text-decoration-color: currentColor;
+}
+.md-typeset .md-button,
+.md-typeset .headerlink,
+.md-typeset .grid.cards a {
+  text-decoration: none;
+}
+
+/* Inline code: quiet, and never taller than its line. */
+.md-typeset code {
+  font-size: 0.86em;
+  padding: 0.08em 0.32em;
+  border-radius: 0.2rem;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+.md-typeset pre > code {
+  font-size: 0.74rem;
+  line-height: 1.65;
+  overflow-wrap: normal;
+}
+.md-typeset .highlight pre,
+.md-typeset pre {
+  border: 0.05rem solid var(--md-default-fg-color--lightest);
+  border-radius: 0.3rem;
+}
+
+/* Tables: the whole width, rows that can be followed across, the first column as the row's name. */
+.md-typeset__table {
+  display: block;
+  max-width: 100%;
+}
+.md-typeset table:not([class]) {
+  display: table;
+  width: 100%;
+  font-size: 0.74rem;
+  line-height: 1.55;
+  border: 0.05rem solid var(--md-default-fg-color--lightest);
+  border-radius: 0.3rem;
+  box-shadow: none;
+}
+.md-typeset table:not([class]) th {
+  background: var(--apk-head);
+  font-weight: 700;
+  white-space: nowrap;
+  padding: 0.6em 0.9em;
+}
+.md-typeset table:not([class]) td {
+  padding: 0.6em 0.9em;
+  vertical-align: top;
+  border-top: 0.05rem solid var(--md-default-fg-color--lightest);
+}
+.md-typeset table:not([class]) tbody tr:nth-child(even) {
+  background: var(--apk-row);
+}
+.md-typeset table:not([class]) tbody tr:hover {
+  background: var(--md-accent-fg-color--transparent);
+  box-shadow: none;
+}
+.md-typeset table:not([class]) td:first-child {
+  font-weight: 600;
+  min-width: 7rem;
+}
+.md-typeset table:not([class]) td:first-child code {
+  font-weight: 500;
+}
+.md-typeset table:not([class]) td:last-child {
+  min-width: 18rem;
+}
+/* An option breaks only at its spaces and after a | of its alternatives; the last column's code may break anywhere. */
+.md-typeset table:not([class]) td:not(:last-child) code {
+  overflow-wrap: normal;
+  word-break: keep-all;
+}
+/* A table written with an empty header row (| | |) has no header to show. */
+.md-typeset table:not([class]) thead:not(:has(th:not(:empty))) {
+  display: none;
+}
+
+/* Admonitions without the tinted title bar. */
+.md-typeset .admonition,
+.md-typeset details {
+  font-size: 0.78rem;
+  border-width: 0 0 0 0.2rem;
+  border-radius: 0.2rem;
+  box-shadow: none;
+  background: var(--md-code-bg-color);
+}
+.md-typeset .admonition-title,
+.md-typeset summary {
+  background: none !important;
+  font-weight: 700;
+}
+
+/* ---- Landing page ---- */
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 36rem) 13rem;
+  gap: 5rem;
+  align-items: center;
+  justify-content: center;
+  margin: 2.5rem 0 3.5rem;
+}
+.hero h1 {
+  font-size: 2.7rem;
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+  margin: 0 0 1.1rem;
+}
+.hero p.lead {
+  font-size: 1rem;
+  line-height: 1.65;
+  color: var(--md-default-fg-color--light);
+  max-width: 34rem;
+  margin: 0 0 1.4rem;
+}
+.hero .highlight {
+  max-width: 34rem;
+  margin: 0 0 1.4rem;
+}
+.hero .md-button {
+  margin: 0 0.5rem 0.5rem 0;
+  border-radius: 0.3rem;
+}
+.md-typeset .md-button--primary {
+  background-color: var(--md-accent-fg-color);
+  border-color: var(--md-accent-fg-color);
+  color: var(--md-default-bg-color);
+}
+.md-typeset .md-button:not(.md-button--primary) {
+  color: var(--md-default-fg-color);
+  border-color: var(--md-default-fg-color--lighter);
+}
+/* The app's own pixels, in a plain device outline. */
+.hero .device {
+  margin: 0;
+  padding: 0.45rem;
+  border-radius: 1.9rem;
+  background: #10151b;
+  box-shadow: 0 1.2rem 2.5rem -1rem #10151b66;
+}
+.hero .device img {
+  display: block;
+  width: 100%;
+  border-radius: 1.5rem;
+}
+.hero .device p {
+  margin: 0;
+}
+[data-md-color-scheme="default"] .only-dark,
+[data-md-color-scheme="slate"] .only-light {
+  display: none !important;
+}
+.hero-release {
+  font-size: 0.74rem;
+  color: var(--md-default-fg-color--light);
+  margin: 0.4rem 0 0;
+}
+.hero-note {
+  font-size: 0.7rem;
+  color: var(--md-default-fg-color--light);
+  text-align: center;
+  margin: 0.8rem 0 0;
+}
+.md-typeset .grid.cards > ul > li {
+  border-color: var(--md-default-fg-color--lightest);
+  border-radius: 0.3rem;
+  box-shadow: none;
+}
+.md-typeset .grid.cards > ul > li:hover {
+  border-color: var(--md-accent-fg-color);
+  box-shadow: none;
+}
+.md-typeset .grid.cards > ul > li > hr {
+  display: none;
+}
+.md-typeset .grid.cards > ul > li > p:first-child {
+  font-size: 0.86rem;
+  margin-bottom: 0.3em;
+}
+.md-typeset .grid.cards > ul > li + li {
+  margin-top: 0;
+}
+
+@media screen and (max-width: 59.9375em) {
+  .hero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2rem;
+  }
+  .hero .device-wrap {
+    max-width: 13rem;
+    margin: 0 auto;
+  }
+  .hero h1 {
+    font-size: 2rem;
+  }
+  .md-typeset table:not([class]) td:last-child {
+    min-width: 12rem;
+  }
+}

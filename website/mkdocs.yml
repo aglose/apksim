@@ -1,0 +1,167 @@
+# The apksim documentation site (https://apksim.web.app/), built by Zensical with the Material theme.
+# Do not run zensical here: scripts/docs-site.py assembles the pages (website/pages, the README's sections,
+# docs/*.md) into work/site/docs, copies this file beside them and builds there.
+#   scripts/docs-site.py            build into work/site/out
+#   scripts/docs-site.py --serve    live preview on http://localhost:8000
+#   scripts/docs-site.py --all-versions --deploy   build a copy per release, dev and latest, then publish them to
+#                                   Firebase Hosting (project apksim, website/firebase.json)
+# site_url and extra.version are set per copy by the script: keep the site_url line and the extra: block as they are.
+
+site_name: apksim
+site_url: https://apksim.web.app/
+site_description: "Run unmodified Android APKs on an Apple Silicon Mac as one ordinary process: no emulator, no VM."
+repo_name: aglose/apksim
+repo_url: https://github.com/aglose/apksim
+docs_dir: docs
+site_dir: out
+
+copyright: 'apksim is released under the Apache License 2.0. Not affiliated with Google or Apple.'
+
+theme:
+  name: 'material'
+  logo: site-assets/logo.svg
+  favicon: site-assets/logo.svg
+  palette:
+    - media: '(prefers-color-scheme)'
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: '(prefers-color-scheme: light)'
+      scheme: default
+      primary: 'white'
+      accent: 'teal'
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: '(prefers-color-scheme: dark)'
+      scheme: slate
+      primary: 'black'
+      accent: 'teal'
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+  # Atkinson Hyperlegible is drawn for legibility; JetBrains Mono is what Android Studio shows code in
+  font:
+    text: 'Atkinson Hyperlegible Next'
+    code: 'JetBrains Mono'
+  features:
+    - content.code.copy
+    - content.code.select
+    - content.tabs.link
+    - navigation.tabs
+    - navigation.footer
+    - navigation.top
+    - navigation.instant
+    - search.highlight
+    - search.suggest
+
+plugins:
+  - search
+
+extra_css:
+  - site-assets/site.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/aglose/apksim
+
+markdown_extensions:
+  - footnotes
+  - tables
+  - admonition
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+      # GitHub's heading anchors, so links written for github.com work here as they are
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.inlinehilite
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.magiclink
+  - pymdownx.superfences
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.tabbed:
+      alternate_style: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+
+# Pages named readme:... in scripts/docs-site.py come from README.md sections; the rest are docs/*.md or website/pages.
+nav:
+  - 'Home': index.md
+  - 'Getting Started':
+      - 'Quick Start': quickstart.md
+      - 'Installation': installation.md
+      - 'Features': features.md
+      - 'Devices and Launch Options': devices-and-launch-options.md
+      - 'The Simulator Window': simulator-window.md
+      - 'Limitations': limitations.md
+  - 'Guides':
+      - 'Automation': automation.md
+      - 'adb Device': adb-device.md
+      - 'Debugging': debugging.md
+      - 'Skins':
+          - 'Using Skins': using-skins.md
+          - 'Skin Format and Store': skins.md
+      - 'In a Browser':
+          - 'Overview': browser-tab.md
+          - 'apksim serve': serve.md
+          - 'Beam: On the Visitor''s Mac': beam.md
+          - 'Pull Request Previews': pr-preview.md
+      - 'Network':
+          - 'Overview': network-overview.md
+          - 'Record, Replay, Conditions': network.md
+      - 'Agents, Devices and Scenes':
+          - 'Overview': agents-ble-scenes.md
+          - 'MCP Server': mcp.md
+          - 'Bluetooth LE': ble.md
+          - 'Health Connect': health-connect.md
+          - 'Scenes': scenes.md
+  - 'Testing & CI':
+      - 'Instrumented Tests': instrumented-tests.md
+      - 'Linux and Docker':
+          - 'Overview': linux-and-docker.md
+          - 'The Linux Image': linux-docker.md
+      - 'Parallel Runs': parallel.md
+      - 'Pre-warmed Test Processes': test-pool.md
+      - 'Affected Tests and Shards': affected-tests.md
+      - 'Code Coverage': coverage.md
+      - 'Flake Hunter': flake-hunt.md
+      - 'Screenshot Tests':
+          - 'Overview': screenshot-tests.md
+          - 'Spec and Determinism': snapshots.md
+      - 'UiAutomator Engine': uiautomator-engine.md
+      - 'A Large App''s Suite': ci-testbed.md
+  - 'Record & Replay':
+      - 'Overview': replay-trace-crawler.md
+      - 'Flight Recorder': flight-recorder.md
+      - 'Replay': replay.md
+      - 'Trace Viewer': trace-viewer.md
+      - 'Crawler': crawl.md
+  - 'Reference':
+      - 'Configuration': configuration-reference.md
+      - 'Performance': performance.md
+      - 'Conformance': conformance.md
+      - 'iOS Simulator Parity': ios-simulator-parity.md
+      - 'API Levels': api-levels.md
+      - 'App Corpus': corpus.md
+  - 'Changelog': changelog.md
+  - 'Project':
+      - 'System Design': system-design.md
+      - 'How It Was Built': how-it-was-built.md
+      - 'Building and Contributing': building-and-contributing.md
+      - 'Startup Gate': startup-gate.md
+      - 'Performance Plan': perf-plan.md
+      - 'Plan': plan.md
+      - 'Roadmap': roadmap.md
+      - 'License': license.md
+      - 'Releases ↗': https://github.com/aglose/apksim/releases
