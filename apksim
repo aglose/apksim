@@ -135,14 +135,15 @@ esac
 if [[ "${1:-}" == --spawn-standby ]]; then
   FLAGS="${2:-}"
   SOCK="$("$CLIENT" sock "$KEY" "$FLAGS")"
-  [[ -S "$SOCK" ]] && exit 0
-  # Alive, or there and out of reach: a beamed instance (this runs in its sandbox) may signal only itself, so kill -0
-  # on its booting standby answers "not permitted", which is not a dead one.
+  # Alive (booting, or ready on its socket), or there and out of reach: a beamed instance (this runs in its sandbox)
+  # may signal only itself, so kill -0 on its booting standby answers "not permitted", which is not a dead one.
   if [[ -f "$SOCK.pid" ]]; then
     ALIVE="$(kill -0 "$(cat "$SOCK.pid" 2>/dev/null)" 2>&1)" && exit 0
     [[ "$ALIVE" == *"not permitted"* ]] && exit 0
   fi
-  rm -f "$SOCK.pid"
+  # Dead (killed, OOM-killed, or a container restarted with its /tmp): its socket, if left, would keep every later
+  # spawn from starting one and every launch cold.
+  rm -f "$SOCK" "$SOCK.pid"
   ARGS=(--standby "$SOCK")
   [[ "$FLAGS" == *n* ]] && ARGS+=(--no-network)
   [[ "$FLAGS" == *s* ]] && ARGS+=(--no-sandbox)

@@ -239,6 +239,9 @@ final class Standby {
     String flags = System.getProperty("apksim.spawnStandby");
     if (spawned || flags == null) return;
     spawned = true;
+    // Not into memory already short: it would quit once booted, and its boot (-Xms512m) could push a container over its
+    // limit and get the running instance killed.
+    if (Footprint.memoryShort()) return;
     try {
       List<String> cmd = new ArrayList<>(List.of(System.getProperty("apksim.root") + "/apksim", "--spawn-standby"));
       if (!flags.isEmpty()) cmd.add(flags);

@@ -142,14 +142,18 @@ then skips the JVM's and the framework's start. On the Mac every launch uses one
 that runs one app or one suite has no next launch to keep it for. With it, a launch's instance starts the next standby
 a second after its first frame (or on exit), and the next launch hands over to it.
 
+It pays off only in a container that outlives one launch, e.g. one kept running and launched into:
+
 ```bash
-docker run --rm -e APKSIM_STANDBY=1 -v "$PWD:/work" apksim:latest --headless app.apk
+docker run -d --init --name sim -e APKSIM_STANDBY=1 -v "$PWD:/work" --entrypoint sleep apksim:latest infinity
+docker exec sim apksim --headless --exit-after-first-frame app.apk   # cold; starts a standby on exit
+docker exec sim apksim --headless app.apk                            # from the standby
 ```
 
 Measured (arm64 image, 4 CPUs, the test app, its class cache warm): first frame 0.94-1.7 s cold, 0.22-0.23 s from a
 standby. An idle standby holds ~175 MB of anonymous memory (~290 MB resident with the shared AOT cache and libraries);
 it quits when the container's memory runs short (under a tenth of its cgroup limit and under 256 MB left, the
-inactive file cache counted free), and the next launch is cold. The instance a standby becomes is not the launching
+inactive file cache counted free; a heuristic, which may count a large active file cache as used), and the next launch is cold. The instance a standby becomes is not the launching
 process's child, so the container's PID 1 must reap it when it exits: run long-lived containers with an init
 (`docker run --init`).
 
