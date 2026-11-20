@@ -488,7 +488,7 @@ fi
 STANDBY_ON=""
 if [[ "$OS" == Darwin ]]; then [[ "${APKSIM_STANDBY:-1}" != 0 ]] && STANDBY_ON=1
 elif [[ "$OS" == Linux && ( "${APKSIM_STANDBY:-}" == 1 || "${APKSIM_STANDBY:-}" == cold ) ]]; then STANDBY_ON=1; fi
-WARM_OK=""
+WARM_OK="" COLD_OPT=""
 if [[ -n "$STANDBY_ON" && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSIM_SANDBOX_TEST:-}" && -z "$STANDBY_SOCK" ]]; then
   WARM_OK=1
   for e in "${EXTRA[@]+"${EXTRA[@]}"}"; do
@@ -497,11 +497,11 @@ if [[ -n "$STANDBY_ON" && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKS
       -Dapksim.device=*|-Dapksim.fold=*|-Dapksim.deviceKind=*|-Dapksim.skinShape=*|-Dapksim.skin=*|-Dapksim.skinsDir=*|-Dapksim.skinsShared=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
       -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.wifi=*|-Dapksim.cellular=*|-Dapksim.wifiSignal=*|-Dapksim.sensors=*|-Dapksim.sysfs.*|-Dapksim.ble.*|-Dapksim.health.*|-Dapksim.camera=*|-Dapksim.cameraSizes=*|-Dapksim.setting.*) ;;
       # Seeds and broadcasts travel twice in the hand-off's argv (macOS limits it): large ones launch cold.
-      -Dapksim.sdcard.*|-Dapksim.broadcast.*) SDCARD_BYTES=$((${SDCARD_BYTES:-0} + ${#e})); ((SDCARD_BYTES <= 49152)) || WARM_OK="" ;;
+      -Dapksim.sdcard.*|-Dapksim.broadcast.*) SDCARD_BYTES=$((${SDCARD_BYTES:-0} + ${#e})); ((SDCARD_BYTES <= 49152)) || { WARM_OK=""; COLD_OPT="seeds and broadcasts over 48 KB"; } ;;
       -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*|-Dapksim.tabRelay=*|-Dapksim.forwardLink=*) ;;
       # The flight recorder keeps everything in memory and saves into STATE, which every instance may write.
       -Dapksim.rec=*|-Dapksim.rec.*|-Dapksim.replay=*) ;;
-      -Dapksim.replay.out=*) [[ "${e#*=}" == "$STATE"/* ]] || WARM_OK="" ;;  # a standby's sandbox writes only under STATE
+      -Dapksim.replay.out=*) [[ "${e#*=}" == "$STATE"/* ]] || { WARM_OK=""; COLD_OPT="$e (outside the state folder)"; } ;;  # a standby's sandbox writes only under STATE
       -Dapksim.biometricsEnrolled=*|-Dapksim.softKeyboard=*|-Dapksim.statusBar=*|-Dapksim.navBar=*|-Dapksim.windowX=*|-Dapksim.window=*|-Dapksim.headless=*|-Dapksim.fresh=*|-Dapksim.logcat=*|-Dapksim.noAutofill=*|-Dapksim.dataSlots=*) ;;
       -Dapksim.timing=*|-Dapksim.profile=*|-Dapksim.profile.*|-Dapksim.jfr=*|-Dapksim.quiet=*|-Dapksim.traceExit=*|-Dapksim.crashes=*|-Dapksim.crashTest.*|-Dapksim.providerFailures=*) ;;
       # Not java.net.preferIPv4Stack: the JDK reads it once at JVM start, so a standby would ignore it (a beamed
@@ -512,9 +512,20 @@ if [[ -n "$STANDBY_ON" && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKS
       -Dapksim.network=replay:*|-Dapksim.networkProfile=*|-Dapksim.networkRedact=*|-Dapksim.networkMatch=*) ;;
       -Dapksim.networkIgnoreQuery=*|-Dapksim.networkIgnoreHeader=*|-Dapksim.networkUnmatched=*) ;;
       -Dapksim.networkReplayTiming=*|-Dapksim.networkReplayMark=*|-Dapksim.networkHost=*|-Dapksim.networkTrust=*|-Dapksim.networkTrace=*|-Dapksim.networkInspect=*|-Dapksim.networkInspectRules=*) ;;
-      *) WARM_OK="" ;;
+      *) WARM_OK=""; COLD_OPT="the option ${e%%=*}" ;;
     esac
   done
+fi
+# Why this launch is cold, when asked (a beamed launch, or APKSIM_COLD_WHY_LOG=1): one line on stderr, for the session's
+# log (issue 577). Not for a standby's own boot, and only on a launch that goes cold (the hand-off above has exec'd).
+if [[ ( -n "${APKSIM_BEAM_SANDBOX:-}" || -n "${APKSIM_COLD_WHY_LOG:-}" ) && -z "$STANDBY_SOCK" ]]; then
+  if [[ -z "$STANDBY_ON" ]]; then COLD_WHY="standbys are off here (APKSIM_STANDBY=${APKSIM_STANDBY:-unset}, or no client)"
+  elif [[ -n "${APKSIM_NOCACHE:-}${APKSIM_SANDBOX_TEST:-}" || ! -x "$CLIENT" ]]; then COLD_WHY="no hand-off here (no client, or APKSIM_NOCACHE/APKSIM_SANDBOX_TEST is set)"
+  elif [[ -z "$WARM_OK" ]]; then COLD_WHY="${COLD_OPT:-an option} rules a standby out"
+  elif [[ "${APKSIM_STANDBY:-}" == cold ]]; then COLD_WHY="${APKSIM_COLD_WHY:-the hand-off found no standby}"
+  else COLD_WHY=""
+  fi
+  [[ -n "$COLD_WHY" ]] && printf '[apksim] cold launch: %s (standby name "%s")\n' "$COLD_WHY" "$FLAGS" >&2
 fi
 if [[ "$OS" == Darwin ]]; then
   # The JDK scripts/build.sh compiled with (scripts/jdk.sh finds it), read with a builtin. A path relative to this

@@ -763,9 +763,23 @@ public final class Serve {
           .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD);
       instanceEnvironment(pb);
       pb.start().waitFor(10, TimeUnit.SECONDS);
+      if (beam) System.err.println("[beam] standby asked for (name \"" + (noNetwork ? "n" : "") + (coreDumps ? "" : "k") + "b" + loopbackFlags() + "\"; the launcher starts none if one is there)");
     } catch (IOException | InterruptedException e) {
       System.err.println("[serve] no standby: " + e);
     }
+  }
+
+  private volatile long helloWarmAt;
+
+  /**
+   * Issue 577: a page that says hello will probably start a session soon, and the agent may have just started (or idled
+   * out): make sure a standby is booting, at most every 5 s (the launcher starts none while one is there).
+   */
+  void warmStandbyOnHello() {
+    long now = System.currentTimeMillis();
+    if (!beam || now - helloWarmAt < 5000) return;
+    helloWarmAt = now;
+    Thread.ofVirtual().name("beam-standby-hello").start(this::warmStandby);
   }
 
   /**
@@ -2416,6 +2430,7 @@ public final class Serve {
       return;
     }
     if (r.method().equals("GET") && r.path().equals("/beam/hello")) {
+      if (o != null && agent.trusted(o)) warmStandbyOnHello();  // only a site the owner trusts may cause a JVM to boot
       int[] pr = Beam.protocols();
       Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + ",\"trusted\":"
           + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"max\":" + max + ",\"allowRequest\":[\"forward\",\"loopback\",\"host\"],\"forward\":" + (o != null && agent.trusted(o) ? forwardJson() : "[]") + ",\"adb\":" + store.allowAdbNow() + ",\"loopback\":" + (o != null && agent.trusted(o) ? store.loopbackNow(port) : List.of()) + ",\"hosts\":" + (o != null && agent.trusted(o) ? hostsJson() : "[]") + ",\"maxBroadcasts\":" + dev.apksim.BroadcastSpec.COUNT_MAX + ",\"rejoinS\":" + rejoinGraceSeconds + ",\"options\":" + Catalog.optionsJson() + "}");

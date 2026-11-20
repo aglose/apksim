@@ -161,7 +161,15 @@ static int launch(int argc, char **argv) {
     free(body);
     close(fd);
   }
-  // No standby (or it declined): a cold launch, the same arguments through the launcher.
+  // No standby (or it declined): a cold launch, the same arguments through the launcher, which says why when asked
+  // (issue 577: a beamed launch's log).
+  {
+    char why[1300];
+    if (fd >= 0) snprintf(why, sizeof why, "the standby %s declined the launch", flags);
+    else if (pid_alive(pidfile)) snprintf(why, sizeof why, "the standby %s was still booting after 6 s", flags);
+    else snprintf(why, sizeof why, "no standby named %s (%s)", flags, path);
+    setenv("APKSIM_COLD_WHY", why, 1);
+  }
   setenv("APKSIM_STANDBY", "cold", 1);
   char t0buf[32];
   snprintf(t0buf, sizeof t0buf, "%lld", t0);

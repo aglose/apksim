@@ -578,7 +578,7 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   inside is told it is (`APKSIM_SANDBOXED=beam`), and the launcher checks that rather than trusting it: inside, a
   write to `STATE/beam` is refused. The agent also strips those variables from its instances' environment.
 - **Standbys**: a standby's sandbox is the one it started in, so an instance never starts the next (its rules name its
-  own PID); the agent starts beam standbys itself, at its start and a second after each session's first frame.
+  own PID); the agent starts beam standbys itself, at its start and a second after each session's first frame, and when a trusted page says hello (`/beam/hello`, at most every 5 s; the launcher starts none while one is there: issue 577). A launch that goes cold says why, in the session's log and the agent's: `[apksim] cold launch: no standby named ..|the standby ... was still booting|the option -D... rules a standby out|standbys are off here` with the standby's name (`APKSIM_COLD_WHY_LOG=1` asks for it from any launch).
 - **Cost**: none measured. First frame in the tab 0.17 s, as before (0.29 s while the APK cache entry was rebuilt in
   scratch each launch, 0.5 s while a read-only seed's packs were dropped by a write of their modification time).
 - **Checked**: `beam-check.py`'s sandbox section runs shell probes inside the profile (25: its scratch, slot, a new app
