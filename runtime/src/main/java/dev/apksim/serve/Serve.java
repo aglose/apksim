@@ -2418,7 +2418,7 @@ public final class Serve {
     if (r.method().equals("GET") && r.path().equals("/beam/hello")) {
       int[] pr = Beam.protocols();
       Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + ",\"trusted\":"
-          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"max\":" + max + ",\"\"allowRequest\":[\"forward\",\"loopback\",\"host\"],\"forward\":" + (o != null && agent.trusted(o) ? forwardJson() : "[]") + ",\"adb\":" + store.allowAdbNow() + ",\"loopback\":" + (o != null && agent.trusted(o) ? store.loopbackNow(port) : List.of()) + ",\"hosts\":" + (o != null && agent.trusted(o) ? hostsJson() : "[]") + ",\"maxBroadcasts\":" + dev.apksim.BroadcastSpec.COUNT_MAX + ",\"rejoinS\":" + rejoinGraceSeconds + ",\"options\":" + Catalog.optionsJson() + "}");
+          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"max\":" + max + ",\"allowRequest\":[\"forward\",\"loopback\",\"host\"],\"forward\":" + (o != null && agent.trusted(o) ? forwardJson() : "[]") + ",\"adb\":" + store.allowAdbNow() + ",\"loopback\":" + (o != null && agent.trusted(o) ? store.loopbackNow(port) : List.of()) + ",\"hosts\":" + (o != null && agent.trusted(o) ? hostsJson() : "[]") + ",\"maxBroadcasts\":" + dev.apksim.BroadcastSpec.COUNT_MAX + ",\"rejoinS\":" + rejoinGraceSeconds + ",\"options\":" + Catalog.optionsJson() + "}");
       return;
     }
     // `apksim beam status` (docs/beam.md, phase 6): to a local tool only, never a page (a browser always sends Origin).

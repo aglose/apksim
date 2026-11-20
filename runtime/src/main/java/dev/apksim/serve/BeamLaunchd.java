@@ -106,6 +106,7 @@ final class BeamLaunchd {
       System.out.println("allowed " + o + " (it runs apps here without asking; apksim beam trust revoke " + o + " undoes it)");
     }
     if (dryRun != null) {
+      if (max != null) System.out.println("would set sessions at once to " + max + " in the config (not written)");
       System.out.println("wrote " + agent + " and " + sweep + " (not loaded)");
       return 0;
     }
