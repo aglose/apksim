@@ -426,7 +426,10 @@ shows it, and the tab may switch to it again by that name), and replaces the one
   rules: listed nowhere, deleted a day after its last use. Adds of one URL with the same `headers` share one download: while it runs they wait on it (and show its progress),
   and for 5 minutes after it finished a later add reuses the stored APK, each add keeping its own id and `options` (so
   variants of one APK cost one fetch; a failure is never reused, and header values are only hashed into the key). A
-  failed download is reported for an hour. At most 4
+  failed download is reported for an hour. The download is hashed as it is copied (no second read of the file). `"sha256": "HEX"`
+  beside `url` (a build's hash, as an earlier add of it gave or the front end knows it): when serve still stores that build
+  (a day after its last use) the add is answered `"state": "ready"` at once with no fetch, the URL not even contacted; a hash serve
+  does not have is ignored and the URL is fetched as usual. At most 4
   real downloads run at once (a shared one counts once); another add gets `503` with `Retry-After`. At most 100 failures are kept (the oldest go).
 - `GET /api/apps/ID`: `{"id", "name", "state": "downloading"|"ready"|"failed", "error", "received", "total"}` (the
   last three while it is downloading or has failed).

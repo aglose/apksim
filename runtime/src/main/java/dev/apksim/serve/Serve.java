@@ -1130,7 +1130,8 @@ public final class Serve {
 
   /**
    * `POST /api/apps` `{"url": "https://...", "name": "...", "headers": {...}, "options": ["--activity", ".Main", ...]}`
-   * (`"ttl": SECONDS` too: the id expires then, used or not):
+   * (`"ttl": SECONDS` too: the id expires then, used or not; `"sha256": HEX`: a build stored already is answered `ready`
+   * without a fetch):
    * serve downloads the APK itself and answers its id at once (docs/serve.md).
    */
   private void addApp(Http.Request r, OutputStream out) throws IOException {
@@ -1170,9 +1171,17 @@ public final class Serve {
         throw new IOException("\"options\" must be an array, e.g. [\"--activity\", \".MainActivity\"]");
       }
       long ttl = ttlParam(body.get("ttl"));
-      Catalog.App a = catalog.addUrl(url, name, headers, Catalog.launchOptions(given));
+      String sha = null;
+      if (body.get("sha256") instanceof String x) {
+        sha = x.strip().toLowerCase(java.util.Locale.ROOT);
+        if (!sha.matches("[0-9a-f]{64}")) throw new IOException("\"sha256\" is 64 hex digits");
+      } else if (body.get("sha256") != null) {
+        throw new IOException("\"sha256\" must be a string");
+      }
+      Catalog.App a = catalog.addUrl(url, name, headers, Catalog.launchOptions(given), sha);
       if (ttl > 0) catalog.expireAt(a.id(), ttl);
-      Http.json(out, 200, "{\"id\":" + Http.q(a.id()) + ",\"name\":" + Http.q(a.name()) + ",\"state\":\"downloading\"}");
+      Http.json(out, 200, "{\"id\":" + Http.q(a.id()) + ",\"name\":" + Http.q(a.name()) + ",\"state\":\""
+          + (a.path() != null ? "ready" : "downloading") + "\"}");
     } catch (Catalog.Busy e) {
       Http.respond(out, 503, "text/plain; charset=utf-8", (e.getMessage() + "\n").getBytes(StandardCharsets.UTF_8), "Retry-After: 30");
     } catch (IOException e) {
