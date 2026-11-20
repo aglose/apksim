@@ -694,12 +694,14 @@ Read README.md for results and limits; this file covers how to work on the code.
   script's table or the nav: the build says which. `--strict` (CI) fails on a link between pages with no target;
   `--serve` previews; `--deploy` builds and publishes (the firebase CLI, signed in as the owner, or CI's
   `FIREBASE_SERVICE_ACCOUNT` secret). The published site is versioned as mike lays a MkDocs site out, without a
-  branch of built pages: `--all-versions` builds `work/site/tree` with a copy per release tag that has the script
+  branch of built pages: `--all-versions` builds `work/site/tree` with a copy per published release whose tag has the script (a tag whose release is
+  still a draft is not one, so `/latest/` moves at publishing)
   (`/X.Y.Z/`, the tag's README, docs and website exported and built by the tag's own `docs-site.py --version X.Y.Z
   --out DIR`: keep that command line working, later versions of the script call earlier ones with it), `/dev/` from
   the checkout, `/latest/` (a copy of the newest release's, or of dev while no tag has the script), `versions.json`
   for the theme's version picker and a root redirect to `/latest/`. Each deploy builds every copy again, so the
-  tags are the only record; a copy that fails to build is left out with a `::warning::`. `changelog.md` is
+  tags are the only record; a copy that fails to build is left out with a `::warning::`, except the newest, which stops the deploy, as
+  an unreadable release list does. CI builds with no credentials and publishes with `--deploy-only`. `changelog.md` is
   generated from GitHub's release notes (`fetch`: the API, with CI's token; no notes offline, and the page says
   so), in a release's copy only up to that release; `@VERSION@` in a `website/pages` file is the copy's release, or
   the newest. Needs Zensical on the PATH or in `work/site-venv` (`python3 -m venv work/site-venv && work/site-venv/bin/pip install -r

@@ -23,10 +23,11 @@ Usage:
     --all-versions  build the whole published tree into work/site/tree: one copy per release tag, "dev" from this
                   checkout, "latest" (the newest release's copy), versions.json and the root redirect
     --deploy   build, then publish to Firebase Hosting (https://apksim.web.app); with --all-versions the tree
+    --deploy-only  publish the tree a --all-versions run left
 
 Versions. The site keeps a snapshot of the docs for each release, as mike does for MkDocs sites, but without a branch
-of built pages: every deploy builds each release again from its tag. A tag is a snapshot when it has this script
-(`git cat-file -e TAG:scripts/docs-site.py`); its sources (README.md, docs/, website/) are exported and built by the
+of built pages: every deploy builds each release again from its tag. A tag is a snapshot when its release is published and it has this
+script (`git cat-file -e TAG:scripts/docs-site.py`); its sources (README.md, docs/, website/) are exported and built by the
 tag's OWN copy of this script, run as `docs-site.py --version X.Y.Z --out DIR` with zensical on the PATH and
 APKSIM_RELEASES_JSON naming a file of GitHub's release list. Keep that command line working: future versions of this
 script call past ones with it.
@@ -193,11 +194,10 @@ def fetch(url):
             return r.read().decode("utf-8")
     except OSError:
         # a python.org Python on a Mac has no root certificates until its installer's script is run: curl has the
-        # system's
-        args = ["curl", "-fsSL", "--max-time", "20"]
-        for k, v in headers.items():
-            args += ["-H", "%s: %s" % (k, v)]
-        return subprocess.run(args + [url], capture_output=True, text=True, check=True).stdout
+        # system's. The headers go in on stdin: a command line shows in `ps`
+        config = "".join('header = "%s: %s"\n' % kv for kv in headers.items())
+        return subprocess.run(["curl", "-fsSL", "--max-time", "20", "--config", "-", url], input=config,
+                              capture_output=True, text=True, check=True).stdout
 
 
 def releases():
@@ -237,7 +237,7 @@ def changelog(rels, upto=None):
         body = (r.get("body") or "").replace("\r", "").split("\n")
         for _, line, fenced in outside_fences(body):
             m = None if fenced else HEADING.match(line)
-            lines.append("#" * min(6, len(m.group(1)) + 1) + " " + m.group(2) if m else line)
+            lines.append("#" * max(3, len(m.group(1))) + " " + m.group(2) if m else line)   # under its "## VERSION"
         lines.append("")
     return lines
 
@@ -398,9 +398,14 @@ def git(*args):
     return subprocess.run(["git", "-C", ROOT] + list(args), capture_output=True, text=True)
 
 
-def snapshot_tags():
-    """Release tags whose commit has this script, newest first: the releases the site keeps a copy of."""
+def snapshot_tags(rels):
+    """Tags of published releases whose commit has this script, newest first: the releases the site keeps a copy
+    of. A tag alone is not one: a release is a draft from its tag's push until it is published, and /latest/ must
+    not move before that. With no release list (rels is None, offline) every such tag counts."""
     names = [t for t in git("tag", "--list", "v*").stdout.split() if RELEASE_TAG.match(t)]
+    if rels is not None:
+        published = {r["tag_name"] for r in rels}
+        names = [t for t in names if t in published]
     names = [t for t in names if git("cat-file", "-e", t + ":scripts/docs-site.py").returncode == 0
              and git("cat-file", "-e", t + ":website/mkdocs.yml").returncode == 0]
     return sorted(names, key=vkey, reverse=True)
@@ -414,9 +419,10 @@ def export(tag, dest):
     archive = subprocess.Popen(["git", "-C", ROOT, "archive", tag, "README.md", "docs", "website",
                                 "scripts/docs-site.py"], stdout=subprocess.PIPE)
     untar = subprocess.run(["tar", "-x", "-C", dest], stdin=archive.stdout)
+    archive.stdout.close()     # so that git archive ends, not blocks, when tar stopped reading
     if archive.wait() != 0 or untar.returncode != 0:
         return False
-    for name in git("ls-tree", "-r", "--name-only", tag).stdout.split("\n"):
+    for name in git("ls-tree", "-r", "-z", "--name-only", tag).stdout.split("\0"):
         path = os.path.join(dest, name)
         if name and not os.path.exists(path):
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -424,21 +430,28 @@ def export(tag, dest):
     return True
 
 
-def build_tree(args, work, tool):
+def build_tree(args, work, tool, publishing):
     """Every published copy of the site under one folder, as Firebase serves it."""
     tree = os.path.join(work, "tree")
     shutil.rmtree(tree, ignore_errors=True)
     os.makedirs(tree)
-    env = dict(os.environ)
+    # the builds get no deploy credentials: a tag's script and the site generator need none
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("GOOGLE_APPLICATION_CREDENTIALS", "FIREBASE_SERVICE_ACCOUNT", "FIREBASE_TOKEN")}
     env["PATH"] = os.path.dirname(os.path.abspath(tool)) + os.pathsep + env.get("PATH", "")
     rels = releases()
+    if rels is None and publishing:
+        print("docs-site: not publishing without GitHub's release list: it says which tags are released, and the "
+              "changelog is made from it", file=sys.stderr)
+        return 1
     if rels is not None:
         env["APKSIM_RELEASES_JSON"] = os.path.join(work, "releases.json")
         with open(env["APKSIM_RELEASES_JSON"], "w", encoding="utf-8") as f:
             json.dump(rels, f)
 
     built, failed = [], []
-    for tag in snapshot_tags():
+    tags = snapshot_tags(rels)
+    for tag in tags:
         version = tag[1:]
         src = os.path.join(work, "tags", version)
         ok = export(tag, src) and subprocess.call(
@@ -451,6 +464,14 @@ def build_tree(args, work, tool):
     if status != 0:
         return status
 
+    for v in failed:
+        # GitHub Actions shows this on the run
+        print("::warning::docs-site: release %s's copy of the site did not build and is left out" % v)
+    if tags and tags[0][1:] in failed and (publishing or args.strict):
+        # an older copy that stops building must not block every deploy, but the newest is what /latest/ shows
+        print("docs-site: the newest release's copy (%s) did not build: /latest/ would fall back to an older one"
+              % tags[0][1:], file=sys.stderr)
+        return 1
     newest = built[0] if built else "dev"
     shutil.copytree(os.path.join(tree, newest), os.path.join(tree, "latest"))
     versions = [{"version": v, "title": v, "aliases": ["latest"] if v == newest else []} for v in built]
@@ -464,9 +485,6 @@ def build_tree(args, work, tool):
     page404 = os.path.join(tree, "latest", "404.html")
     if os.path.exists(page404):
         shutil.copy(page404, os.path.join(tree, "404.html"))
-    for v in failed:
-        # GitHub Actions shows this on the run; the other copies are still published
-        print("::warning::docs-site: release %s's copy of the site did not build and is left out" % v)
     print("docs-site: tree in %s: %s; latest is %s" % (os.path.relpath(tree, ROOT), ", ".join(built + ["dev"]), newest))
     return 0
 
@@ -494,14 +512,21 @@ def main():
     ap.add_argument("--deploy", action="store_true",
                     help="after a build with no problems, publish to Firebase Hosting (needs the firebase CLI, "
                          "signed in or with GOOGLE_APPLICATION_CREDENTIALS set)")
+    ap.add_argument("--deploy-only", action="store_true",
+                    help="publish work/site/tree as --all-versions left it, building nothing (CI: the build runs "
+                         "without the deploy's credentials)")
     ap.add_argument("--out", help="the built site's folder (default work/site/out)")
     args = ap.parse_args()
 
     work = os.path.join(ROOT, "work", "site")
+    if args.deploy_only:
+        if not os.path.exists(os.path.join(work, "tree", "versions.json")):
+            sys.exit("docs-site: no built tree to publish: run --all-versions first")
+        return deploy(work, "tree")
     if args.all_versions:
         if args.serve or args.version or args.out or args.no_build:
             sys.exit("docs-site: --all-versions goes with --strict and --deploy only")
-        status = build_tree(args, work, find_zensical())
+        status = build_tree(args, work, find_zensical(), args.deploy)
         return deploy(work, "tree") if status == 0 and args.deploy else status
 
     src = os.path.join(work, "docs")

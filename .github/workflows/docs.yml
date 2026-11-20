@@ -9,6 +9,7 @@
 # The deploy signs in with the FIREBASE_SERVICE_ACCOUNT repository secret: the JSON key of a service account that
 # may deploy to Firebase Hosting in that project and nothing else. Without the secret the deploy step is skipped
 # with a warning, and `scripts/docs-site.py --all-versions --deploy` from a signed-in machine publishes instead.
+# A deploy stops rather than publish when GitHub's release list cannot be read or the newest release's copy fails.
 name: docs
 
 on:
@@ -57,21 +58,27 @@ jobs:
           cache: pip
           cache-dependency-path: website/requirements.txt
       - run: pip install -r website/requirements.txt
-      - name: Build, and fail on a broken link between pages
-        if: github.event_name == 'pull_request'
-        run: scripts/docs-site.py --strict
-      - name: Build every version and deploy to Firebase Hosting
+      # Every copy is built on a pull request too, so that the per-release path is exercised before a merge.
+      # GitHub's release list is needed on main (it says which tags are released); a pull request builds without it
+      # when it cannot be read.
+      - name: Build every version, and fail on a broken link between pages
+        run: scripts/docs-site.py --strict --all-versions
+      - name: Install the Firebase CLI
+        if: github.event_name == 'release' || (github.event_name != 'pull_request' && github.ref == 'refs/heads/main')
+        run: npm install --global firebase-tools@15.12.0
+      # Only this step has the key: the build above and the CLI's install ran without it.
+      - name: Deploy to Firebase Hosting
         if: github.event_name == 'release' || (github.event_name != 'pull_request' && github.ref == 'refs/heads/main')
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
           if [ -z "$FIREBASE_SERVICE_ACCOUNT" ]; then
             echo "::warning::FIREBASE_SERVICE_ACCOUNT is not set: the site is built but not deployed"
-            scripts/docs-site.py --strict --all-versions
             exit 0
           fi
+          umask 077
           key="$RUNNER_TEMP/firebase-key.json"
+          trap 'rm -f "$key"' EXIT
           printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$key"
-          npm install --global firebase-tools@15.12.0
-          GOOGLE_APPLICATION_CREDENTIALS="$key" scripts/docs-site.py --strict --all-versions --deploy
-          rm -f "$key"
+          unset FIREBASE_SERVICE_ACCOUNT
+          GOOGLE_APPLICATION_CREDENTIALS="$key" scripts/docs-site.py --deploy-only
