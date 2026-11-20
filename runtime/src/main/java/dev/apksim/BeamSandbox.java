@@ -60,6 +60,19 @@ final class BeamSandbox {
     return b == null ? null : b.resolve("classes");
   }
 
+  /**
+   * Translated classes of earlier builds of this app (same package, site and signing key: `-Dapksim.beamSiblingCaches`,
+   * the agent's choice, a path list), read only, newest first: the content lookup's source for a build that has no
+   * cache of its own yet (issue 578). Never written.
+   */
+  static List<Path> classCacheSiblings() {
+    String s = System.getProperty("apksim.beamSiblingCaches");
+    if (s == null || s.isEmpty()) return List.of();
+    List<Path> out = new java.util.ArrayList<>();
+    for (String p : s.split(java.io.File.pathSeparator)) if (!p.isEmpty()) out.add(Path.of(p).resolve("classes"));
+    return out;
+  }
+
   /** Before the APK cache entry is taken: a clone of the one the agent kept for this build, if any. */
   static void seedApkCache(Path root) {
     Path b = buildCache();

@@ -71,6 +71,8 @@ final class ClassCache {
   private final Path dir;
   /** Read only, where dir has nothing yet: a beamed instance's build cache (BeamSandbox), else null. */
   private final Path seed;
+  /** Read only: earlier builds' class folders (a beamed instance's, issue 578), the content lookup's other source. */
+  private final List<Path> siblings;
   private final Object saving = new Object();
   private final String[] keys;
   private final Map<String, Entry>[] loaded;
@@ -92,9 +94,10 @@ final class ClassCache {
   int contentHits;
 
   @SuppressWarnings("unchecked")
-  private ClassCache(Path dir, Path seed, String[] keys, String pkg) {
+  private ClassCache(Path dir, Path seed, List<Path> siblings, String[] keys, String pkg) {
     this.dir = dir;
     this.seed = seed;
+    this.siblings = siblings;
     this.keys = keys;
     content = Boolean.parseBoolean(System.getProperty("apksim.classContent", "true"))
         && !Boolean.getBoolean("apksim.debugInfo") && dev.apksim.dex.Coverage.cacheKey().isEmpty()
@@ -131,7 +134,9 @@ final class ClassCache {
     runtime += dev.apksim.dex.Coverage.cacheKey();  // coverage: classes with counters
     Path root = BeamSandbox.ON ? BeamSandbox.classCacheRoot() : Path.of(System.getProperty("apksim.cacheRoot"), "classes");
     Path seed = BeamSandbox.ON ? BeamSandbox.classCacheSeed() : null;
-    ClassCache cache = new ClassCache(root.resolve(runtime), seed == null ? null : seed.resolve(runtime), keys, hintName);
+    List<Path> siblings = new java.util.ArrayList<>();
+    if (BeamSandbox.ON) for (Path p : BeamSandbox.classCacheSiblings()) siblings.add(p.resolve(runtime));
+    ClassCache cache = new ClassCache(root.resolve(runtime), seed == null ? null : seed.resolve(runtime), siblings, keys, hintName);
     Thread saver = new Thread(cache::saveLoop, "apksim-class-cache");
     saver.setDaemon(true);
     saver.setPriority(Thread.MIN_PRIORITY);
@@ -144,6 +149,17 @@ final class ClassCache {
   private Path read(String name) {
     Path own = dir.resolve(name);
     return seed == null || Files.exists(own) ? own : seed.resolve(name);
+  }
+
+  /** A pack to read for the content lookup: this process's, the seed's, else an earlier build's (read only). */
+  private Path packFile(String name) {
+    Path p = read(name);
+    if (Files.exists(p)) return p;
+    for (Path s : siblings) {
+      Path q = s.resolve(name);
+      if (Files.isRegularFile(q)) return q;
+    }
+    return p;
   }
 
   /** Classes the last launches of this app loaded, in the order they first loaded them. */
@@ -199,7 +215,7 @@ final class ClassCache {
     String key = index.get(Hash.of(h));
     if (key == null || key.equals(keys[dex])) return null;
     Map<String, Entry> pack = otherPacks.get(key);
-    if (pack == null) otherPacks.put(key, pack = load(read(key + ".pack")));
+    if (pack == null) otherPacks.put(key, pack = load(packFile(key + ".pack")));
     Entry e = check(pack.get(name), answer);
     if (e == null) return null;
     byte[] bytes = new byte[e.length];
@@ -394,10 +410,23 @@ final class ClassCache {
 
   private static final int INDEX_MAGIC = 0x41584931; // "AXI1"
 
-  /** The index on disk (empty when there is none or it is damaged: a lookup then finds nothing). */
+  /**
+   * The index on disk (empty when there is none or it is damaged: a lookup then finds nothing), with the entries of
+   * earlier builds' indexes (a beamed instance's siblings) added where this build's own has none.
+   */
   private Map<Hash, String> loadIndex() {
-    Map<Hash, String> m = new HashMap<>();
     Path f = indexFile == null ? null : read(indexFile.getFileName().toString());
+    Map<Hash, String> m = readIndex(f);
+    if (indexFile != null) {
+      for (Path s : siblings) {
+        for (Map.Entry<Hash, String> e : readIndex(s.resolve(indexFile.getFileName().toString())).entrySet()) m.putIfAbsent(e.getKey(), e.getValue());
+      }
+    }
+    return m;
+  }
+
+  private static Map<Hash, String> readIndex(Path f) {
+    Map<Hash, String> m = new HashMap<>();
     if (f == null || !Files.isRegularFile(f)) return m;
     try {
       ByteBuffer b = ByteBuffer.wrap(Files.readAllBytes(f));
