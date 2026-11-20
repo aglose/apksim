@@ -226,6 +226,12 @@ if [[ "$(echo "$sources" | grep -c ': ')" -lt 12 ]] || echo "$sources" | grep -q
   echo "$sources"; echo "a system source never answered" >&2; exit 1
 fi
 drive back 'wait 1000' >/dev/null
+# The radios in a running instance (Radios): Wi-Fi off with mobile data on, both off is offline, then back.
+radios="$(drive 'network cellular on' 'network wifi off' 'network' 'network cellular off' 'network' 'network wifi on' 'network wifi signal level 2' 'network' | sed 's/.*-> //' | tr '\n' '|')"
+echo "Radios: $radios"
+[[ "$radios" == *"wifi off; mobile data on, connected (LTE), the default network|"*"offline (Wi-Fi and mobile data are off)"*"wifi on, connected, -71 dBm (level 2 of 4); mobile data off|" ]] \
+  || { echo "the radios did not switch as expected" >&2; exit 1; }
+drive 'network wifi signal -50' >/dev/null
 
 # Scripted BLE peripherals (docs/ble.md): apksim://ble scans, connects and shows a heart-rate preset's notifications.
 python3 "$ROOT/scripts/ble-check.py" "$PORT" > "$OUT/ble.log" 2>&1 && tail -1 "$OUT/ble.log" || { cat "$OUT/ble.log"; exit 1; }

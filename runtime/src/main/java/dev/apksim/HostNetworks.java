@@ -81,7 +81,7 @@ final class HostNetworks {
           if (a.getAddress() instanceof Inet4Address && !a.getAddress().isLinkLocalAddress()) v4 = a.getAddress();
         }
         caps.setTransportInfo(SimWifi.connected(false, v4));
-        caps.setSignalStrength(SimWifi.RSSI);
+        caps.setSignalStrength(Radios.rssi);
       }
       shadow.setNetworkCapabilities(network, caps);
 
@@ -110,9 +110,10 @@ final class HostNetworks {
       }
     }
     // Callbacks registered before (in Application.onCreate, when Host installs these after it) hear of them now, and
-    // the sticky broadcasts say so. Not with --network-profile offline: NetConnectivity.networksReplaced, next, takes
-    // these away again, then tells everyone there is no network (else they would hear connected, then not).
-    if (!dev.apksim.net.Net.offline()) {
+    // the sticky broadcasts say so. Not with --network-profile offline or the radios changed (--wifi off, --cellular on):
+    // NetConnectivity.networksReplaced, next, shows what may show, then tells everyone (else they would hear connected,
+    // then not).
+    if (NetConnectivity.announcesInstall()) {
       ShadowSimConnectivityManager.rematch();
       SystemBroadcasts.network(context);
     }

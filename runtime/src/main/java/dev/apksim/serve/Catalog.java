@@ -48,7 +48,7 @@ final class Catalog {
    */
   static final Set<String> LAUNCH_OPTIONS = Set.of("--activity", "--build", "--setting", "--feature", "--timezone",
       "--clock", "--anim-scale", "--serial", "--bluetooth", "--status-bar", "--nav-bar", "--max-fps", "--video",
-      "--audio", "--biometrics", "--camera", "--network-profile", "--device", "--rec", "--sdcard-file", "--broadcast", "--skin",
+      "--audio", "--biometrics", "--camera", "--network-profile", "--wifi", "--cellular", "--wifi-signal", "--device", "--rec", "--sdcard-file", "--broadcast", "--skin",
       "--device-kind", "--fold", "--sysfs", "--network-host", "--network-trust");
   /**
    * The addresses a `--network-host` may point at (issue 429): the server's `--network-host-allow` list, or on the agent

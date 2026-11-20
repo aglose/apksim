@@ -305,6 +305,13 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --biometrics) [[ "$2" == enrolled ]] && EXTRA+=("-Dapksim.biometricsEnrolled=true"); shift 2 ;;
     # The Bluetooth adapter at launch: on (default, as an emulator boots) or off (Bluetooth.java).
     --bluetooth) EXTRA+=("-Dapksim.bluetooth=$2"); shift 2 ;;
+    # The radios at launch (Radios.java): Wi-Fi on (default) or off, mobile data off (default) or on, Wi-Fi's signal.
+    --wifi|--cellular)
+      [[ "$2" == on || "$2" == off ]] || { echo "$1 takes on or off" >&2; exit 2; }
+      EXTRA+=("-Dapksim.${1#--}=$2"); shift 2 ;;
+    --wifi-signal)
+      [[ "$2" =~ ^-[1-9][0-9]{0,2}$ && "$2" -gt -127 || "$2" =~ ^level:[0-4]$ ]] || { echo "--wifi-signal takes dBm (-126..-1, e.g. -70) or level:N (0-4)" >&2; exit 2; }
+      EXTRA+=("-Dapksim.wifiSignal=$2"); shift 2 ;;
     # A file under /sys the app reads, with contents (repeatable): PATH=VALUE (SysFiles.java; `sysfs PATH VALUE` changes it).
     --sysfs)
       [[ "$2" =~ ^/sys/[^=]+=.* ]] || { echo "--sysfs takes /sys/PATH=VALUE" >&2; exit 2; }
@@ -482,7 +489,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
     case "$e" in
       -Dapksim.activity=*|-Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.controlTokenFile=*|-Dapksim.adb=*) ;;
       -Dapksim.device=*|-Dapksim.fold=*|-Dapksim.deviceKind=*|-Dapksim.skinShape=*|-Dapksim.skin=*|-Dapksim.skinsDir=*|-Dapksim.skinsShared=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
-      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.sensors=*|-Dapksim.sysfs.*|-Dapksim.ble.*|-Dapksim.health.*|-Dapksim.camera=*|-Dapksim.cameraSizes=*|-Dapksim.setting.*) ;;
+      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.wifi=*|-Dapksim.cellular=*|-Dapksim.wifiSignal=*|-Dapksim.sensors=*|-Dapksim.sysfs.*|-Dapksim.ble.*|-Dapksim.health.*|-Dapksim.camera=*|-Dapksim.cameraSizes=*|-Dapksim.setting.*) ;;
       # Seeds and broadcasts travel twice in the hand-off's argv (macOS limits it): large ones launch cold.
       -Dapksim.sdcard.*|-Dapksim.broadcast.*) SDCARD_BYTES=$((${SDCARD_BYTES:-0} + ${#e})); ((SDCARD_BYTES <= 49152)) || WARM_OK="" ;;
       -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*|-Dapksim.tabRelay=*|-Dapksim.forwardLink=*) ;;

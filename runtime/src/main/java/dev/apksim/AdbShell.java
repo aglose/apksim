@@ -534,12 +534,15 @@ final class AdbShell {
         return dumpsys(args);
       }
       case "svc" -> {
-        // svc bluetooth enable|disable (Bluetooth); svc's other services (wifi, data, power...) are not here.
+        // svc bluetooth|wifi|data enable|disable (Bluetooth, Radios); svc's other services (power, usb...) are not here.
         if (args.size() == 2 && args.get(0).equals("bluetooth") && args.get(1).matches("enable|disable")) {
           return bluetooth(args.get(1).equals("enable"));
         }
-        if (!args.isEmpty() && args.get(0).equals("bluetooth")) return usage("svc bluetooth enable|disable");
-        return unsupported("svc " + String.join(" ", args) + " (only svc bluetooth enable|disable)");
+        if (args.size() == 2 && args.get(0).matches("wifi|data") && args.get(1).matches("enable|disable")) {
+          return reply(control("network", args.get(0).equals("wifi") ? "wifi" : "cellular", args.get(1).equals("enable") ? "on" : "off"), false);
+        }
+        if (!args.isEmpty() && args.get(0).matches("bluetooth|wifi|data")) return usage("svc " + args.get(0) + " enable|disable");
+        return unsupported("svc " + String.join(" ", args) + " (only svc bluetooth|wifi|data enable|disable)");
       }
       case "apksim" -> {
         // Any control command, as `ctl.py` or `drive.py` would send it: `adb shell apksim rotate left`.
@@ -1432,6 +1435,21 @@ final class AdbShell {
         }
         return usage("cmd bluetooth_manager enable|disable|wait-for-state:STATE_ON|STATE_OFF");
       }
+      case "wifi" -> {
+        // cmd wifi set-wifi-enabled enabled|disabled, cmd wifi status (Radios).
+        if (r.size() == 2 && r.get(0).equals("set-wifi-enabled") && r.get(1).matches("enabled|disabled")) {
+          return reply(control("network", "wifi", r.get(1).equals("enabled") ? "on" : "off"), false);
+        }
+        if (r.size() == 1 && r.get(0).equals("status")) return reply(control("network", "wifi"), true);
+        return usage("cmd wifi set-wifi-enabled enabled|disabled | cmd wifi status");
+      }
+      case "phone" -> {
+        // cmd phone data enable|disable (Radios' mobile data).
+        if (r.size() == 2 && r.get(0).equals("data") && r.get(1).matches("enable|disable")) {
+          return reply(control("network", "cellular", r.get(1).equals("enable") ? "on" : "off"), false);
+        }
+        return usage("cmd phone data enable|disable");
+      }
       default -> {
         print("Can't find service: " + a.get(0) + "\n");
         return 1;
@@ -1905,7 +1923,7 @@ final class AdbShell {
         return "ok";
       }
       case "network" -> {
-        return dev.apksim.net.Net.command(a);
+        return Radios.networkCommand(a);  // until the next test's setup
       }
       case "bars" -> {
         return SystemBars.command(a);

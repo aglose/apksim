@@ -327,6 +327,15 @@ jobs:
           assert len(cases) == 11 and not skipped, f"tests: {[c.get('name') for c in cases]}, skipped {skipped}"
           print(f"{len(cases)} device identity and setting tests")
           EOF
+      # The radios at launch (--cellular on, --wifi-signal): RadiosTest's launch check, then a test switching Wi-Fi off.
+      - name: Test run with mobile data and a weak Wi-Fi signal
+        if: matrix.leg == 'tests'
+        run: |
+          python3 scripts/instrument.py --apksim "docker run --rm -v $PWD/tests:/work apksim:ci" app.apk test.apk \
+            --xml tests/junit-radios.xml -e radios launch \
+            -e class dev.apksim.composeapp.RadiosTest#y_theLaunchOptionsSetTheRadios \
+            -- --cellular on --wifi-signal level:1
+          python3 scripts/ci-no-skips.py tests/junit-radios.xml 1
       # A folding device open and closed, as Jetpack WindowManager reports it (FoldTest).
       - name: Test run on a folding device
         if: matrix.leg == 'tests'

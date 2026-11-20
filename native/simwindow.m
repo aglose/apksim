@@ -116,7 +116,7 @@ enum {
   TAG_BIOMETRICS_NOMATCH, TAG_LAYOUT_BOUNDS, TAG_A11Y_AUDIT, TAG_SOFT_KEYBOARD, TAG_DEVICE_PHONE, TAG_DEVICE_FOLDABLE,
   TAG_DEVICE_TABLET, TAG_DEVICE_DESKTOP, TAG_DEVICE_TV, TAG_NETWORK_ONLINE, TAG_NETWORK_OFFLINE, TAG_NETWORK_3G,
   TAG_NETWORK_LOSSY, TAG_STATUS_BAR, TAG_NAV_BAR, TAG_SAVE_REPLAY, TAG_CAMERA_OFF, TAG_CAMERA_PATTERN, TAG_CAMERA_IMAGE,
-  TAG_SCREENSHOT_SKIN, TAG_DEVICE_PIXEL_FOLD, TAG_FOLD,
+  TAG_SCREENSHOT_SKIN, TAG_DEVICE_PIXEL_FOLD, TAG_FOLD, TAG_WIFI, TAG_CELLULAR,
   // Device > Skin: None, then one item per stored skin (SimWindow.TAG_SKIN_FIRST).
   TAG_SKIN_FIRST = 200,
 };
@@ -325,6 +325,10 @@ static void buildMenus(NSMenu *bar) {
   addItem(net, @"Offline", TAG_NETWORK_OFFLINE, nil, 0);
   addItem(net, @"3G", TAG_NETWORK_3G, nil, 0);
   addItem(net, @"Lossy", TAG_NETWORK_LOSSY, nil, 0);
+  // The radios (Radios.java): checked while on; Java sets the check marks (DeviceControls.showRadios).
+  [net addItem:[NSMenuItem separatorItem]];
+  addItem(net, @"Wi-Fi", TAG_WIFI, nil, 0);
+  addItem(net, @"Mobile Data", TAG_CELLULAR, nil, 0);
   netItem.submenu = net;
   [features addItem:netItem];
   // The fake camera's source (--camera fake; Cameras.java). Image File... opens the file panel from the Java side.
