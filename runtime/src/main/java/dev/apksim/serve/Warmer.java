@@ -20,8 +20,8 @@ import java.util.regex.Pattern;
 
 /**
  * Warms apksim's per-APK cache (translated classes, extracted libraries) in the background, so a session opened on an
- * APK just uploaded does not spend minutes on it (Linux has no warm standby, and a large app's first launch there
- * took 4-5 minutes). One APK at a time, at low priority (`nice`), by an ordinary headless launch that exits at its
+ * APK just uploaded does not spend minutes on it (a large app's first launch on Linux took 4-5 minutes, and a standby
+ * boots only the framework, not the app). One APK at a time, at low priority (`nice`), by an ordinary headless launch that exits at its
  * first frame, which leaves the caches exactly as a session needs them. A session that opens an APK while it is
  * warming waits for it, with its progress; one that opens an APK still queued takes it off the queue and warms it
  * itself. A failed warm-up only means no head start.
@@ -166,6 +166,9 @@ final class Warmer {
     ProcessBuilder pb = new ProcessBuilder(cmd).redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null")))
         .redirectErrorStream(true).directory(serve.logs.toFile());
     serve.instanceEnvironment(pb);
+    // On Linux a warm-up launches cold (issue 561): it exits at its first frame, and taking the standby would leave the
+    // session it warms for a cold start while the next one boots, for ~2 s saved on a warm-up of minutes.
+    if (!Serve.isMac()) pb.environment().put("APKSIM_STANDBY", "0");
     Process p;
     synchronized (this) {
       if (closed) throw new IOException("the server is stopping");

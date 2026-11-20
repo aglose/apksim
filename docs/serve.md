@@ -14,7 +14,7 @@ This page is the spec, then how it is built, then what was measured.
 ```
 apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--rejoin-grace SECONDS] [--apps DIR|FILE]...
              [--max-upload MB] [--max-push MB] [--allow-rec] [--allow-logcat] [--no-shell] [--issue-url TEMPLATE] [--inspect-network [optional]] [--inspect-max-rules N] [--inspect-forward-allow URL_PREFIX]... [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--in-flight N] [--no-network]
-             [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--trust-proxy]
+             [--allow-origin ORIGIN]... [--warm auto|on|off] [--warm-standby 0|1] [--core-dumps] [--move-shared-data] [--trust-proxy]
              [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]... [--skins DIR]...
              [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N] [--allow-share] [--max-viewers N]
 ```
@@ -98,8 +98,15 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   `jpeg` always streams JPEG.
 - `--no-network`: instances run with `--no-network` (Mac only, as for a launch).
 - `--warm auto|on|off` (default `auto`): warm each APK's cache in the background (below). `auto` is on for Linux,
-  where there is no warm standby, and off on the Mac, where a launch is already fast and a warm-up would take the
-  standby a session wants.
+  where a first launch translates the app's classes, and off on the Mac, where a launch is already fast and a warm-up
+  would take the standby a session wants. On Linux a warm-up never takes the standby: it launches cold.
+- `--warm-standby 0|1` (default 1 on the Mac, 0 on Linux; issue 561): keep one warm-launch standby, a JVM with the
+  framework booted and no APK, for the next session start (see "Sessions"). serve starts it at its own start, and
+  each session's instance starts the next a second after its first frame, so it is refilled after every session
+  start. Count it in the pod's memory: idle, ~175 MB of anonymous memory in the arm64 image (~190 MB of the
+  container's), beside each session's. It quits when the container's memory runs short (under a tenth of its cgroup
+  limit and under 256 MB left), and the next session start is cold. In the image serve then runs under tini when it
+  is PID 1 (the entrypoint), which reaps the instances standbys become: they are not serve's children.
 - `--core-dumps`: let a crashed instance write a core file. Off by default (instances run with
   `-XX:-CreateCoredumpOnCrash`, set through `APKSIM_NO_CORE=1`, which the launcher reads): a large app's core is
   gigabytes and a few crashes fill a volume. The JVM's crash report is kept in any case, as below.
@@ -118,7 +125,9 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   in as them; `--data-slots serve`: app data in `serve-0`, `serve-1`..., never the `default`/`instance-N` slots an
   ordinary launch keeps, which `--fresh` would otherwise empty). On the Mac it is taken
   by the warm-launch standby when one is ready (serve starts one at its own start, and each instance starts the next
-  after its first frame); on Linux there are no standbys, so each session is a cold launch.
+  after its first frame); on Linux the same with `--warm-standby 1`, else each session is a cold launch. Measured in
+  the arm64 image (4 CPUs, the test app, its cache warm), session start to the tab's first frame: 0.32-0.35 s from the
+  standby, 1.10-1.13 s cold.
 - Each instance takes its own app data slot (`serve-N`), emptied first (`--fresh`), and serve deletes the slot's
   contents, with its `serve-N.device` (the slot's /sdcard and Settings values), when the session ends (the instance prints the slot as soon as it takes it, so this holds even for an app
   that never finishes starting), so one session never sees another's data through the app.
@@ -346,7 +355,7 @@ HTTP).
 ### Warming an APK's cache
 
 The first launch of a large APK translates its classes and extracts its libraries (a ~220 MB APK with ~13k classes took
-4-5 minutes on 4 CPUs in the Linux image; later launches ~10 s), and Linux has no standby to hide that. So serve warms
+4-5 minutes on 4 CPUs in the Linux image; later launches ~10 s), and a standby boots only the framework, not the app's classes. So serve warms
 the cache itself:
 
 - Each APK stored by an upload or a URL add (not one a session is already waiting on as it downloads: that session
@@ -367,11 +376,11 @@ the cache itself:
   libraries, keyed by the APK's content). Uploads under `STATE/serve/uploads` are lost on a restart without a volume
   there too, and their ids stop working; mount `/opt/apksim/work/serve` as well if uploaded builds must outlive the
   container.
-- On the Mac the standby serve starts, and the ones its instances start, carry the no-core setting in their name (`k`:
+- The standby serve starts, and the ones its instances start, carry the no-core setting in their name (`k`:
   a standby's JVM fixes its flags at its start), so a session is only handed to a standby started with it, never to an
   ordinary launch's (which may allow cores); with none ready it launches cold and starts one. macOS writes no core by
   default anyway.
-- Not done: a warm standby for the most recently used APK on Linux.
+- Not done: a standby with the most recently used APK already indexed (`--warm-standby` boots a generic one).
 
 ### Behind a reverse proxy
 
