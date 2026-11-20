@@ -40,7 +40,12 @@ RUN mkdir -p /opt/apksim/work/runtime/icu && \
       -o /opt/apksim/work/runtime/libheaptrim.so native/heaptrim.c -ldl && \
     # apksim serve's H.264 stream: OpenH264, opened at run time (libopenh264-7 below; without it the stream stays JPEG).
     gcc -O2 -shared -fPIC -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
-      -o /opt/apksim/work/runtime/libh264enc.so native/linux/h264enc_linux.c -ldl
+      -o /opt/apksim/work/runtime/libh264enc.so native/linux/h264enc_linux.c -ldl && \
+    # Warm launches (Standby.java; opt-in on Linux, APKSIM_STANDBY=1): the standby's socket
+    # hand-off and the launcher's client, the same sources as the Mac's.
+    gcc -O2 -Wall -shared -fPIC -D_GNU_SOURCE -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
+      -o /opt/apksim/work/runtime/libstandby.so native/standby.c && \
+    gcc -O2 -Wall -D_GNU_SOURCE -o /opt/apksim/work/runtime/apksim-client native/apksim-client.c
 # MediaCodec's video decoders: libvtdecoder.so (dev.apksim.video.VideoToolbox's natives on libavcodec). FFmpeg's archives
 # are linked in with their symbols private (an APK may bring its own FFmpeg), so only the JNI functions are exported.
 # The decoder is checked here on a clip per codec (B-frames and reordering, pts, size, colours, a reset), which is not

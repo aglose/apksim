@@ -157,14 +157,15 @@ esac
 if [[ "${1:-}" == --spawn-standby ]]; then
   FLAGS="${2:-}"
   SOCK="$("$CLIENT" sock "$KEY" "$FLAGS")"
-  [[ -S "$SOCK" ]] && exit 0
-  # Alive, or there and out of reach: a beamed instance (this runs in its sandbox) may signal only itself, so kill -0
-  # on its booting standby answers "not permitted", which is not a dead one.
+  # Alive (booting, or ready on its socket), or there and out of reach: a beamed instance (this runs in its sandbox)
+  # may signal only itself, so kill -0 on its booting standby answers "not permitted", which is not a dead one.
   if [[ -f "$SOCK.pid" ]]; then
     ALIVE="$(kill -0 "$(cat "$SOCK.pid" 2>/dev/null)" 2>&1)" && exit 0
     [[ "$ALIVE" == *"not permitted"* ]] && exit 0
   fi
-  rm -f "$SOCK.pid"
+  # Dead (killed, OOM-killed, or a container restarted with its /tmp): its socket, if left, would keep every later
+  # spawn from starting one and every launch cold.
+  rm -f "$SOCK" "$SOCK.pid"
   ARGS=(--standby "$SOCK")
   [[ "$FLAGS" == *n* ]] && ARGS+=(--no-network)
   [[ "$FLAGS" == *s* ]] && ARGS+=(--no-sandbox)
@@ -481,9 +482,13 @@ if [[ -n "${APKSIM_BEAM_SANDBOX:-}" ]]; then
 fi
 # A standby takes only properties read after it takes the launch: the options above and a few switches. JVM options,
 # a debugger, test runs, other -D switches (read while the standby boots) and training (APKSIM_NOCACHE) launch cold.
+# On the Mac by default (APKSIM_STANDBY=0 turns them off). On Linux only when asked, APKSIM_STANDBY=1: a container running one app or one suite has no next launch to keep a
+# ~200-300 MB JVM booted for. (cold: the client handed this launch back; it still starts the next standby.)
+STANDBY_ON=""
+if [[ "$OS" == Darwin ]]; then [[ "${APKSIM_STANDBY:-1}" != 0 ]] && STANDBY_ON=1
+elif [[ "$OS" == Linux && ( "${APKSIM_STANDBY:-}" == 1 || "${APKSIM_STANDBY:-}" == cold ) ]]; then STANDBY_ON=1; fi
 WARM_OK=""
-if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSIM_SANDBOX_TEST:-}" \
-      && "${APKSIM_STANDBY:-1}" != 0 && -z "$STANDBY_SOCK" ]]; then
+if [[ -n "$STANDBY_ON" && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSIM_SANDBOX_TEST:-}" && -z "$STANDBY_SOCK" ]]; then
   WARM_OK=1
   for e in "${EXTRA[@]+"${EXTRA[@]}"}"; do
     case "$e" in

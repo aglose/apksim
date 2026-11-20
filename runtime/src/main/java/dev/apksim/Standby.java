@@ -66,8 +66,9 @@ final class Standby {
       byte[] msg = nativeAccept(listen, 2000);
       boolean stale = jarStamp() != jar || !ownsPidFile(pidFile);
       if (msg == null) {
-        // A standby is a cache (~350 MB): it gives way when the Mac runs short of memory, and the next launch is cold.
-        if (Footprint.pressure() > 1) {
+        // A standby is a cache (~200-300 MB): it gives way when the Mac, or the container on Linux, runs short of
+        // memory, and the next launch is cold.
+        if (Footprint.memoryShort()) {
           System.err.println("[apksim] standby: the system is short of memory, quitting");
           quit(pidFile, sock);
         }
@@ -238,6 +239,9 @@ final class Standby {
     String flags = System.getProperty("apksim.spawnStandby");
     if (spawned || flags == null) return;
     spawned = true;
+    // Not into memory already short: it would quit once booted, and its boot (-Xms512m) could push a container over its
+    // limit and get the running instance killed.
+    if (Footprint.memoryShort()) return;
     try {
       List<String> cmd = new ArrayList<>(List.of(System.getProperty("apksim.root") + "/apksim", "--spawn-standby"));
       if (!flags.isEmpty()) cmd.add(flags);

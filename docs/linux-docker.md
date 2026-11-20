@@ -121,6 +121,7 @@ macOS-only).
 | GLES (test runs, offscreen) | ANGLE on Metal | Mesa llvmpipe (software), EGL's surfaceless platform (`EGL_PLATFORM=surfaceless`): pbuffers; a window surface is a pbuffer of its size, as on the Mac |
 | App native code | `lib/arm64-v8a` | `lib/x86_64` on amd64, `lib/arm64-v8a` on arm64 (most APKs ship both); 4 KB-aligned libraries load too |
 | Sandbox | `sandbox-exec` | The container |
+| Warm launches (standby) | On by default | Opt-in: `APKSIM_STANDBY=1` (see "Warm launches" below) |
 | JDK | 24 (`scripts/jdk.sh`: a JDK 24 found on the Mac, else Temurin 24 in `work/jdk-24`) | Temurin 24. JDK 25's AOT record mode verifies translated app classes and rejects them (missing stack maps), so training fails there |
 
 Native libraries go through `native/elfloader.c` (shared with macOS, `#ifdef`s for x86_64 relocations and
@@ -132,6 +133,29 @@ Mac points the read at `TPIDRRO_EL0`), and TLSDESC accesses resolve against that
 `pthread_attr_t` are larger than bionic's on arm64 (48 and 64 bytes against 40 and 56), so the shim keeps a glibc
 object beside each, as the Mac shim does. Both Linux shims map `setjmp`/`sigsetjmp` to glibc's `_setjmp`: glibc's
 `setjmp` also saves the signal mask, past the end of bionic's smaller `jmp_buf`.
+
+## Warm launches
+
+A standby (AGENTS.md "Warm launches") is a JVM that has booted the framework and waits for the next launch, which
+then skips the JVM's and the framework's start. On the Mac every launch uses one; in the image only when
+`APKSIM_STANDBY=1` is set, since a container
+that runs one app or one suite has no next launch to keep it for. With it, a launch's instance starts the next standby
+a second after its first frame (or on exit), and the next launch hands over to it.
+
+It pays off only in a container that outlives one launch, e.g. one kept running and launched into:
+
+```bash
+docker run -d --init --name sim -e APKSIM_STANDBY=1 -v "$PWD:/work" --entrypoint sleep apksim:latest infinity
+docker exec sim apksim --headless --exit-after-first-frame app.apk   # cold; starts a standby on exit
+docker exec sim apksim --headless app.apk                            # from the standby
+```
+
+Measured (arm64 image, 4 CPUs, the test app, its class cache warm): first frame 0.94-1.7 s cold, 0.22-0.23 s from a
+standby. An idle standby holds ~175 MB of anonymous memory (~290 MB resident with the shared AOT cache and libraries);
+it quits when the container's memory runs short (under a tenth of its cgroup limit and under 256 MB left, the
+inactive file cache counted free; a heuristic, which may count a large active file cache as used), and the next launch is cold. The instance a standby becomes is not the launching
+process's child, so the container's PID 1 must reap it when it exits: run long-lived containers with an init
+(`docker run --init`).
 
 ## Video
 
