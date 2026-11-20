@@ -254,6 +254,8 @@ In a release, the scripts live in the install folder's `scripts/` (Homebrew:
 Density is 2 (xhdpi) unless given (the Pixel fold has its own). You can also switch devices while the app runs, from the Device menu or with the
 `device` command.
 
+### Launch options
+
 `apksim [OPTIONS] app.apk`
 
 Options are grouped by what they set. A long explanation sits under its table.
@@ -365,7 +367,7 @@ never come.
 rate. It is the biggest saving for many headless instances: the test app's Shader tab costs about 0.7 of a core at
 120 fps and 0.2 at 30.
 
-#### Native libraries
+#### Native library options
 
 | Option | Effect |
 |---|---|
@@ -382,7 +384,7 @@ rate. It is the biggest saving for many headless instances: the test app's Shade
 | `--network-profile NAME` | Start with `offline`, `3g`, `lossy`, `latency:MS` or `bandwidth:KBPS` |
 | `--network-host H=ADDR[:PORT]` | Send connections for host H to a fixture server instead (`--network-trust CERT` for its certificate) |
 
-#### Automation
+#### Automation options
 
 | Option | Effect |
 |---|---|
@@ -425,14 +427,14 @@ subclass maker. `keep` leaves the APK's. `subclass` and `inline` force `mock-mak
 `mock-maker-inline`; `inline` needs Byte Buddy's agent and mocks JDK types only, not the APK's translated classes.
 Any other value is used as given.
 
-#### Screenshot tests
+#### Screenshot test options
 
 | Option | Effect |
 |---|---|
 | `--clock ISO\|epoch-ms\|real` | The wall clock the app sees starts there and runs on (screenshot tests) |
 | `--snapshot` | Deterministic drawing for [screenshot tests](#screenshot-tests): CPU only, carets that don't blink |
 
-#### Debugging
+#### Debugging options
 
 | Option | Effect |
 |---|---|
@@ -689,7 +691,7 @@ comment on the pull request with its preview and compare links. Added apps can e
 
 ### Reports, the network inspector and forwarding
 
-All three are off by default.
+The report button and the inspector are off by default, and forwarding reaches only targets that were allowed.
 
 - **Report button (`--allow-rec`):** packs a recording, the device's settings and a note into one zip. With
   `--issue-url` it opens an issue in the reviewer's own browser.

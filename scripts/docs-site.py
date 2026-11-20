@@ -201,8 +201,17 @@ class Site:
                         self.pages[name] = f.read().split("\n")
                     self.origin = getattr(self, "origin", {})
                     self.origin[name] = folder
+        self.repeated = {}   # name -> anchors of a heading whose text an earlier heading of the page has
         for name, lines in self.pages.items():
-            self.anchors[name] = {h[3] for h in headings(lines)}
+            heads = headings(lines)
+            self.anchors[name] = {h[3] for h in heads}
+            self.repeated[name] = {h[3] for h in heads if h[3] != slug(h[2])}
+        # github.com numbers a repeated heading's anchor (#automation-1) and the site's Markdown numbers it another
+        # way, so a link to either lands somewhere else: the README's headings must differ
+        for _, _, title, anchor in headings(readme):
+            if anchor != slug(title):
+                self.problems.append("README.md: two headings named '%s': links to #%s go to the first"
+                                     % (title, slug(title)))
 
     def target(self, page, url):
         """Where a link written in `page`'s source goes on the site."""
@@ -277,6 +286,9 @@ class Site:
                     if to.endswith(".md"):
                         if to not in self.pages:
                             self.problems.append("%s: link to a page that does not exist: %s" % (page, url))
+                        elif anchor and anchor in self.repeated[to]:
+                            self.problems.append("%s: %s#%s is a repeated heading's numbered anchor, which the "
+                                                 "site numbers differently" % (page, to, anchor))
                         elif anchor and anchor not in self.anchors[to]:
                             self.problems.append("%s: %s has no heading #%s" % (page, to, anchor))
 

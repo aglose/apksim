@@ -1,6 +1,6 @@
 # The documentation site: https://aglose.github.io/apksim/ (GitHub Pages, source "GitHub Actions").
 # scripts/docs-site.py assembles the pages from website/pages, the README's sections and docs/*.md, and Zensical
-# builds them. A pull request that touches a source only builds, failing on a link between pages with no target.
+# builds them. Only main deploys. A pull request that touches a source only builds, failing on a link between pages with no target.
 name: docs
 
 on:
@@ -26,7 +26,7 @@ permissions:
 
 concurrency:
   group: docs-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -40,13 +40,13 @@ jobs:
           cache-dependency-path: website/requirements.txt
       - run: pip install -r website/requirements.txt
       - run: scripts/docs-site.py --strict --out _site
-      - if: github.event_name != 'pull_request'
+      - if: github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v3
         with:
           path: _site
 
   deploy:
-    if: github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     permissions:

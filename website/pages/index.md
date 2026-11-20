@@ -36,8 +36,8 @@ apksim app-debug.apk
 
 | | apksim | Stock Android emulator |
 |---|---|---|
-| App on screen | 0.2 s on a warm launch, 1.2 s cold | 8-9 s from a snapshot, 18 s from boot |
-| Memory, small app idle | about 200-250 MB | 3-4 GB |
+| App on screen | 0.2-0.5 s on a warm launch, 1.1-1.6 s cold | 8-9 s from a snapshot, 18 s from boot |
+| Memory, idle | about 175-250 MB | 3-4 GB |
 | A large app's 4,107 device tests | 4.7 min on a Mac, 8.3 min in the Linux image | about 19 min on two CI emulators |
 | What runs | The AOSP Android 16 framework and the app's own code, in one process | A whole device: kernel, system server, other apps |
 

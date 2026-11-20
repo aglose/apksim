@@ -29,7 +29,9 @@ Silicon Mac and an APK: a debug build of your own app is the easiest (`./gradlew
     ./apksim app.apk
     ```
 
-    See [Building and contributing](building-and-contributing.md).
+    This needs the Xcode command-line tools (`xcode-select --install`). `setup.sh` runs once: it finds or fetches
+    JDK 24, builds the runtime and trains the startup cache. See
+    [Building and contributing](building-and-contributing.md).
 
 !!! tip "The first launch builds a startup cache"
 
