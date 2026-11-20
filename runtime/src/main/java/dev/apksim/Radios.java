@@ -174,7 +174,7 @@ final class Radios {
   static void setSignal(int dbm) {
     if (rssi == dbm) return;
     rssi = dbm;
-    NetConnectivity.publish();  // the Wi-Fi network's capabilities: its signal strength and WifiInfo
+    NetConnectivity.publish(false);  // the Wi-Fi network's capabilities (its signal strength and WifiInfo), no broadcasts
     Application app = RuntimeEnvironment.getApplication();
     if (app != null && wifi && !dev.apksim.net.Net.offline()) {
       // As the Wi-Fi stack sends it while connected: registered receivers only, not sticky.
@@ -191,5 +191,6 @@ final class Radios {
     if (!dev.apksim.net.Net.setRadiosDown(!wifi && !cellular)) NetConnectivity.publish();
     String after = activeType();
     if (before != null && after != null && !before.equals(after)) dev.apksim.net.Net.networkChanged();
+    if (System.getProperty("apksim.instrument") == null) DeviceControls.showRadios();  // the app's own switch too
   }
 }

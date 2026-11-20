@@ -44,8 +44,13 @@ class RadiosTest {
   private val wm get() = context.getSystemService(WifiManager::class.java)
   private val main = Handler(Looper.getMainLooper())
 
+  /** `-e radios launch`: the run was launched with `--cellular on --wifi-signal level:1` (CI), checked by y_ alone. */
+  private val launched = InstrumentationRegistry.getArguments().getString("radios") == "launch"
+
   @Before
   fun onApksim() = assumeTrue("apksim's radio commands", Build.FINGERPRINT == "robolectric")
+
+  private fun defaultLaunch() = assumeTrue("launched with the default radios", !launched)
 
   private fun shell(command: String): String {
     val pfd = instrumentation.uiAutomation.executeShellCommand(command)
@@ -76,6 +81,7 @@ class RadiosTest {
   @Suppress("DEPRECATION")
   @Test
   fun a_wifiOffWithoutMobileDataLeavesNoNetwork() {
+    defaultLaunch()
     val cb = Recorder()
     cm.registerDefaultNetworkCallback(cb, main)
     try {
@@ -87,6 +93,11 @@ class RadiosTest {
       assertEquals(WifiManager.WIFI_STATE_DISABLED, wm.wifiState)
       assertEquals(-127, wm.connectionInfo.rssi)
       assertTrue(shell("apksim network").contains("wifi off; mobile data off"))
+      // No radio: the app is offline as with `network offline`, lookups and connects included.
+      val failed = runCatching { java.net.InetAddress.getByName("example.com") }.exceptionOrNull()
+      assertTrue("a lookup with no radio: $failed", failed is java.net.UnknownHostException)
+      val refused = runCatching { java.net.Socket().use { it.connect(java.net.InetSocketAddress("198.51.100.1", 443), 2_000) } }.exceptionOrNull()
+      assertTrue("a connect with no radio: $refused", refused is java.net.ConnectException)
 
       shell("apksim network wifi on")
       waitFor("onAvailable again") { cb.events == listOf("available", "lost", "available") }
@@ -100,6 +111,7 @@ class RadiosTest {
   @Suppress("DEPRECATION")
   @Test
   fun b_mobileDataTakesOverWhenWifiGoesOff() {
+    defaultLaunch()
     val cellular = Recorder()
     val default = Recorder()
     cm.registerNetworkCallback(
@@ -143,13 +155,26 @@ class RadiosTest {
   @Suppress("DEPRECATION")
   @Test
   fun c_theWifiSignalReachesWifiInfoCapabilitiesAndRssiChanged() {
+    defaultLaunch()
     assertEquals(-50, wm.connectionInfo.rssi)
     val heard = Collections.synchronizedList(mutableListOf<Int>())
     val receiver = object : BroadcastReceiver() {
       override fun onReceive(c: Context, i: Intent) { heard += i.getIntExtra(WifiManager.EXTRA_NEW_RSSI, 0) }
     }
     val cb = Recorder()
+    val connectivity = Collections.synchronizedList(mutableListOf<String>())
+    val connectivityReceiver = object : BroadcastReceiver() {
+      override fun onReceive(c: Context, i: Intent) { connectivity += i.action!! }
+    }
     context.registerReceiver(receiver, IntentFilter(WifiManager.RSSI_CHANGED_ACTION))
+    @Suppress("DEPRECATION")
+    context.registerReceiver(connectivityReceiver, IntentFilter().apply {
+      addAction(ConnectivityManager.CONNECTIVITY_ACTION)
+      addAction(WifiManager.NETWORK_STATE_CHANGED_ACTION)
+      addAction(WifiManager.WIFI_STATE_CHANGED_ACTION)
+    })
+    instrumentation.waitForIdleSync()
+    connectivity.clear()  // the sticky ones, delivered as it registered
     cm.registerDefaultNetworkCallback(cb, main)
     try {
       waitFor("the default network") { cb.caps != null }
@@ -160,6 +185,7 @@ class RadiosTest {
       assertEquals(2, wm.calculateSignalLevel(wm.connectionInfo.rssi))
       assertEquals(-70, cm.getNetworkCapabilities(cm.activeNetwork)!!.signalStrength)
       assertEquals("no network was lost", listOf("available"), cb.events.toList())
+      assertEquals("a signal change sends no connectivity broadcast", listOf<String>(), connectivity.toList())
 
       shell("apksim network wifi signal level 1")
       waitFor("level 1") { wm.connectionInfo.rssi == -82 }
@@ -168,12 +194,14 @@ class RadiosTest {
       assertTrue(shell("apksim network wifi signal 5").startsWith("error:"))
     } finally {
       context.unregisterReceiver(receiver)
+      context.unregisterReceiver(connectivityReceiver)
       cm.unregisterNetworkCallback(cb)
     }
   }
 
   @Test
   fun d_wifiStateChangedSaysDisablingThenDisabled() {
+    defaultLaunch()
     val states = Collections.synchronizedList(mutableListOf<String>())
     val receiver = object : BroadcastReceiver() {
       override fun onReceive(c: Context, i: Intent) {
@@ -199,6 +227,7 @@ class RadiosTest {
   @Suppress("DEPRECATION")
   @Test
   fun e_svcAndCmdSwitchTheRadiosAsOnADevice() {
+    defaultLaunch()
     assertEquals("", shell("svc wifi disable"))
     waitFor("Wi-Fi off") { !wm.isWifiEnabled && cm.activeNetwork == null }
     assertEquals("", shell("svc data enable"))
@@ -212,16 +241,33 @@ class RadiosTest {
   @Suppress("DEPRECATION")
   @Test
   fun f_theAppsOwnSetWifiEnabledSwitchesIt() {
+    defaultLaunch()
     assertTrue(wm.setWifiEnabled(false))
     waitFor("Wi-Fi off") { !wm.isWifiEnabled && cm.activeNetwork == null }
     assertTrue(wm.setWifiEnabled(true))
     waitFor("Wi-Fi on") { wm.isWifiEnabled && cm.activeNetwork != null }
   }
 
+  /** `--cellular on --wifi-signal level:1` at launch (CI: `-e radios launch`): what onCreate and each test start with. */
+  @Suppress("DEPRECATION")
+  @Test
+  fun y_theLaunchOptionsSetTheRadios() {
+    assumeTrue("-e radios launch", launched)
+    assertTrue(wm.isWifiEnabled)
+    assertEquals(-82, wm.connectionInfo.rssi)
+    assertEquals(-82, cm.getNetworkCapabilities(cm.activeNetwork)!!.signalStrength)
+    assertEquals(ConnectivityManager.TYPE_WIFI, cm.activeNetworkInfo!!.type)
+    assertEquals(1, cellularNetworks())
+    assertEquals(TelephonyManager.DATA_CONNECTED, context.getSystemService(TelephonyManager::class.java).dataState)
+    shell("apksim network wifi off")
+    waitFor("mobile data as the default") { cm.activeNetworkInfo?.type == ConnectivityManager.TYPE_MOBILE }
+  }
+
   /** Runs last: what the tests above switched is back to the launch's radios at this test's setup. */
   @Suppress("DEPRECATION")
   @Test
   fun z_eachTestStartsWithTheLaunchRadios() {
+    defaultLaunch()
     assertTrue(wm.isWifiEnabled)
     assertEquals(-50, wm.connectionInfo.rssi)
     assertNotNull(cm.activeNetwork)

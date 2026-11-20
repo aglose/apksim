@@ -138,15 +138,19 @@ final class SimWifi {
     }
 
     /**
-     * Switches Wi-Fi as `network wifi on|off` does, after this returns (the system server's switch is asynchronous).
-     * Robolectric's answer stands (false when it was told the app may not change Wi-Fi).
+     * Switches Wi-Fi as `network wifi on|off` does, at once on the main thread, as Robolectric's state changed at once
+     * (a test reading isWifiEnabled right after still sees it), else posted there. Robolectric's answer stands (false
+     * when it was told the app may not change Wi-Fi), at any targetSdk as Robolectric allowed: a device refuses apps
+     * targeting 29 and up.
      */
     @Implementation
     @Override
     protected boolean setWifiEnabled(boolean enabled) {
       boolean ok = super.setWifiEnabled(enabled);
-      if (ok) new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> Radios.setWifi(enabled));
-      return ok;
+      if (!ok) return false;
+      if (android.os.Looper.getMainLooper().isCurrentThread()) Radios.setWifi(enabled);
+      else new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> Radios.setWifi(enabled));
+      return true;
     }
 
     @Implementation

@@ -1020,7 +1020,7 @@ Menus as in the iOS Simulator: File (Save Screen Cmd+S, Save Screen with Skin Cm
 Tablet/Desktop/TV Cmd+Shift+1-5, Skin > None and the stored skins (menu tags from `SimWindow.TAG_SKIN_FIRST`), Back, Home Cmd+Shift+H, Lock
 Cmd+L, Volume Cmd+Opt+=/-, Rotate Cmd+Left/Right), Features (Dark Appearance Cmd+Shift+A, Larger/Smaller/Default
 Text Cmd+Shift+=/-/0, Language and Region..., Location > None/Custom/City Run/Bicycle/Freeway, Fingerprint >
-Enrolled/Matching Cmd+Opt+M/Non-matching Cmd+Opt+N, Network > Online/Offline/3G/Lossy, Camera > Off/Test Pattern/Image
+Enrolled/Matching Cmd+Opt+M/Non-matching Cmd+Opt+N, Network > Online/Offline/3G/Lossy/Wi-Fi/Mobile Data, Camera > Off/Test Pattern/Image
 File... (`--camera fake`), Open URL... Cmd+Shift+O), Window (Actual Size Cmd+1, Fit Screen
 Cmd+3, Zoom In/Out Cmd+=/-, Minimize Cmd+M; the app menu has Hide Cmd+H), Debug (Slow Animations Cmd+T, Simulate Memory Warning Cmd+Shift+M, Show Layout Bounds,
 Accessibility Audit), and Device > Status Bar / Navigation Bar (see `bars`). Permission requests
@@ -1549,7 +1549,7 @@ not important for accessibility, lifting their children; it waits up to 1 s for 
 PKG/.Act` (an already running activity is brought to the front, not stacked), `am broadcast|startservice`, `monkey -p
 PKG 1`, `pm list packages|features|instrumentation`, `pm path|grant|revoke`, `wm size|density`, `settings get|put
 global|system|secure` (`animator_duration_scale` = `animscale`, `font_scale` = `fontscale`, global `bluetooth_on` =
-`bluetooth`), `svc bluetooth enable|disable` and `cmd bluetooth_manager enable|disable|wait-for-state:STATE_X` (=
+`bluetooth`), `svc wifi|data enable|disable`, `cmd wifi set-wifi-enabled enabled|disabled` and `cmd phone data enable|disable` (= `network wifi|cellular`), `svc bluetooth enable|disable` and `cmd bluetooth_manager enable|disable|wait-for-state:STATE_X` (=
 `bluetooth`), `dumpsys bluetooth_manager` (enabled, state, address, name), `cmd uimode night yes|no`, `getprop`
 (`sys.boot_completed=1` once the app is up), `run-as PKG`, `ls/cat/rm/mkdir`, `dumpsys activity top`, and
 `adb shell apksim CMD...` for any control command. `adb logcat` reads `AdbLog`: ShadowLog.stream is replaced by a

@@ -36,6 +36,12 @@ final class NetConnectivity {
   private static boolean listening;
   /** The networks as installed (the host's, or Robolectric's before HostNetworks), once something hid some; else null. */
   private static List<Saved> host;
+  /** Mobile data has been on since the last setup: TelephonyManager is ours to keep in step. */
+  private static boolean cellularShown;
+  /** Wi-Fi capabilities with Radios' signal, by the installed ones: the same object while the signal stays, so a
+   *  publish for another reason tells no callback of a change. */
+  private static final java.util.Map<NetworkCapabilities, NetworkCapabilities> signalled = new java.util.IdentityHashMap<>();
+  private static int signalledRssi;
 
   /** Before the Application is created (each test's setup, Host's too): the launch profile and radios, from the start. */
   static void beforeApplication() {
@@ -47,6 +53,8 @@ final class NetConnectivity {
       });
     }
     host = null;  // the state Robolectric reset to after the last test
+    cellularShown = false;
+    signalled.clear();
     Radios.reset();  // may go offline: that publishes (Net's listener)
     if (dev.apksim.net.Net.offline() || Radios.custom()) publish();
   }
@@ -67,8 +75,16 @@ final class NetConnectivity {
   }
 
   /** ConnectivityManager's networks as the device now is: offline, which radios are on, Wi-Fi's signal. */
-  @SuppressWarnings("deprecation")
   static void publish() {
+    publish(true);
+  }
+
+  /**
+   * As {@link #publish()}; `announce` false for a signal change, which a device tells only through
+   * onCapabilitiesChanged and RSSI_CHANGED_ACTION, not the connectivity broadcasts or TelephonyManager.
+   */
+  @SuppressWarnings("deprecation")
+  static void publish(boolean announce) {
     ShadowConnectivityManager shadow = new ShadowConnectivityManager();  // its state is static: any instance has it
     if (host == null) host = snapshot();
     shadow.clearAllNetworks();
@@ -106,7 +122,7 @@ final class NetConnectivity {
     // says: a default callback of the default network, a listen of every network it matches.
     ShadowSimConnectivityManager.rematch();
     Application app = RuntimeEnvironment.application;
-    if (app == null) return;  // before the Application: there is no one to tell yet
+    if (app == null || !announce) return;  // before the Application: there is no one to tell yet
     telephony(app, Radios.cellular && !dev.apksim.net.Net.offline());
     SystemBroadcasts.network(app);  // CONNECTIVITY_ACTION and Wi-Fi's NETWORK_STATE_CHANGED, sticky as on a device
   }
@@ -136,11 +152,18 @@ final class NetConnectivity {
   private static NetworkCapabilities withSignal(NetworkCapabilities caps) {
     if (!wifiTransport(caps) || !(caps.getTransportInfo() instanceof WifiInfo old)) return caps;
     if (caps.getSignalStrength() == Radios.rssi && old.getRssi() == Radios.rssi) return caps;
+    if (signalledRssi != Radios.rssi) {
+      signalled.clear();
+      signalledRssi = Radios.rssi;
+    }
+    NetworkCapabilities cached = signalled.get(caps);
+    if (cached != null) return cached;
     NetworkCapabilities c = new NetworkCapabilities(caps);
     WifiInfo info = new WifiInfo(old);
     info.setRssi(Radios.rssi);
     c.setTransportInfo(info);
     c.setSignalStrength(Radios.rssi);
+    signalled.put(caps, c);
     return c;
   }
 
@@ -173,12 +196,15 @@ final class NetConnectivity {
 
   /** TelephonyManager's data connection, as a phone's while mobile data is (not) up. */
   private static void telephony(Application app, boolean connected) {
+    // Only once mobile data has been on in this test or launch: offline and back otherwise leaves Robolectric's own state.
+    if (Radios.cellular) cellularShown = true;
+    if (!cellularShown) return;
     TelephonyManager tm = app.getSystemService(TelephonyManager.class);
     if (tm == null) return;
     var t = org.robolectric.Shadows.shadowOf(tm);
     t.setDataEnabled(Radios.cellular);
     t.setDataState(connected ? TelephonyManager.DATA_CONNECTED : TelephonyManager.DATA_DISCONNECTED);
-    if (connected) t.setDataNetworkType(TelephonyManager.NETWORK_TYPE_LTE);
+    t.setDataNetworkType(connected ? TelephonyManager.NETWORK_TYPE_LTE : TelephonyManager.NETWORK_TYPE_UNKNOWN);
   }
 
   /**
