@@ -29,6 +29,25 @@ else STATE="$ROOT/work"; fi
 # Standbys are per install and state folder.
 KEY="$ROOT"; [[ "$STATE" != "$ROOT/work" ]] && KEY="$ROOT:$STATE"
 CLIENT="$ROOT/work/runtime/apksim-client"
+# An installed release builds the startup cache in the background (once, and after an upgrade: a new folder), from the
+# first launch that finds app.aot.root naming another folder, or when the beam agent starts. Detached, so the launch goes
+# ahead without it. A source checkout builds it with scripts/train.sh.
+start_training() {
+  local aot_root="" train_pid=""
+  [[ -f "$ROOT/work/release" && "$OS" == Darwin && -z "${APKSIM_NOCACHE:-}" ]] || return 0
+  if [[ -f "$STATE/app.aot" ]]; then { read -r aot_root < "$STATE/app.aot.root"; } 2>/dev/null || true; fi
+  [[ "$aot_root" != "$ROOT" ]] || return 0
+  { read -r train_pid < "$STATE/train.pid"; } 2>/dev/null || true
+  if [[ -z "$train_pid" ]] || ! kill -0 "$train_pid" 2>/dev/null; then
+    mkdir -p "$STATE"
+    # After a failed training (offline, or a stage that failed) train.sh tries again at most once an hour (train.failed),
+    # and says so in train.log rather than here at every launch.
+    [[ -f "$STATE/train.failed" ]] || \
+      echo "[apksim] building the startup cache in the background (once, 1-2 minutes, downloading the 22 MB test app" \
+        "it trains on); launches are faster after that" >&2
+    "$CLIENT" detach "$STATE/train.log" "$ROOT/scripts/train.sh" --headless --background
+  fi
+}
 case "${1:-}" in
   --version) if [[ -f "$ROOT/work/release" ]]; then echo "apksim $(< "$ROOT/work/release")"; else echo "apksim (source checkout $ROOT)"; fi; exit 0 ;;
   -h|--help)
@@ -126,7 +145,10 @@ EOF
   rec) if [[ "${2:-}" == view ]]; then SERVE=1; TRACEVIEW=1; shift 2; fi ;;
   beam) SERVE=1; shift; set -- --beam "$@"
     APKSIM_LAUNCHER_PATH="${BASH_SOURCE[0]}"; [[ "$APKSIM_LAUNCHER_PATH" == /* ]] || APKSIM_LAUNCHER_PATH="$PWD/$APKSIM_LAUNCHER_PATH"
-    export APKSIM_LAUNCHER_PATH ;;
+    export APKSIM_LAUNCHER_PATH
+    # The agent itself (not `beam config`, `beam saved`...) is not sandboxed: it builds the startup cache after an
+    # upgrade, which a beamed launch cannot (issue 559).
+    [[ ( -z "${2:-}" || "${2:-}" == --* ) && "${2:-}" != --help && "${2:-}" != -h ]] && start_training ;;
 esac
 # Warm launches: a standby is a JVM that has already booted the framework and waits for an APK (Standby.java). It
 # is per apksim folder and sandbox flags. Instances start one in the background after their first
@@ -284,6 +306,13 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --biometrics) [[ "$2" == enrolled ]] && EXTRA+=("-Dapksim.biometricsEnrolled=true"); shift 2 ;;
     # The Bluetooth adapter at launch: on (default, as an emulator boots) or off (Bluetooth.java).
     --bluetooth) EXTRA+=("-Dapksim.bluetooth=$2"); shift 2 ;;
+    # The radios at launch (Radios.java): Wi-Fi on (default) or off, mobile data off (default) or on, Wi-Fi's signal.
+    --wifi|--cellular)
+      [[ "$2" == on || "$2" == off ]] || { echo "$1 takes on or off" >&2; exit 2; }
+      EXTRA+=("-Dapksim.${1#--}=$2"); shift 2 ;;
+    --wifi-signal)
+      [[ "$2" =~ ^-[1-9][0-9]{0,2}$ && "$2" -gt -127 || "$2" =~ ^level:[0-4]$ ]] || { echo "--wifi-signal takes dBm (-126..-1, e.g. -70) or level:N (0-4)" >&2; exit 2; }
+      EXTRA+=("-Dapksim.wifiSignal=$2"); shift 2 ;;
     # A file under /sys the app reads, with contents (repeatable): PATH=VALUE (SysFiles.java; `sysfs PATH VALUE` changes it).
     --sysfs)
       [[ "$2" =~ ^/sys/[^=]+=.* ]] || { echo "--sysfs takes /sys/PATH=VALUE" >&2; exit 2; }
@@ -466,7 +495,7 @@ if [[ -n "$STANDBY_ON" && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKS
     case "$e" in
       -Dapksim.activity=*|-Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.controlTokenFile=*|-Dapksim.adb=*) ;;
       -Dapksim.device=*|-Dapksim.fold=*|-Dapksim.deviceKind=*|-Dapksim.skinShape=*|-Dapksim.skin=*|-Dapksim.skinsDir=*|-Dapksim.skinsShared=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
-      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.sensors=*|-Dapksim.sysfs.*|-Dapksim.ble.*|-Dapksim.health.*|-Dapksim.camera=*|-Dapksim.cameraSizes=*|-Dapksim.setting.*) ;;
+      -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.wifi=*|-Dapksim.cellular=*|-Dapksim.wifiSignal=*|-Dapksim.sensors=*|-Dapksim.sysfs.*|-Dapksim.ble.*|-Dapksim.health.*|-Dapksim.camera=*|-Dapksim.cameraSizes=*|-Dapksim.setting.*) ;;
       # Seeds and broadcasts travel twice in the hand-off's argv (macOS limits it): large ones launch cold.
       -Dapksim.sdcard.*|-Dapksim.broadcast.*) SDCARD_BYTES=$((${SDCARD_BYTES:-0} + ${#e})); ((SDCARD_BYTES <= 49152)) || WARM_OK="" ;;
       -Dapksim.maxFps=*|-Dapksim.video=*|-Dapksim.audio=*|-Dapksim.animScale=*|-Dapksim.tabRelay=*|-Dapksim.forwardLink=*) ;;
@@ -562,19 +591,11 @@ done
 # without it. A source checkout builds it with scripts/train.sh.
 AOT_ROOT=""
 if [[ -z "${APKSIM_NOCACHE:-}" && -f "$STATE/app.aot" ]]; then { read -r AOT_ROOT < "$STATE/app.aot.root"; } 2>/dev/null || true; fi
-# (Not again when the client hands a launch back for a cold start: APKSIM_STANDBY=cold.)
-if [[ "$AOT_ROOT" != "$ROOT" && -f "$ROOT/work/release" && "$OS" == Darwin && -z "${APKSIM_NOCACHE:-}" && -z "$STANDBY_SOCK" \
-      && "${APKSIM_STANDBY:-}" != cold ]]; then
-  TRAIN_PID=""; { read -r TRAIN_PID < "$STATE/train.pid"; } 2>/dev/null || true
-  if [[ -z "$TRAIN_PID" ]] || ! kill -0 "$TRAIN_PID" 2>/dev/null; then
-    mkdir -p "$STATE"
-    # After a failed download (offline) train.sh tries again at most once an hour (train.failed), and says so in
-    # train.log rather than here at every launch.
-    [[ -f "$STATE/train.failed" ]] || \
-      echo "[apksim] building the startup cache in the background (once, 1-2 minutes, downloading the 22 MB test app" \
-        "it trains on); launches are faster after that" >&2
-    "$CLIENT" detach "$STATE/train.log" "$ROOT/scripts/train.sh" --headless --background
-  fi
+# (Not again when the client hands a launch back for a cold start: APKSIM_STANDBY=cold. Not from a beamed launch either:
+# the detached training would inherit its sandbox, which refuses the writes the record stage makes (issue 559); the
+# beam agent starts it itself, unsandboxed, when it starts.)
+if [[ "$AOT_ROOT" != "$ROOT" && -z "$STANDBY_SOCK" && "${APKSIM_STANDBY:-}" != cold && -z "${APKSIM_BEAM_SANDBOX:-}" ]]; then
+  start_training
 fi
 if [[ -n "$WARM_OK" && "${APKSIM_STANDBY:-}" != cold ]]; then
   exec "$CLIENT" launch "$ROOT/apksim" "$KEY" "$FLAGS" -- "${EXTRA[@]+"${EXTRA[@]}"}" "$APK" -- "${ORIG[@]}"

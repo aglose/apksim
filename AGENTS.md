@@ -329,7 +329,23 @@ Read README.md for results and limits; this file covers how to work on the code.
     hierarchy answers a retargeted super call used (the translator's only inputs from other classes). `<package>.classes` lists what the app loaded, so worker threads
     pre-translate the classes of changed DEX files once the app asks for its first class. The runtime hash covers
     every class in `apksim.jar`, so any rebuild starts with a cold cache. `--jvm -Dapksim.classCache=false` turns
-    it off. It saves once translating pauses for 3 s, and again on the way out (`quit`, closing the window, Cmd+Q,
+    it off.
+    A DEX file with a new CRC is not all new (issue 558): a rebuilt debug app changes nearly every file's checksum while
+    ~99.7% of its classes are what they were, a string added anywhere moving every later index. Each saved class is also
+    in `<package>.index` (content hash -> the pack holding it, entries whose pack is gone dropped at each save), by
+    `dex/ClassHash`: a hash of the class's definition (header, system and runtime annotations, fields, methods, static
+    values, source file name, code walked instruction by instruction) with every index operand resolved to the name it
+    stands for. A class missing from its DEX file's pack is looked up there, and a hit is used and copied into the
+    new pack, so the next launch takes the ordinary path (`saved N translated classes (M found by content ...)`).
+    Anything the walk cannot read (invoke-custom, method handles, an unknown opcode) gives no hash: that class is keyed
+    by its DEX file alone. Known miss: const-string/jumbo against const-string (a string index crossing 65,535 between
+    builds) changes the instruction's size and so the offsets after it, so that class hashes differently. The hash is worked out outside the cache's lock, and
+    only once the index has an entry. The index is not age-swept (each save drops entries whose pack is gone); two
+    processes saving at once keep the last writer's (missed reuse, never a wrong class); a beamed build's cache does not
+    keep it yet, so beam sessions reuse by DEX file only. Off with
+    debug info or coverage, and `-Dapksim.classContent=false`. `scripts/class-hash-check.java OLD.apk NEW.apk` hashes and
+    translates every class of two builds: equal hashes must translate to equal bytes (exit 1 otherwise) and it counts
+    the classes that translate alike but hash apart. It saves once translating pauses for 3 s, and again on the way out (`quit`, closing the window, Cmd+Q,
     `--exit-after-first-frame`), so `scripts/train.sh` leaves the test app's cache warm.
   - `dex/`: the **DEX→JVM translator** (written from scratch; dex2jar miscompiled code and took 30 s). One Dalvik
     register is one JVM local; union-find type inference over values. A handler sees the registers before an
@@ -806,6 +822,13 @@ window only; a `.mp4` name gets MP4, else QuickTime; the last picture is held to
 `zoom actual|fit|in|out` (window size only), `permission [allow|deny|grant NAME|revoke NAME|reset]`,
 `notifications [open N|last|clear]`, `location LAT LNG|run|bike|drive|gpx FILE|none`,
 `network [online|offline|3g|lossy|latency MS|bandwidth KBPS|unmatched [clear]|save|reconnect]` (see "Network"),
+`network wifi [on|off|toggle|signal DBM|signal level N]` and `network cellular [on|off|toggle]` (`Radios`: Wi-Fi and
+mobile data as a phone's two switches, and Wi-Fi's signal; `--wifi on|off`, `--cellular on|off`, `--wifi-signal
+DBM|level:N` at launch; Wi-Fi off with mobile data on makes a metered TYPE_MOBILE/TRANSPORT_CELLULAR network the default,
+both off is offline as `network offline` is; the signal reaches WifiInfo, the network's capabilities and
+RSSI_CHANGED_ACTION; Features > Network > Wi-Fi / Mobile Data, `svc wifi|data`, `cmd wifi set-wifi-enabled`, `cmd phone
+data`; mobile data is off by default, as apksim never showed a cellular network; docs/network.md "Wi-Fi and mobile
+data", `RadiosTest`),
 `biometrics [enroll|unenroll|match|nomatch|cancel]`, `bluetooth [on|off|toggle]` (`Bluetooth`: the adapter, on at
 launch as an emulator boots, `--bluetooth off` otherwise; each switch, the app's own BluetoothAdapter.enable()/disable()
 included (`ShadowSimBluetoothAdapter`, allowed at any targetSdk as Robolectric allowed it), goes TURNING_ON then ON, or
@@ -1013,7 +1036,7 @@ Menus as in the iOS Simulator: File (Save Screen Cmd+S, Save Screen with Skin Cm
 Tablet/Desktop/TV Cmd+Shift+1-5, Skin > None and the stored skins (menu tags from `SimWindow.TAG_SKIN_FIRST`), Back, Home Cmd+Shift+H, Lock
 Cmd+L, Volume Cmd+Opt+=/-, Rotate Cmd+Left/Right), Features (Dark Appearance Cmd+Shift+A, Larger/Smaller/Default
 Text Cmd+Shift+=/-/0, Language and Region..., Location > None/Custom/City Run/Bicycle/Freeway, Fingerprint >
-Enrolled/Matching Cmd+Opt+M/Non-matching Cmd+Opt+N, Network > Online/Offline/3G/Lossy, Camera > Off/Test Pattern/Image
+Enrolled/Matching Cmd+Opt+M/Non-matching Cmd+Opt+N, Network > Online/Offline/3G/Lossy/Wi-Fi/Mobile Data, Camera > Off/Test Pattern/Image
 File... (`--camera fake`), Open URL... Cmd+Shift+O), Window (Actual Size Cmd+1, Fit Screen
 Cmd+3, Zoom In/Out Cmd+=/-, Minimize Cmd+M; the app menu has Hide Cmd+H), Debug (Slow Animations Cmd+T, Simulate Memory Warning Cmd+Shift+M, Show Layout Bounds,
 Accessibility Audit), and Device > Status Bar / Navigation Bar (see `bars`). Permission requests
@@ -1550,7 +1573,7 @@ not important for accessibility, lifting their children; it waits up to 1 s for 
 PKG/.Act` (an already running activity is brought to the front, not stacked), `am broadcast|startservice`, `monkey -p
 PKG 1`, `pm list packages|features|instrumentation`, `pm path|grant|revoke`, `wm size|density`, `settings get|put
 global|system|secure` (`animator_duration_scale` = `animscale`, `font_scale` = `fontscale`, global `bluetooth_on` =
-`bluetooth`), `svc bluetooth enable|disable` and `cmd bluetooth_manager enable|disable|wait-for-state:STATE_X` (=
+`bluetooth`), `svc wifi|data enable|disable`, `cmd wifi set-wifi-enabled enabled|disabled` and `cmd phone data enable|disable` (= `network wifi|cellular`), `svc bluetooth enable|disable` and `cmd bluetooth_manager enable|disable|wait-for-state:STATE_X` (=
 `bluetooth`), `dumpsys bluetooth_manager` (enabled, state, address, name), `cmd uimode night yes|no`, `getprop`
 (`sys.boot_completed=1` once the app is up), `run-as PKG`, `ls/cat/rm/mkdir`, `dumpsys activity top`, and
 `adb shell apksim CMD...` for any control command. `adb logcat` reads `AdbLog`: ShadowLog.stream is replaced by a
@@ -1633,6 +1656,7 @@ never a file name: the server writes `STATE/serve/logs/rec-ID/RID.apkrec`, kept 
 /api/sessions/ID/recordings/RID` streams it. `apksim beam` has the same routes under `/beam/sessions/ID/...` with the
 page's `Origin` and a per-session `key`, recording always allowed; those were not run when this landed.
 `scripts/tabfiles-check.py URL --token FILE` checks the serve routes.
+The app's `android.util.Log` in a session's log (issue 554): a tab's `logcat on|off` (or `/ws?logcat=1`) is passed on as the control command, on `apksim beam` always and on serve with `--allow-logcat` (`Session.logcatAllowed`; the `i` message's `logcat`). `setprop log.tag.TAG LEVEL` (adb shell, a tab's full shell) sets the level `Log.isLoggable` answers for that tag (`LogTags.ShadowSimLog`, liblog's order: `log.tag.TAG`, `persist.log.tag.TAG`, `log.tag`, `persist.log.tag`; a value not starting with a level letter is passed over; S silences); only `isLoggable` changes, every line is still written (Robolectric's `ShadowLog.setLoggable` would also drop lines, so it is not used); native liblog's `__android_log_is_loggable` does not read them.
 A session's log and why it ended (issue 418, docs/serve.md "When a session ends badly"): `GET /beam/sessions/ID/log?key=KEY`
 on the agent is serve's `/api/sessions/ID/log` for the page that started the session (its `Origin` and its `f KEY`; `Session.writeLogAccess`
 keeps both in `beam/logs/ID.access` for after the session), and before `x TEXT` a tab gets `e {"reason":"crash|exit|idle|busy|no-app|error|other",
@@ -2080,12 +2104,12 @@ names: six of the seven Noto Sans CJK weights and some Latin families are never 
 `work/jre` (`work/jdk.path`), `work/testapp.sha256`, and `work/release` (the version). The test app is not in it
 (`dist/apksim-testapp-VERSION.apk` beside it, a release file of its own): the first `train.sh` of an install downloads
 it into `STATE/testapp-VERSION.apk` (`APKSIM_DOWNLOAD_URL` for a mirror or `file://` folder) and checks it against
-that hash; offline, training fails with a line saying so and touches `STATE/train.failed`: a launch tries again at most once an hour (the launcher passes `--background` and stays quiet meanwhile), `apksim --train` at once. 471 MB → ~312 MB (0.32.0 against this
+that hash; offline, training fails with a line saying so and touches `STATE/train.failed` (so does a failed record or create stage of a background training): a launch tries again at most once an hour (the launcher passes `--background` and stays quiet meanwhile), `apksim --train` at once. 471 MB → ~312 MB (0.32.0 against this
 change, measured locally). `work/release` makes the launcher keep its state (`STATE`: AOT cache,
 `cache/`, `tmp/`, screenshots, autofill) in `~/.apksim` rather than `work/` (`APKSIM_HOME` overrides either way;
 `train.sh` and `ctl.py` follow the same rule), so the install folder can be read-only. The sandbox allows writes to
 `STATE`. Standbys are keyed by install folder plus `STATE`. A release has no AOT cache (it is tied to its folder and
-JDK): the first launch without one starts `train.sh --headless` detached (`STATE/train.pid`, log `STATE/train.log`)
+JDK): the first launch without one, and the beam agent when it starts (`start_training` in the launcher; never a beamed launch, whose sandbox refuses the record stage's writes: issue 559), starts `train.sh --headless` detached (`STATE/train.pid`, log `STATE/train.log`)
 and goes on without it; a headless-trained cache is as fast as a windowed one (1.73 against 1.72 s). The launcher
 follows a symlink to itself (Homebrew's and install.sh's `bin/apksim`).
 `.github/workflows/release.yml`: a `v*` tag builds and checks the tarball on an Apple Silicon runner and makes a

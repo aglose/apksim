@@ -13,7 +13,7 @@ This page is the spec, then how it is built, then what was measured.
 
 ```
 apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--rejoin-grace SECONDS] [--apps DIR|FILE]...
-             [--max-upload MB] [--max-push MB] [--allow-rec] [--no-shell] [--issue-url TEMPLATE] [--inspect-network [optional]] [--inspect-max-rules N] [--inspect-forward-allow URL_PREFIX]... [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--in-flight N] [--no-network]
+             [--max-upload MB] [--max-push MB] [--allow-rec] [--allow-logcat] [--no-shell] [--issue-url TEMPLATE] [--inspect-network [optional]] [--inspect-max-rules N] [--inspect-forward-allow URL_PREFIX]... [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--in-flight N] [--no-network]
              [--allow-origin ORIGIN]... [--warm auto|on|off] [--warm-standby 0|1] [--core-dumps] [--move-shared-data] [--trust-proxy]
              [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]... [--skins DIR]...
              [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N] [--allow-share] [--max-viewers N]
@@ -49,6 +49,11 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   of them in all.
 - `--allow-rec`: a tab may use the flight recorder (below). Off by default: a recording holds the app's network calls
   and logs. (`apksim beam` always allows it: the instance is the visitor's own.)
+- `--allow-logcat` (issue 554): a tab may send `logcat on|off`, or open its socket with `/ws?logcat=1`, and the app's own
+  `android.util.Log` lines (Timber, OkHttp's logging interceptor...) then go to the session's log (`GET
+  /api/sessions/ID/log`), as `logcat on` on the control port does. Off by default: the log may hold what the app logs
+  about its user. Without it the message is answered `r refused: logcat (...)`. The `i` message says `"logcat": true|false`.
+  `apksim beam` always allows it (the log is read on the visitor's own Mac, `GET /beam/sessions/ID/log?key=`).
 - `--issue-url TEMPLATE` (with `--allow-rec`) and `--inspect-network`: the page's report button opens a prefilled new-issue page, and a
   tab sees the app's HTTP(S) exchanges and may answer or slow a URL (docs/pr-preview.md "Report button and network inspector").
   Off by default: the second shows the app's traffic. `--inspect-network optional` allows it per session instead: only a tab
@@ -353,7 +358,8 @@ The first launch of a large APK translates its classes and extracts its librarie
 4-5 minutes on 4 CPUs in the Linux image; later launches ~10 s), and a standby boots only the framework, not the app's classes. So serve warms
 the cache itself:
 
-- Each APK stored by an upload or a URL add, and each APK a `--apps` catalog lists (a URL one once downloaded), is queued,
+- Each APK stored by an upload or a URL add (not one a session is already waiting on as it downloads: that session
+  launches the app itself, and a warm-up would be a throwaway launch in front of it), and each APK a `--apps` catalog lists (a URL one once downloaded), is queued,
   and warmed one at a time at low priority (`nice -n 10`): an ordinary headless launch (`--exit-after-first-frame`,
   with the app's own launch options) that leaves the same caches a session finds. It does not count against `--max`
   and takes a data slot (`serve-N`) while it runs, as a session does; the slot is erased when the warm-up ends, fails or
@@ -406,7 +412,7 @@ A catalog line (after ` -- `) or a URL add (`"options"`) can give its app launch
 gets, after the session's own (device, appearance, locale...) and before the APK: what an app may need to start at all.
 Only these are accepted, each with one plain value (no value starting with `-` except a number): `--activity`,
 `--build`, `--setting`, `--sdcard-file` (a file written to `/sdcard` before the app starts: `PATH=text:TEXT` or `PATH=BASE64`,
-inline, at most 64 KB a file and 72 KB in all, `..` refused), `--broadcast` (`ACTION;es:K=V;ez:K=true`, also `ei`, `el`, `ef`: one broadcast to the app's own package after `Application.onCreate`, before the first activity, for debug flag-override receivers; no `;` or spaces inside a value, 64 at most of 1024 characters each; the `i` message says `maxBroadcasts`), `--sysfs` (`/sys/PATH=VALUE`: a hardware state file the app reads, in the instance's own scratch folder; a plain path under `/sys/` without `.`/`..` segments, a value of at most 128 characters, 8 at most; a tab changes it with `sysfs /sys/PATH VALUE` and `sysfs clear /sys/PATH`, then `key CAMERA` for the app to re-read), `--feature`, `--timezone`, `--clock`, `--anim-scale`, `--serial`, `--bluetooth`,
+inline, at most 64 KB a file and 72 KB in all, `..` refused), `--broadcast` (`ACTION;es:K=V;ez:K=true`, also `ei`, `el`, `ef`: one broadcast to the app's own package after `Application.onCreate`, before the first activity, for debug flag-override receivers; no `;` or spaces inside a value, 64 at most of 1024 characters each; the `i` message says `maxBroadcasts`), `--sysfs` (`/sys/PATH=VALUE`: a hardware state file the app reads, in the instance's own scratch folder; a plain path under `/sys/` without `.`/`..` segments, a value of at most 128 characters, 8 at most; a tab changes it with `sysfs /sys/PATH VALUE` and `sysfs clear /sys/PATH`, then `key CAMERA` for the app to re-read), `--feature`, `--timezone`, `--clock`, `--anim-scale`, `--serial`, `--bluetooth`, `--wifi`, `--cellular`, `--wifi-signal`,
 `--status-bar`, `--nav-bar`, `--max-fps`, `--video`, `--audio`, `--biometrics`, `--camera` (`off` or `fake`, not
 `fake=IMAGE`: no host files), `--network-profile`, `--device`, `--skin` (a stored skin's name, never a path; an unknown
 one is refused naming the known ones: see "Skins"), and the flags

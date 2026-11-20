@@ -44,6 +44,9 @@ the app is back on its own connections.
 --network record FILE        capture every HTTP(S) exchange into FILE (HAR 1.2)
 --network replay FILE        answer from FILE; nothing leaves the process
 --network-profile NAME       launch with a condition: online (default), offline, 3g, lossy, latency:MS, bandwidth:KBPS
+--wifi on|off                Wi-Fi at launch (on by default); see "Wi-Fi and mobile data" below
+--cellular on|off            mobile data at launch (off by default)
+--wifi-signal DBM|level:N    Wi-Fi's signal at launch: dBm (-126..-1; -50 by default) or a level 0-4
 --network-redact NAMES       comma-separated header names to redact as well (default: Authorization,
                              Proxy-Authorization, Cookie, Set-Cookie); "-Name" takes one off the default list
 --network-match FIELDS       what a replayed request must match: method,url,body (default), plus headers
@@ -85,7 +88,47 @@ network unmatched [clear]    unmatched replay requests since the test started (o
 network save                 write the recording now (it is also written 300 ms after each exchange and on exit)
 network reconnect            close the app's open connections, as a change of network does; the app makes them again
                              (after `rec on net` in a running app: connections opened before it are not read, below)
+network wifi [on|off|toggle] Wi-Fi's switch (alone: its state and signal)
+network wifi signal DBM      Wi-Fi's signal in dBm, or `signal level N` (0-4)
+network cellular [on|off|toggle]  mobile data's switch (`mobile` and `data` work too)
 ```
+
+The status line (`network` alone) ends with the radios: `wifi on, connected, -50 dBm (level 4 of 4); mobile data off`.
+The Features > Network menu has Wi-Fi and Mobile Data items (checked while on), and adb has `svc wifi
+enable|disable`, `svc data enable|disable`, `cmd wifi set-wifi-enabled enabled|disabled`, `cmd wifi status` and `cmd
+phone data enable|disable`.
+
+## Wi-Fi and mobile data
+
+`network offline` is the whole network (airplane mode). The radios (`Radios.java`, `NetConnectivity.publish`) are what
+an app on a phone sees when one of them goes, through ConnectivityManager, WifiManager, TelephonyManager and their
+broadcasts:
+
+- **Wi-Fi off**: `isWifiEnabled` false and `WIFI_STATE_DISABLED` (WIFI_STATE_CHANGED says DISABLING, then DISABLED,
+  each with the state before it), `getConnectionInfo` disconnected (RSSI -127), the Wi-Fi network lost (and a VPN over
+  it). With mobile data off too the app is offline exactly as with `network offline` (DNS fails, connects fail, open
+  connections close; `network online` does not bring it back while both are off, and the conditions chosen meanwhile
+  apply once a radio is back).
+- **Mobile data on**: a cellular network beside Wi-Fi, as a phone keeps both: TYPE_MOBILE, LTE, TRANSPORT_CELLULAR,
+  INTERNET and VALIDATED and what a default request asks for, but metered (no NOT_METERED; `isActiveNetworkMetered`
+  true while it is the default). A listen for cellular hears it; the default stays Wi-Fi until Wi-Fi goes off, when
+  default callbacks hear onLost for Wi-Fi and onAvailable for it (Wi-Fi disconnected, as Android tells them), CONNECTIVITY_ACTION names it, and TelephonyManager
+  says DATA_CONNECTED. It is off by default (an emulator has one, but apksim never showed one, and a suite counting
+  networks would see a change): `--cellular on` launches with it. Its link properties are the host's way out (the Wi-Fi
+  network's interface), so libwebrtc still finds candidates.
+- **Switching the default network** (Wi-Fi to mobile data and back) closes the connections the network layer sees, as a
+  device's change of network breaks them; the app reconnects.
+- **The signal**: WifiInfo's RSSI, the Wi-Fi network's `NetworkCapabilities.getSignalStrength()` and its WifiInfo
+  (default callbacks hear onCapabilitiesChanged), and RSSI_CHANGED_ACTION with EXTRA_NEW_RSSI to registered receivers.
+  `calculateSignalLevel` uses the platform's thresholds (-88, -77, -66, -55), so `level N` picks -95, -82, -71, -60 or
+  -50 dBm.
+- The app's own `WifiManager.setWifiEnabled` switches Wi-Fi as the command does (after it returns, as the system's
+  switch is asynchronous), at any targetSdk as Robolectric allowed it (a device refuses apps targeting 29 and up).
+
+The bytes still go out the Mac's own network, whichever radio the app is told it has: a weak signal or mobile data does
+not slow anything by itself. Pair them with a condition for that (`network wifi signal level 1` then `network 3g`).
+Not done: a cellular signal strength (TelephonyManager's SignalStrength), roaming, airplane mode's Settings value and
+broadcast, `wifi_on`/`mobile_data` in Settings.Global, Wi-Fi scan results, and a VPN shown over mobile data.
 
 Profiles: `3g` = 300 ms RTT, 750 kbps down, 250 kbps up; `lossy` = 150 ms RTT ± 100 ms jitter, 2% of connections
 refused, 3% of exchanges reset before their response, 1 Mbps; `latency:MS` and `bandwidth:KBPS` alone; `online` none.
@@ -344,7 +387,9 @@ Launch times are unchanged (warm first frame median 277 ms, cold 1.7 s, on a loa
 
 `--network replay FILE` with `--instrument` replays for the whole run; each test starts with the launch profile
 (conditions a test set are undone) and an empty unmatched list. `--isolate`, `--shards` and `-j` share a replay file
-fine. Record with one process: parallel processes recording to one file overwrite each other.
+fine. Record with one process: parallel processes recording to one file overwrite each other. The radios work the same
+way: `--wifi`, `--cellular` and `--wifi-signal` set each test's start, and a test's `executeShellCommand("apksim
+network wifi off")` (or `svc wifi disable`) lasts until the next test's setup (`RadiosTest`).
 
 ## Checks
 

@@ -447,7 +447,16 @@ def main():
         check(t.wait_text(lambda x: x.startswith("i "), 60), "a session starts")
         i = json.loads(next(x for x in t.texts if x.startswith("i "))[2:])
         inspect, rec = i.get("inspect") is True, i.get("rec") is True
-        print(f"     the session says rec={rec} inspect={inspect} issueUrl={i.get('issueUrl')}")
+        print(f"     the session says rec={rec} inspect={inspect} issueUrl={i.get('issueUrl')} logcat={i.get('logcat')}")
+        # Issue 554: the app's Log lines in the session's log, where the server allows it (--allow-logcat).
+        check(i.get("logcat") in (True, False), "the session says whether the tab may turn logcat on")
+        t.ws.send("logcat on")
+        if i.get("logcat"):
+            # Answered once the app is up: the command waits in the session's queue until then.
+            check(t.wait_text(lambda x: x == "r logcat: ok", 60), "with --allow-logcat the tab's logcat on is passed on")
+        else:
+            t.pump(2)
+            check(any(x.startswith("r refused: logcat") for x in t.texts), "without --allow-logcat the tab's logcat on is refused")
         if not inspect:
             check("issueUrl" not in i or rec, "the issue template is announced only with the recorder")
             t.ws.send("inspect rule list")

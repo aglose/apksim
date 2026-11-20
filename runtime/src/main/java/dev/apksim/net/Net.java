@@ -68,7 +68,12 @@ public final class Net {
   /** Something is on: an option, a recording, a condition. The resolver and the status line look at it. */
   static volatile boolean active;
   static volatile Mode mode = Mode.LIVE;
+  /** What the hooks act on: the conditions chosen, or offline while no radio is up ({@link #setRadiosDown}). */
   static volatile Conditions conditions = Conditions.ONLINE;
+  /** The conditions chosen (launch profile, `network 3g`...), whatever the radios do. */
+  private static volatile Conditions chosen = Conditions.ONLINE;
+  /** Wi-Fi and mobile data are both off (dev.apksim.Radios): the app has no network, whatever was chosen. */
+  private static volatile boolean radiosDown;
   static Conditions launchConditions = Conditions.ONLINE;
   /** Where exchanges are kept (a file, or the flight recorder's and inspector's memory), or what replay answers from. */
   static volatile Recording recording;
@@ -179,7 +184,8 @@ public final class Net {
       recordedTiming = "recorded".equals(System.getProperty("apksim.networkReplayTiming", "none"));
       replayMark = !"off".equals(System.getProperty("apksim.networkReplayMark", "on"));
       if (profile != null) launchConditions = Conditions.parse(profile);
-      conditions = launchConditions;
+      chosen = launchConditions;
+      conditions = radiosDown ? Conditions.OFFLINE : launchConditions;
       if (spec != null) {
         int colon = spec.indexOf(':');
         String m = colon < 0 ? spec : spec.substring(0, colon);
@@ -395,9 +401,17 @@ public final class Net {
     else if (r == null) b.append("live");
     else if (r.path == null) b.append("capturing for the flight recorder (in memory").append(r.keep ? "" : ", paused").append(")");
     else b.append("recording to ").append(r.path);
-    b.append(", ").append(conditions.describe());
+    b.append(", ").append(conditionsDescribed());
     if (!hostMap.isEmpty()) b.append(", hosts ").append(hostMap);
     return b.toString();
+  }
+
+  /** The conditions in force, and why offline when it is the radios' doing. */
+  private static String conditionsDescribed() {
+    if (radiosDown && !chosen.offline()) {
+      return "offline (Wi-Fi and mobile data are off" + (chosen.shaped() ? "; " + chosen.describe() + " when one is back" : "") + ")";
+    }
+    return conditions.describe();
   }
 
   static void log(String s) {
@@ -414,6 +428,32 @@ public final class Net {
   }
 
   static void setConditions(Conditions c) {
+    chosen = c;
+    apply(radiosDown ? Conditions.OFFLINE : c);
+  }
+
+  /**
+   * Wi-Fi and mobile data are both off (true), or one is back (false): the app is offline as with `network offline`,
+   * and the conditions chosen meanwhile come back with a radio. Returns whether being offline changed, i.e. whether
+   * the offline listeners (ConnectivityManager's view, natives) were told.
+   */
+  public static boolean setRadiosDown(boolean down) {  // on the main thread, as every network change
+    if (radiosDown == down) return false;
+    radiosDown = down;
+    if (down) active = true;  // the hooks must refuse connections now
+    boolean was = conditions.offline();
+    apply(down ? Conditions.OFFLINE : chosen);
+    return was != conditions.offline();
+  }
+
+  /** Every connection closes, as when a device's default network changes (Wi-Fi to mobile data); how many. */
+  public static int networkChanged() {
+    int n = reconnect();
+    if (n > 0) log("network: " + n + " connection" + (n == 1 ? "" : "s") + " closed for the new default network");
+    return n;
+  }
+
+  private static void apply(Conditions c) {
     Conditions before = conditions;
     boolean was = before.offline();
     conditions = c;
@@ -512,7 +552,7 @@ public final class Net {
   public static void testStarted() {
     if (!active) return;
     unmatched.clear();
-    if (conditions != launchConditions) setConditions(launchConditions);
+    if (chosen != launchConditions) setConditions(launchConditions);
   }
 
   /** Unmatched replay requests the current test made, to fail it with (Instrument); empty unless policy is fail. */
@@ -587,7 +627,7 @@ public final class Net {
         }
         active = true;
         setConditions(c);
-        return "network: " + conditions.describe();
+        return "network: " + conditionsDescribed();
       }
     }
   }

@@ -540,6 +540,7 @@ final class Session {
     // rotation or deep link chosen during startup comes after the link's and stays.
     List<Map.Entry<String, Consumer<String>>> first = new ArrayList<>();
     first.add(Map.entry("stats", this::onStats));
+    if ("1".equals(options.get("logcat")) && logcatAllowed()) first.add(Map.entry("logcat on", r -> {}));
     String open = options.get("open");
     if (open != null && check("open " + open) != null) first.add(Map.entry("open " + open, r -> ws.sendText("r open: " + r)));
     String orientation = options.get("orientation");
@@ -856,6 +857,15 @@ final class Session {
           && !app.launch().contains("--no-network-inspect")
           && (serve.store.config.inspectNetwork().equals("on") || app.launch().contains("--network-inspect"));
     return "1".equals(options.get("inspect")) || serve.inspectNetwork && !"0".equals(options.get("inspect"));
+  }
+
+  /**
+   * Whether this session's tab may turn the app's `android.util.Log` output on (`logcat on|off`, `/ws?logcat=1`; issue 554): it then
+   * goes to the instance's stderr, which is the session's log. Always on a visitor's own Mac (the log is read from there by the page
+   * that started the session), on a server only with `--allow-logcat`.
+   */
+  boolean logcatAllowed() {
+    return serve.beam || serve.allowLogcat;
   }
 
   /** Whether a session could have the inspector (issue 371): the page offers the switch only where it works. */
@@ -2212,7 +2222,12 @@ final class Session {
       recCommand(text.strip());
       return;
     }
+    if (text.strip().matches("logcat (on|off)") && !logcatAllowed()) {
+      ws.sendText("r refused: logcat (this server does not allow the app's log in the session's log: --allow-logcat)");
+      return;
+    }
     String cmd = check(text);
+    if (cmd == null && text.strip().matches("logcat (on|off)")) cmd = text.strip();
     if (cmd == null && serve.beam) cmd = checkBeam(text);
     if (cmd == null && text.strip().startsWith("device ")) {
       // A size serve names (--device-size) or the app's own default: the name is checked, never passed on as given.

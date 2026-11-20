@@ -4048,9 +4048,9 @@ android.util.EventLog	writeEvent	(II)I	shadowed-by org.robolectric.shadows.Shado
 android.util.EventLog	writeEvent	(IJ)I	shadowed-by org.robolectric.shadows.ShadowEventLog	public
 android.util.EventLog	writeEvent	(ILjava/lang/String;)I	shadowed-by org.robolectric.shadows.ShadowEventLog	public
 android.util.EventLog	writeEvent	(I[Ljava/lang/Object;)I	shadowed-by org.robolectric.shadows.ShadowEventLog	public
-android.util.Log	isLoggable	(Ljava/lang/String;I)Z	shadowed-by org.robolectric.shadows.ShadowLog	public
+android.util.Log	isLoggable	(Ljava/lang/String;I)Z	shadowed-by dev.apksim.LogTags$ShadowSimLog	public
 android.util.Log	logger_entry_max_payload_native	()I	unshadowed	internal
-android.util.Log	println_native	(IILjava/lang/String;Ljava/lang/String;)I	shadowed-by org.robolectric.shadows.ShadowLog	public
+android.util.Log	println_native	(IILjava/lang/String;Ljava/lang/String;)I	shadowed-by dev.apksim.LogTags$ShadowSimLog	public
 android.util.MemoryIntArray	nativeClose	(IJZ)V	unshadowed	internal
 android.util.MemoryIntArray	nativeCreate	(Ljava/lang/String;I)I	unshadowed	internal
 android.util.MemoryIntArray	nativeGet	(IJI)I	unshadowed	internal

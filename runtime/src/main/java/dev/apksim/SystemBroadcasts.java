@@ -34,7 +34,11 @@ import org.robolectric.shadows.ShadowNetworkInfo;
 final class SystemBroadcasts {
   private SystemBroadcasts() {}
 
+  /** The last Wi-Fi state broadcast, for the next one's EXTRA_PREVIOUS_WIFI_STATE. */
+  private static int lastWifiState = WifiManager.WIFI_STATE_UNKNOWN;
+
   static void beforeApplicationOnCreate(Context app) {
+    lastWifiState = WifiManager.WIFI_STATE_UNKNOWN;
     battery(app);
     network(app);
   }
@@ -71,12 +75,7 @@ final class SystemBroadcasts {
     ConnectivityManager cm = app.getSystemService(ConnectivityManager.class);
     NetworkInfo active = cm == null ? null : cm.getActiveNetworkInfo();
     boolean connected = active != null && active.isConnected();
-    if (wm != null) {
-      sticky(app, new Intent(WifiManager.WIFI_STATE_CHANGED_ACTION)
-          .addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY)
-          .putExtra(WifiManager.EXTRA_WIFI_STATE, wm.getWifiState())
-          .putExtra(WifiManager.EXTRA_PREVIOUS_WIFI_STATE, WifiManager.WIFI_STATE_UNKNOWN));
-    }
+    if (wm != null) wifiState(app, Radios.wifiState());
     NetworkInfo wifi = connected && active.getType() == ConnectivityManager.TYPE_WIFI ? active
         : ShadowNetworkInfo.newInstance(NetworkInfo.DetailedState.DISCONNECTED, ConnectivityManager.TYPE_WIFI, 0,
             false, NetworkInfo.State.DISCONNECTED);
@@ -94,6 +93,20 @@ final class SystemBroadcasts {
           .putExtra(ConnectivityManager.EXTRA_NO_CONNECTIVITY, true);
     }
     sticky(app, conn);
+  }
+
+  /**
+   * WIFI_STATE_CHANGED with the state before it (Radios sends ENABLING or DISABLING before the switch, then the
+   * network change sends the end state); a state sent again says UNKNOWN before it, as before.
+   */
+  static void wifiState(Context context, int state) {
+    Context app = context.getApplicationContext() != null ? context.getApplicationContext() : context;
+    int previous = lastWifiState != state ? lastWifiState : WifiManager.WIFI_STATE_UNKNOWN;
+    lastWifiState = state;
+    sticky(app, new Intent(WifiManager.WIFI_STATE_CHANGED_ACTION)
+        .addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY)
+        .putExtra(WifiManager.EXTRA_WIFI_STATE, state)
+        .putExtra(WifiManager.EXTRA_PREVIOUS_WIFI_STATE, previous));
   }
 
   /**

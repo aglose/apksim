@@ -335,6 +335,8 @@ is allowed in `serve` catalog lines and URL adds, and in beam.
 | `--feature NAME[=false]` | A system feature that `PackageManager.hasSystemFeature` reports; `=false` takes one away. Repeatable |
 | `--camera off\|fake\|fake=IMAGE` | Simulated cameras, a back and a front one (default off) |
 | `--bluetooth on\|off` | The Bluetooth adapter at launch (default on, as an emulator boots) |
+| `--wifi on\|off`, `--cellular on\|off` | Wi-Fi (default on) and mobile data (default off) at launch; `network wifi\|cellular on\|off` while it runs |
+| `--wifi-signal DBM\|level:N` | Wi-Fi's signal at launch (-50 dBm by default); `network wifi signal -70` while it runs |
 | `--build FIELD=VALUE` | Any `Build` or `Build.VERSION` field, for example `MODEL=Pixel 9`. Repeatable |
 
 **`--feature`** names a feature such as `android.hardware.camera.any`, which `pm list features` then lists too.
