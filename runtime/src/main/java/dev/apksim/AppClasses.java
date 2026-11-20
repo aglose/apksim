@@ -363,7 +363,7 @@ final class AppClasses {
           }
         }
         if (running.decrementAndGet() == 0 && !Boolean.getBoolean("apksim.quiet")) {
-          System.err.printf("[apksim] translated %d of %d changed classes ahead in %d ms%n", translatedAhead, todo.size(),
+          System.err.printf("[apksim] translated %d of %d classes missing from their pack ahead in %d ms%n", translatedAhead, todo.size(),
               (System.nanoTime() - t0) / 1_000_000);
         }
       }, "apksim-translate-" + t);
