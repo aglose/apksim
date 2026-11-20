@@ -777,8 +777,11 @@ public final class Serve {
    */
   void warmStandbyOnHello() {
     long now = System.currentTimeMillis();
-    if (!beam || now - helloWarmAt < 5000) return;
-    helloWarmAt = now;
+    if (!beam) return;
+    synchronized (this) {
+      if (now - helloWarmAt < 5000) return;
+      helloWarmAt = now;
+    }
     Thread.ofVirtual().name("beam-standby-hello").start(this::warmStandby);
   }
 

@@ -1621,7 +1621,7 @@ final class Session {
         logLine(line);
         crash.line(line);
         // Issue 577: the launcher says why a launch was cold; the agent's own log gets it too.
-        if (line.startsWith("[apksim] cold launch: ")) System.err.printf("[serve] session %s: %s%n", id, line.substring(10));
+        if (line.startsWith("[apksim] cold launch: ")) System.err.printf("[serve] session %s: %s%n", id, line.substring("[apksim] ".length()));
         Matcher m = TRANSLATED.matcher(line);
         if (m.find() && firstFrameMillis < 0 && System.currentTimeMillis() - lastProgress > 1000) {
           lastProgress = System.currentTimeMillis();
