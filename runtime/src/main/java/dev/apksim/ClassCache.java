@@ -84,6 +84,8 @@ final class ClassCache {
   private final Path indexFile;
   /** Content hash to the key of the pack holding that class; read when the first class misses its own pack. */
   private Map<Hash, String> index;
+  /** Earlier builds' index entries (read only, beam): consulted after {@link #index}, never written out. */
+  private Map<Hash, String> siblingIndex;
   private final Map<String, Map<String, Entry>> otherPacks = new HashMap<>();
   private final Map<Hash, String> indexAdds = new HashMap<>();
   private volatile boolean exiting;
@@ -188,11 +190,11 @@ final class ClassCache {
   private boolean contentPossible() {
     if (!content) return false;
     if (index == null) index = loadIndex();
-    return !index.isEmpty();
+    return !index.isEmpty() || !siblingIndex().isEmpty();
   }
 
   private Entry valid(int dex, String name, ToIntFunction<String> answer) {
-    if (loaded[dex] == null) loaded[dex] = load(read(keys[dex] + ".pack"));
+    if (loaded[dex] == null) loaded[dex] = load(packFile(keys[dex] + ".pack"));
     return check(loaded[dex].get(name), answer);
   }
 
@@ -213,6 +215,7 @@ final class ClassCache {
     if (fresh[dex].containsKey(name)) return null;  // taken meanwhile by another thread: callers look in `fresh`
     if (index == null) index = loadIndex();
     String key = index.get(Hash.of(h));
+    if (key == null) key = siblingIndex().get(Hash.of(h));
     if (key == null || key.equals(keys[dex])) return null;
     Map<String, Entry> pack = otherPacks.get(key);
     if (pack == null) otherPacks.put(key, pack = load(packFile(key + ".pack")));
@@ -410,19 +413,23 @@ final class ClassCache {
 
   private static final int INDEX_MAGIC = 0x41584931; // "AXI1"
 
-  /**
-   * The index on disk (empty when there is none or it is damaged: a lookup then finds nothing), with the entries of
-   * earlier builds' indexes (a beamed instance's siblings) added where this build's own has none.
-   */
+  /** The index on disk (empty when there is none or it is damaged: a lookup then finds nothing). */
   private Map<Hash, String> loadIndex() {
-    Path f = indexFile == null ? null : read(indexFile.getFileName().toString());
-    Map<Hash, String> m = readIndex(f);
-    if (indexFile != null) {
-      for (Path s : siblings) {
-        for (Map.Entry<Hash, String> e : readIndex(s.resolve(indexFile.getFileName().toString())).entrySet()) m.putIfAbsent(e.getKey(), e.getValue());
+    return readIndex(indexFile == null ? null : read(indexFile.getFileName().toString()));
+  }
+
+  /** Earlier builds' indexes (a beamed instance's siblings), newest first; read once. */
+  private synchronized Map<Hash, String> siblingIndex() {
+    if (siblingIndex == null) {
+      Map<Hash, String> m = new HashMap<>();
+      if (content && indexFile != null) {
+        for (Path s : siblings) {
+          for (Map.Entry<Hash, String> e : readIndex(s.resolve(indexFile.getFileName().toString())).entrySet()) m.putIfAbsent(e.getKey(), e.getValue());
+        }
       }
+      siblingIndex = m;
     }
-    return m;
+    return siblingIndex;
   }
 
   private static Map<Hash, String> readIndex(Path f) {
@@ -438,7 +445,10 @@ final class ClassCache {
       for (int i = 0; i < n; i++) {
         long hi = b.getLong();
         long lo = b.getLong();
-        m.put(new Hash(hi, lo), names[b.getInt()]);
+        String k = names[b.getInt()];
+        // A pack key names a file beside the index: never a path (an app's own instance wrote this file).
+        if (!k.matches("[0-9a-zA-Z_-]{1,80}")) continue;
+        m.put(new Hash(hi, lo), k);
       }
     } catch (IOException | RuntimeException e) {
       System.err.println("[apksim] ignoring damaged class index " + f.getFileName() + ": " + e);

@@ -18,7 +18,11 @@ run() {  # MODE KEY [SIBLINGS]
 # Build A's instance writes to its out folder, which the agent moves into the build's cache.
 run write aaaa
 OUT="$(ls -d "$S"/beam/out/*)"
-mv "$OUT/classes" "$S/beam/cache/a/classes"
+# As the agent keeps it (Session.keepBeamCaches): regular .pack, .classes and .index files only.
+mkdir -p "$S/beam/cache/a/classes"
+for f in "$OUT"/classes/*/*; do
+  case "$f" in *.pack|*.classes|*.index) mkdir -p "$S/beam/cache/a/classes/$(basename "$(dirname "$f")")"; cp "$f" "$S/beam/cache/a/classes/$(basename "$(dirname "$f")")/";; esac
+done
 rm -rf "$OUT"
 run read-none bbbb
 rm -rf "$S"/beam/out

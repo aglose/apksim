@@ -3177,7 +3177,7 @@ final class Session {
             try (var files = Files.newDirectoryStream(rt)) {
               for (Path f : files) {
                 String n = f.getFileName().toString();
-                if (!Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS) || !n.matches("[0-9a-zA-Z_.-]{1,200}\\.(pack|classes)")) continue;
+                if (!Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS) || !n.matches("[0-9a-zA-Z_.-]{1,200}\\.(pack|classes|index)")) continue;
                 Files.move(f, dest.resolve(n), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                 moved++;
               }

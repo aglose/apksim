@@ -571,7 +571,8 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   build's cache folder: package, site, signers): the content lookup ("a rebuilt app's classes", issue 558) finds a
   class by the hash of its own definition there, so a rebuild reuses what did not change, as outside beam (issue 578).
   A class found that way is saved into the new build's own pack, so the next launch needs no sibling. An unsigned
-  build, or one with no site, shares nothing. `scripts/check-class-cache-siblings.sh` (CI).
+  build, one with no site, or one whose bytes another site ran first (its folder's `identity` is that site's) shares
+  nothing. The agent's cache warm-up knows no site, so only page sessions use siblings. `scripts/check-class-cache-siblings.sh` (CI).
 - **Deleting what an APK could write**: the agent runs outside any sandbox and erases slots, `.device` folders,
   out folders and moved data a beamed app wrote, while a process the app left running may still write there. Each
   is deleted through folder handles from its parent down (unlinkat on a SecureDirectoryStream, `SlotPack.deleteTree`

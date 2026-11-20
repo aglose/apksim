@@ -837,7 +837,10 @@ public final class Serve {
       Path mine = beamCache(build);
       Files.createDirectories(mine);
       Path f = mine.resolve("identity");
-      if (!Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS) || !id.equals(Files.readString(f))) {
+      if (Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+        // Another site ran these same bytes first: the folder is that site's, and it shares nothing with this one.
+        if (!id.equals(Files.readString(f))) return List.of();
+      } else {
         Path tmp = mine.resolve("identity.tmp-" + Long.toHexString(System.nanoTime()));
         Files.writeString(tmp, id);
         Files.move(tmp, f, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
