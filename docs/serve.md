@@ -344,7 +344,8 @@ The first launch of a large APK translates its classes and extracts its librarie
 4-5 minutes on 4 CPUs in the Linux image; later launches ~10 s), and Linux has no standby to hide that. So serve warms
 the cache itself:
 
-- Each APK stored by an upload or a URL add, and each APK a `--apps` catalog lists (a URL one once downloaded), is queued,
+- Each APK stored by an upload or a URL add (not one a session is already waiting on as it downloads: that session
+  launches the app itself, and a warm-up would be a throwaway launch in front of it), and each APK a `--apps` catalog lists (a URL one once downloaded), is queued,
   and warmed one at a time at low priority (`nice -n 10`): an ordinary headless launch (`--exit-after-first-frame`,
   with the app's own launch options) that leaves the same caches a session finds. It does not count against `--max`
   and takes a data slot (`serve-N`) while it runs, as a session does; the slot is erased when the warm-up ends, fails or

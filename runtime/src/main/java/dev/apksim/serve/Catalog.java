@@ -446,11 +446,17 @@ final class Catalog {
       return file(published, progress, stopped);
     }
     if (d != null) {
-      d.waiters.incrementAndGet();
+      Download root = d.lead != null ? d.lead : d;  // adds of one fetch share one APK, so one warm-up
+      root.waiters.incrementAndGet();
+      boolean ok = false;
       try {
-        return waitFor(d, progress, stopped);
+        Path p = waitFor(d, progress, stopped);
+        ok = true;
+        return p;
       } finally {
-        d.waiters.decrementAndGet();
+        if (root.waiters.decrementAndGet() == 0 && !ok && d.done.isDone() && !d.done.isCompletedExceptionally()) {
+          ready(d.done.join());  // the waiter left (tab closed) as the download finished: the warm-up it suppressed
+        }
       }
     }
     if (a.path() != null) {
@@ -461,23 +467,21 @@ final class Catalog {
   }
 
   private Path waitFor(Download d, Consumer<String> progress, BooleanSupplier stopped) throws IOException {
-    {
-      String last = "";
-      while (true) {
-        if (stopped.getAsBoolean()) throw new IOException("the session ended while the app downloaded");
-        try {
-          return d.done.get(1, TimeUnit.SECONDS).path();
-        } catch (TimeoutException e) {
-          long total = d.total();
-          String now = "downloading " + (total > 0 ? d.received() * 100 / total + "%" : (d.received() >> 20) + " MB");
-          if (!now.equals(last)) progress.accept(now);
-          last = now;
-        } catch (ExecutionException e) {
-          throw new IOException("download failed: " + e.getCause().getMessage());
-        } catch (InterruptedException e) {
-          Thread.currentThread().interrupt();
-          throw new IOException("interrupted");
-        }
+    String last = "";
+    while (true) {
+      if (stopped.getAsBoolean()) throw new IOException("the session ended while the app downloaded");
+      try {
+        return d.done.get(1, TimeUnit.SECONDS).path();
+      } catch (TimeoutException e) {
+        long total = d.total();
+        String now = "downloading " + (total > 0 ? d.received() * 100 / total + "%" : (d.received() >> 20) + " MB");
+        if (!now.equals(last)) progress.accept(now);
+        last = now;
+      } catch (ExecutionException e) {
+        throw new IOException("download failed: " + e.getCause().getMessage());
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new IOException("interrupted");
       }
     }
   }
@@ -715,7 +719,8 @@ final class Catalog {
    * would be a whole throwaway launch in front of it (issue 557). Nobody waiting: the background warm-up, as before.
    */
   private void readyUnlessAwaited(Download d, App a) {
-    if (d.waiters.get() == 0) ready(a);
+    Download root = d.lead != null ? d.lead : d;
+    if (root.waiters.get() == 0) ready(a);
   }
 
   private void ready(App a) {
