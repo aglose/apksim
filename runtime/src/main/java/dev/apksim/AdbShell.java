@@ -44,36 +44,9 @@ import org.robolectric.RuntimeEnvironment;
  * Supports `;`, `&&`, `||`, quoting and `>`/`>>` into a file; no pipes (pipe on the Mac: `adb shell ... | grep`).
  */
 final class AdbShell {
-  /**
-   * `setprop log.tag.TAG LEVEL` (issue 554): the level `Log.isLoggable(TAG, level)` answers for, as a device's liblog takes it:
-   * V D I W E A (or S for silent), a letter alone or a full name's first letter; any other non-empty value makes every level
-   * loggable, an empty one puts the default (INFO) back. `persist.log.tag` (a default for every tag) is only stored for
-   * `getprop`: Robolectric's ShadowLog keeps a level per tag and has no default to change. The native liblog path
-   * (`__android_log_is_loggable`) does not read these.
-   */
-  static void logTag(String name, String value) {
-    final String prefix = "log.tag.";
-    if (!name.startsWith(prefix) || name.length() == prefix.length()) return;
-    try {
-      org.robolectric.shadows.ShadowLog.setLoggable(name.substring(prefix.length()), logLevel(value));
-    } catch (RuntimeException | LinkageError e) {
-      // no Robolectric shadow in this process: nothing to set
-    }
-  }
-
-  /** A log.tag value as a priority: the level's letter, 2 (VERBOSE) for any other value, 4 (INFO) when empty, 100 for S. */
-  static int logLevel(String value) {
-    if (value.isEmpty()) return 4;
-    return switch (Character.toUpperCase(value.charAt(0))) {
-      case 'V' -> 2;
-      case 'D' -> 3;
-      case 'I' -> 4;
-      case 'W' -> 5;
-      case 'E' -> 6;
-      case 'A' -> 7;
-      case 'S' -> 100;
-      default -> 2;
-    };
+  /** A property set with `setprop` in this process, or null (LogTags reads `log.tag.*` from here). */
+  static String setProp(String name) {
+    return SET_PROPS.get(name);
   }
 
   private static final Map<String, String> SET_PROPS = new ConcurrentHashMap<>();
@@ -449,7 +422,6 @@ final class AdbShell {
       case "setprop" -> {
         if (args.size() < 2) return usage("setprop NAME VALUE");
         SET_PROPS.put(args.get(0), args.get(1));
-        logTag(args.get(0), args.get(1));
         return 0;
       }
       case "input" -> {

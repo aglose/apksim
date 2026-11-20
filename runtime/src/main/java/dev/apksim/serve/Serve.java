@@ -1773,7 +1773,8 @@ public final class Serve {
     // Issue 532: `audio=stream` asks for the app's sound as `u` messages on this tab's socket (never a viewer's).
     if ("stream".equals(r.param("audio"))) options.put("audiostream", "1");
     // Issue 554: `logcat=1` starts the session with the app's Log output in its log, where it may (the tab can say `logcat on` later).
-    if ("1".equals(r.param("logcat"))) options.put("logcat", "1");
+    if ("1".equals(r.param("logcat")) && (beam || allowLogcat)) options.put("logcat", "1");
+    else if ("1".equals(r.param("logcat"))) ws.sendText("r refused: logcat (this server does not allow the app's log in the session's log: --allow-logcat): it starts without");
     // Issue 371: the network inspector for this session alone, where the server allows it (`--inspect-network optional`).
     // The agent's sessions ask in `/beam/start` instead (the grant's launch), never here.
     // The page's own query carries inspect=1 to the agent too: said only when the start did not get it.
