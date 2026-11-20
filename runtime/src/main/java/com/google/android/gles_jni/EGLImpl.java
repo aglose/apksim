@@ -40,11 +40,18 @@ public class EGLImpl implements EGL10 {
     return handle(android.opengl.EGLConfig.class, c == null ? 0 : ((EGLConfigImpl) c).get());
   }
 
+  private static final java.util.concurrent.ConcurrentHashMap<Class<?>, java.lang.reflect.Constructor<?>> CTORS =
+      new java.util.concurrent.ConcurrentHashMap<>();
+
   private static <T extends EGLObjectHandle> T handle(Class<T> type, long h) {
     try {
-      java.lang.reflect.Constructor<T> k = type.getDeclaredConstructor(long.class);
-      k.setAccessible(true);
-      return k.newInstance(h);
+      java.lang.reflect.Constructor<?> k = CTORS.get(type);
+      if (k == null) {
+        k = type.getDeclaredConstructor(long.class);
+        k.setAccessible(true);
+        CTORS.put(type, k);
+      }
+      return type.cast(k.newInstance(h));
     } catch (ReflectiveOperationException e) {
       throw new IllegalStateException(e);
     }
@@ -175,7 +182,7 @@ public class EGLImpl implements EGL10 {
     return EGL10.EGL_NO_SURFACE;
   }
 
-  /** A SurfaceHolder, SurfaceView, Surface or SurfaceTexture as EGL14 takes a window: a pbuffer of its size, unseen. */
+  /** A SurfaceHolder, SurfaceView, Surface or SurfaceTexture as EGL14 takes a window: a pbuffer, 512 square unless a SurfaceView or SurfaceHolder gives its size (a SurfaceTexture's default buffer size is not read), unseen. */
   @Override
   public EGLSurface eglCreateWindowSurface(EGLDisplay display, EGLConfig config, Object nativeWindow, int[] attribList) {
     long s = h(EGL14.eglCreateWindowSurface(d14(display), cfg14(config), nativeWindow, attribList, 0));
