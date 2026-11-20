@@ -339,7 +339,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     new pack, so the next launch takes the ordinary path (`saved N translated classes (M found by content ...)`).
     Anything the walk cannot read (invoke-custom, method handles, an unknown opcode) gives no hash: that class is keyed
     by its DEX file alone. Known miss: const-string/jumbo against const-string (a string index crossing 65,535 between
-    builds) changes the instruction's size and so the offsets after it, so that class hashes differently. Off with
+    builds) changes the instruction's size and so the offsets after it, so that class hashes differently. The hash is worked out outside the cache's lock, and
+    only once the index has an entry. The index is not age-swept (each save drops entries whose pack is gone); two
+    processes saving at once keep the last writer's (missed reuse, never a wrong class); a beamed build's cache does not
+    keep it yet, so beam sessions reuse by DEX file only. Off with
     debug info or coverage, and `-Dapksim.classContent=false`. `scripts/class-hash-check.java OLD.apk NEW.apk` hashes and
     translates every class of two builds: equal hashes must translate to equal bytes (exit 1 otherwise) and it counts
     the classes that translate alike but hash apart. It saves once translating pauses for 3 s, and again on the way out (`quit`, closing the window, Cmd+Q,

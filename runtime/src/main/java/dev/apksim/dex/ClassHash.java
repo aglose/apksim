@@ -1,7 +1,6 @@
 package dev.apksim.dex;
 
 import java.io.ByteArrayOutputStream;
-import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
@@ -52,7 +51,7 @@ public final class ClassHash {
       Walk w = new Walk(dex);
       w.classDef(dex.classDefOffset(def));
       return w.out.toByteArray();
-    } catch (Unknown | IndexOutOfBoundsException | IllegalArgumentException e) {
+    } catch (RuntimeException e) {
       return null;
     }
   }
@@ -67,7 +66,7 @@ public final class ClassHash {
       byte[] h = new byte[16];
       System.arraycopy(md.digest(), 0, h, 0, 16);
       return h;
-    } catch (Unknown | IndexOutOfBoundsException | NoSuchAlgorithmException | IllegalArgumentException e) {
+    } catch (RuntimeException | NoSuchAlgorithmException e) {
       return null;
     }
   }
@@ -92,9 +91,12 @@ public final class ClassHash {
         i(-1);
         return;
       }
-      byte[] b = s.getBytes(StandardCharsets.UTF_8);
-      i(b.length);
-      out.write(b, 0, b.length);
+      // Chars, not UTF-8: a lone surrogate would become "?" there.
+      i(s.length());
+      for (int k = 0; k < s.length(); k++) {
+        out.write(s.charAt(k));
+        out.write(s.charAt(k) >>> 8);
+      }
     }
 
     void tag(char c) {
@@ -327,7 +329,7 @@ public final class ClassHash {
             }
             default -> throw new Unknown("payload");
           }
-          if (pc + size > units) throw new Unknown("payload size");
+          if (size <= 0 || pc + size > units) throw new Unknown("payload size");
           tag('P');
           for (int k = 0; k < size; k++) i(dex.u16(base + (pc + k) * 2));
           pc += size;

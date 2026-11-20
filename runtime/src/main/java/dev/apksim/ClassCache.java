@@ -94,7 +94,8 @@ final class ClassCache {
     this.seed = seed;
     this.keys = keys;
     content = Boolean.parseBoolean(System.getProperty("apksim.classContent", "true"))
-        && !Boolean.getBoolean("apksim.debugInfo") && dev.apksim.dex.Coverage.cacheKey().isEmpty();
+        && !Boolean.getBoolean("apksim.debugInfo") && dev.apksim.dex.Coverage.cacheKey().isEmpty()
+        && pkg != null && !pkg.isEmpty();
     indexFile = pkg == null || pkg.isEmpty() ? null : dir.resolve(pkg + ".index");
     hintFile = pkg == null || pkg.isEmpty() ? null : dir.resolve(pkg + ".classes");
     Path hintsIn = hintFile == null ? null : read(hintFile.getFileName().toString());
@@ -153,8 +154,22 @@ final class ClassCache {
   }
 
   /** Whether a usable translation of the class is cached. */
-  synchronized boolean has(int dex, String name, ToIntFunction<String> answer, Supplier<byte[]> hash) {
-    return valid(dex, name, answer) != null || fresh[dex].containsKey(name) || byContent(dex, name, answer, hash) != null;
+  boolean has(int dex, String name, ToIntFunction<String> answer, Supplier<byte[]> hash) {
+    synchronized (this) {
+      if (valid(dex, name, answer) != null || fresh[dex].containsKey(name)) return true;
+      if (!contentPossible()) return false;
+    }
+    byte[] h = hash.get(); // outside the lock: the walk is the slow part
+    synchronized (this) {
+      return h != null && byContent(dex, name, answer, h) != null;
+    }
+  }
+
+  /** Whether a content lookup can find anything: it is on, and the index has an entry (read at the first ask). */
+  private boolean contentPossible() {
+    if (!content) return false;
+    if (index == null) index = loadIndex();
+    return !index.isEmpty();
   }
 
   private Entry valid(int dex, String name, ToIntFunction<String> answer) {
@@ -174,12 +189,8 @@ final class ClassCache {
    * The entry of an identical class (by content hash) in a pack of another build, if the index knows one. A hit is
    * kept to be saved into this DEX file's own pack, so the next launch of this build need not look.
    */
-  private Entry byContent(int dex, String name, ToIntFunction<String> answer, Supplier<byte[]> hash) {
-    if (!content || hash == null) return null;
-    Fresh f = fresh[dex].get(name);
-    if (f != null) return null;
-    byte[] h = hash.get();
-    if (h == null) return null;
+  private Entry byContent(int dex, String name, ToIntFunction<String> answer, byte[] h) {
+    if (!content || h == null || fresh[dex].containsKey(name)) return null;
     if (index == null) index = loadIndex();
     String key = index.get(Hash.of(h));
     if (key == null || key.equals(keys[dex])) return null;
@@ -196,9 +207,10 @@ final class ClassCache {
   }
 
   /** The cached translation of a class in DEX file {@code dex}, if its recorded answers still hold. */
-  synchronized byte[] get(int dex, String name, ToIntFunction<String> answer, Supplier<byte[]> hash) {
-    Entry e = valid(dex, name, answer);
-    if (e == null) {
+  byte[] get(int dex, String name, ToIntFunction<String> answer, Supplier<byte[]> hash) {
+    synchronized (this) {
+      Entry e = valid(dex, name, answer);
+      if (e != null) return copy(e);
       Fresh f = fresh[dex].get(name);
       if (f != null) {
         // Translated or taken from another build's pack since the last save, and not yet in this one's pack.
@@ -208,20 +220,32 @@ final class ClassCache {
         hits++;
         return f.bytes.clone();
       }
-      e = byContent(dex, name, answer, hash);
+      if (!contentPossible()) return null;
     }
-    if (e == null) return null;
+    byte[] h = hash.get(); // outside the lock: the walk is the slow part
+    synchronized (this) {
+      Entry e = byContent(dex, name, answer, h);
+      return e == null ? null : copy(e);
+    }
+  }
+
+  private byte[] copy(Entry e) {
     byte[] out = new byte[e.length];
     e.pack.get(e.offset, out);
     hits++;
     return out;
   }
 
-  synchronized void put(int dex, String name, byte[] bytes, Map<String, Byte> answers, Supplier<byte[]> hash) {
+  void put(int dex, String name, byte[] bytes, Map<String, Byte> answers, Supplier<byte[]> hash) {
+    byte[] h = content && hash != null ? hash.get() : null; // outside the lock
+    put(dex, name, bytes, answers, h, 0);
+  }
+
+  private synchronized void put(int dex, String name, byte[] bytes, Map<String, Byte> answers, byte[] h, int unused) {
     String[] owners = answers.keySet().toArray(new String[0]);
     byte[] a = new byte[owners.length];
     for (int i = 0; i < owners.length; i++) a[i] = answers.get(owners[i]);
-    fresh[dex].put(name, new Fresh(bytes, owners, a, content && hash != null ? hash.get() : null));
+    fresh[dex].put(name, new Fresh(bytes, owners, a, h));
     unsaved++;
   }
 
@@ -458,7 +482,7 @@ final class ClassCache {
   /** Drops packs unused for two weeks and the caches of runtime builds unused for a day. */
   private void sweep() throws IOException {
     long now = System.currentTimeMillis();
-    try (DirectoryStream<Path> packs = Files.newDirectoryStream(dir, "*.{pack,classes,index}")) {
+    try (DirectoryStream<Path> packs = Files.newDirectoryStream(dir, "*.{pack,classes}")) {
       for (Path p : packs) {
         if (now - Files.getLastModifiedTime(p).toMillis() > 14L * 24 * 3600_000) Files.deleteIfExists(p);
       }
