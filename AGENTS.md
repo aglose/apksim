@@ -329,7 +329,23 @@ Read README.md for results and limits; this file covers how to work on the code.
     hierarchy answers a retargeted super call used (the translator's only inputs from other classes). `<package>.classes` lists what the app loaded, so worker threads
     pre-translate the classes of changed DEX files once the app asks for its first class. The runtime hash covers
     every class in `apksim.jar`, so any rebuild starts with a cold cache. `--jvm -Dapksim.classCache=false` turns
-    it off. It saves once translating pauses for 3 s, and again on the way out (`quit`, closing the window, Cmd+Q,
+    it off.
+    A DEX file with a new CRC is not all new (issue 558): a rebuilt debug app changes nearly every file's checksum while
+    ~99.7% of its classes are what they were, a string added anywhere moving every later index. Each saved class is also
+    in `<package>.index` (content hash -> the pack holding it, entries whose pack is gone dropped at each save), by
+    `dex/ClassHash`: a hash of the class's definition (header, system and runtime annotations, fields, methods, static
+    values, source file name, code walked instruction by instruction) with every index operand resolved to the name it
+    stands for. A class missing from its DEX file's pack is looked up there, and a hit is used and copied into the
+    new pack, so the next launch takes the ordinary path (`saved N translated classes (M found by content ...)`).
+    Anything the walk cannot read (invoke-custom, method handles, an unknown opcode) gives no hash: that class is keyed
+    by its DEX file alone. Known miss: const-string/jumbo against const-string (a string index crossing 65,535 between
+    builds) changes the instruction's size and so the offsets after it, so that class hashes differently. The hash is worked out outside the cache's lock, and
+    only once the index has an entry. The index is not age-swept (each save drops entries whose pack is gone); two
+    processes saving at once keep the last writer's (missed reuse, never a wrong class); a beamed build's cache does not
+    keep it yet, so beam sessions reuse by DEX file only. Off with
+    debug info or coverage, and `-Dapksim.classContent=false`. `scripts/class-hash-check.java OLD.apk NEW.apk` hashes and
+    translates every class of two builds: equal hashes must translate to equal bytes (exit 1 otherwise) and it counts
+    the classes that translate alike but hash apart. It saves once translating pauses for 3 s, and again on the way out (`quit`, closing the window, Cmd+Q,
     `--exit-after-first-frame`), so `scripts/train.sh` leaves the test app's cache warm.
   - `dex/`: the **DEX→JVM translator** (written from scratch; dex2jar miscompiled code and took 30 s). One Dalvik
     register is one JVM local; union-find type inference over values. A handler sees the registers before an

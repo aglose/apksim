@@ -192,6 +192,11 @@ final class AppClasses {
     return at == NONE ? null : at;
   }
 
+  /** The class's content hash (see {@link dev.apksim.dex.ClassHash}), worked out when the cache asks, on a view of its DEX file. */
+  private java.util.function.Supplier<byte[]> hashOf(int[] at, String name) {
+    return () -> dev.apksim.dex.ClassHash.of(dexes.get(at[0]).view(), at[1]);
+  }
+
   private boolean isInterface(String owner) {
     int[] at = find(owner);
     if (at != null) return (dexes.get(at[0]).classAccess(at[1]) & ACC_INTERFACE) != 0;
@@ -267,7 +272,7 @@ final class AppClasses {
     int[] at = find(internalName);
     if (at == null) return null;
     if (cache != null) {
-      byte[] hit = cache.get(at[0], internalName, this::answer);
+      byte[] hit = cache.get(at[0], internalName, this::answer, hashOf(at, internalName));
       if (hit != null) return hit;
     }
     return translate(dexes.get(at[0]), at, internalName);
@@ -288,7 +293,7 @@ final class AppClasses {
       cache.loaded(internalName);
       byte[] done = ahead.remove(internalName);
       if (done != null) return done;
-      byte[] hit = cache.get(at[0], internalName, this::answer);
+      byte[] hit = cache.get(at[0], internalName, this::answer, hashOf(at, internalName));
       if (hit != null) return hit;
     }
     long t0 = System.nanoTime();
@@ -320,7 +325,7 @@ final class AppClasses {
       e.printStackTrace();
       return null;
     }
-    if (cache != null) cache.put(at[0], internalName, out, answers);
+    if (cache != null) cache.put(at[0], internalName, out, answers, hashOf(at, internalName));
     return out;
   }
 
@@ -332,7 +337,7 @@ final class AppClasses {
     List<String> todo = new ArrayList<>();
     for (String name : cache.hints()) {
       int[] at = find(name);
-      if (at != null && !cache.has(at[0], name, this::answer)) todo.add(name);
+      if (at != null && !cache.has(at[0], name, this::answer, hashOf(at, name))) todo.add(name);
     }
     if (todo.isEmpty()) return;
     AtomicInteger next = new AtomicInteger();
