@@ -1625,6 +1625,7 @@ never a file name: the server writes `STATE/serve/logs/rec-ID/RID.apkrec`, kept 
 /api/sessions/ID/recordings/RID` streams it. `apksim beam` has the same routes under `/beam/sessions/ID/...` with the
 page's `Origin` and a per-session `key`, recording always allowed; those were not run when this landed.
 `scripts/tabfiles-check.py URL --token FILE` checks the serve routes.
+The app's `android.util.Log` in a session's log (issue 554): a tab's `logcat on|off` (or `/ws?logcat=1`) is passed on as the control command, on `apksim beam` always and on serve with `--allow-logcat` (`Session.logcatAllowed`; the `i` message's `logcat`). `setprop log.tag.TAG LEVEL` (adb shell, a tab's full shell) sets the level `Log.isLoggable` answers for that tag (`AdbShell.logTag`: a level letter, any other value everything, empty the default); `persist.log.tag` and native liblog's `__android_log_is_loggable` do not read them.
 A session's log and why it ended (issue 418, docs/serve.md "When a session ends badly"): `GET /beam/sessions/ID/log?key=KEY`
 on the agent is serve's `/api/sessions/ID/log` for the page that started the session (its `Origin` and its `f KEY`; `Session.writeLogAccess`
 keeps both in `beam/logs/ID.access` for after the session), and before `x TEXT` a tab gets `e {"reason":"crash|exit|idle|busy|no-app|error|other",
