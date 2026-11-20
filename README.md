@@ -775,7 +775,7 @@ options after `--` go to apksim.
 - **Runner and rules:** a custom runner's `newApplication`, and JUnit's `Timeout` rule.
 - **Shell commands:** UiAutomation shell commands: `settings` (animation scales included), `getprop`,
   `logcat -c`/`-d`, `touch`, `ls`, `am broadcast`.
-- **Rendering:** offscreen GLES20/30 and EGL14 on a real GLES 3 (ANGLE on Metal, Mesa in the Linux image).
+- **Rendering:** offscreen GLES20/30, EGL14 and the legacy EGL10 (`javax.microedition.khronos`) on a real GLES 3 (ANGLE on Metal, Mesa in the Linux image).
 - **Device behaviour that suites rely on:**
     - before the app starts: an `ANDROID_ID`, normal permissions granted, and content providers created (AndroidX
       Startup runs);
@@ -814,7 +814,7 @@ A job using the released image:
 - name: Device tests on apksim
   run: |
     mkdir -p out && cp app/build/outputs/apk/debug/*.apk app/build/outputs/apk/androidTest/debug/*.apk out/
-    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.56.0 \
+    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.56.1 \
       app-debug.apk app-debug-androidTest.apk --xml junit.xml --bundles bundles
 - uses: actions/upload-artifact@v4
   if: always()
@@ -889,9 +889,9 @@ How it works, its limits and measurements on a large app: [docs/affected-tests.m
 ```bash
 # record goldens in the Linux image, where CI checks them (spec, APK and goldens in the mounted folder; --out keeps
 # the report there too, outside the goldens folder: without it, it stays in the container)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.56.0 spec.json --update --out snapshots/record
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.56.1 spec.json --update --out snapshots/record
 # compare every screen in every combination; exit 1 on any difference (in CI: the same image, without --update)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.56.0 spec.json --out snapshots/check
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.56.1 spec.json --out snapshots/check
 # a quick local check on a Mac before pushing, against the image's goldens with a one-level tolerance in the spec
 scripts/snapshot.py spec.json -j 4
 ```
