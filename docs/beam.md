@@ -770,7 +770,7 @@ First review:
 - **What the server packs**: the slot path comes from the instance's output, which app code (attachBaseContext)
   can write before apksim does, so it is taken only when it is one of this server's slots and the session's own JVM
   holds its `.lock` open (lsof on the Mac, `/proc/<pid>/fd` on Linux, checked before the app quits; the JVM is the
-  process listening on its control port, or on Linux, which has no standbys, the process serve started). Else the
+  process the kernel reports as listening on its control port: lsof on the Mac, `/proc/net/tcp` and `/proc/*/fd` on Linux; the process serve started only when neither answers). Else the
   app could name any folder (the server user's, another visitor's slot) for the tab to download. The pack is read
   through open folder handles from the state folder down, each opened without following a link
   (SecureDirectoryStream): a process the app left running may still write there, and a file or folder swapped for a
