@@ -19,6 +19,7 @@ Usage:
     --serve    live preview (zensical serve); pages are assembled once, so run again after editing a source
     --strict   exit 1 when a link between pages has no target (CI)
     --no-build only assemble work/site/docs and check links
+    --deploy   build, then publish the site to Firebase Hosting (https://apksim.web.app)
 Needs Zensical, on the PATH or in work/site-venv (once):
   python3 -m venv work/site-venv && work/site-venv/bin/pip install -r website/requirements.txt
 """
@@ -31,6 +32,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO = "https://github.com/aglose/apksim"
+FIREBASE_PROJECT = "apksim"   # its Hosting site is https://apksim.web.app
 
 # README '## ' heading -> page. A section not listed here stops the build: decide where a new one goes.
 README_PAGES = {
@@ -302,6 +304,9 @@ def main():
     ap.add_argument("--serve", action="store_true")
     ap.add_argument("--strict", action="store_true")
     ap.add_argument("--no-build", action="store_true")
+    ap.add_argument("--deploy", action="store_true",
+                    help="after a build with no problems, publish to Firebase Hosting (needs the firebase CLI, "
+                         "signed in or with GOOGLE_APPLICATION_CREDENTIALS set)")
     ap.add_argument("--out", help="the built site's folder (default work/site/out)")
     args = ap.parse_args()
 
@@ -325,6 +330,7 @@ def main():
         config = f.read()
     with open(os.path.join(work, "mkdocs.yml"), "w", encoding="utf-8") as f:
         f.write(config)
+    shutil.copy(os.path.join(ROOT, "website", "firebase.json"), work)
 
     listed = nav_pages(config)
     for page in sorted(set(site.pages) - listed):
@@ -335,7 +341,7 @@ def main():
     for p in site.problems:
         print("docs-site: " + p, file=sys.stderr)
     print("docs-site: %d pages in %s, %d problems" % (len(site.pages), os.path.relpath(src, ROOT), len(site.problems)))
-    if args.strict and site.problems:
+    if (args.strict or args.deploy) and site.problems:
         return 1
     if args.no_build:
         return 0
@@ -353,6 +359,11 @@ def main():
     if status == 0 and args.out:
         shutil.rmtree(args.out, ignore_errors=True)
         shutil.copytree(os.path.join(work, "out"), args.out)
+    if status == 0 and args.deploy:
+        firebase = shutil.which("firebase")
+        if not firebase:
+            sys.exit("docs-site: the firebase CLI is not installed: npm install -g firebase-tools")
+        status = subprocess.call([firebase, "deploy", "--only", "hosting", "--project", FIREBASE_PROJECT], cwd=work)
     return status
 
 

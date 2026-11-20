@@ -684,14 +684,16 @@ Read README.md for results and limits; this file covers how to work on the code.
   which are real), `stub-census.tsv` and `stub-census-registered.txt` (generated: every framework native and what
   covers it; `scripts/stub-census.sh`).
 - `website/`, `scripts/docs-site.py`, `.github/workflows/docs.yml`: the documentation site
-  (https://aglose.github.io/apksim/, Zensical with the Material theme, GitHub Pages). Nothing is kept twice:
+  (https://apksim.web.app, Zensical with the Material theme, on Firebase Hosting in the Google Cloud project
+  `apksim`: `website/firebase.json`). Nothing is kept twice:
   `docs-site.py` assembles `work/site/docs` from `website/pages/*.md` (written for the site: the landing page and the
   quick start), one page per `## ` section of the README (`README_PAGES` in the script) and `docs/*.md` as they are,
   rewriting links (a README anchor to its page, other repository paths to github.com) and list indentation
   (Python-Markdown wants a blank line before a list and each nesting level 4 spaces in; the sources nest by 2 or by 4), then builds with
   `website/mkdocs.yml` into `work/site/out`. A new README section or `docs/*.md` file must be given a place in the
   script's table or the nav: the build says which. `--strict` (CI) fails on a link between pages with no target;
-  `--serve` previews. Needs Zensical on the PATH or in `work/site-venv` (`python3 -m venv work/site-venv && work/site-venv/bin/pip install -r
+  `--serve` previews; `--deploy` builds and publishes (the firebase CLI, signed in as the owner, or CI's
+  `FIREBASE_SERVICE_ACCOUNT` secret). Needs Zensical on the PATH or in `work/site-venv` (`python3 -m venv work/site-venv && work/site-venv/bin/pip install -r
   website/requirements.txt`; nothing else of apksim needs it).
   In a table, a code span's `\|` becomes `|` with a break allowed after it. `website/assets/site.css` holds the
   site's colours (light and a blue-grey dark), type and table styling; `app-light.png`/`app-dark.png` there are the

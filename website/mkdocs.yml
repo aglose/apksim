@@ -1,11 +1,12 @@
-# The apksim documentation site (https://aglose.github.io/apksim/), built by Zensical with the Material theme.
+# The apksim documentation site (https://apksim.web.app/), built by Zensical with the Material theme.
 # Do not run zensical here: scripts/docs-site.py assembles the pages (website/pages, the README's sections,
 # docs/*.md) into work/site/docs, copies this file beside them and builds there.
 #   scripts/docs-site.py            build into work/site/out
 #   scripts/docs-site.py --serve    live preview on http://localhost:8000
+#   scripts/docs-site.py --deploy   build, then publish to Firebase Hosting (project apksim, website/firebase.json)
 
 site_name: apksim
-site_url: https://aglose.github.io/apksim/
+site_url: https://apksim.web.app/
 site_description: "Run unmodified Android APKs on an Apple Silicon Mac as one ordinary process: no emulator, no VM."
 repo_name: aglose/apksim
 repo_url: https://github.com/aglose/apksim
