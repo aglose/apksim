@@ -368,6 +368,20 @@ def main():
     check(status == 400 and b"not allowed" in body, f"a URL add with a launch option outside the allowed set is refused ({status})")
     status, body = http(url, "/api/apps", token, data=json.dumps({"url": "file:///etc/passwd"}).encode())
     check(status == 400, f"a URL add that is not http(s) is refused ({status})")
+    status, body = http(url, "/api/apps", token, data=json.dumps({"url": "https://example.invalid/a.apk", "sha256": "zz"}).encode())
+    check(status == 400, f"a URL add with a malformed sha256 is refused ({status})")
+    # The chunked upload above is stored by its hash, which GET /api/apps/ID gives; an add of any URL naming that hash
+    # is ready at once, with no fetch (example.invalid cannot be fetched), and an unknown hash falls back to the URL.
+    up_id = json.loads(http(url, "/api/upload", token, data=tiny.getvalue(), headers={"X-Filename": "hashed.apk"})[1])["id"]
+    status, body = http(url, "/api/apps/" + up_id, token)
+    sha = json.loads(body).get("sha256") if status == 200 else None
+    import hashlib
+    check(sha == hashlib.sha256(tiny.getvalue()).hexdigest(), f"GET /api/apps/ID gives the stored build's SHA-256 ({sha})")
+    if sha:
+        status, body = http(url, "/api/apps", token, data=json.dumps({"url": "https://example.invalid/never.apk", "sha256": sha}).encode())
+        check(status == 200 and json.loads(body).get("state") == "ready", f"an add naming a stored build's sha256 is ready at once ({status} {body[:80]!r})")
+    status, body = http(url, "/api/apps", token, data=json.dumps({"url": "https://example.invalid/a.apk", "sha256": "0" * 64}).encode())
+    check(status == 200 and json.loads(body).get("state") == "downloading", f"an add naming an unknown sha256 downloads as usual ({status})")
     if a.fixture_host:
         dedupe_check(url, token, a.fixture_host, tiny.getvalue())
     # --move-shared-data only changes how the app's own libraries are mapped: an app may carry it (issue 161). The add

@@ -493,7 +493,7 @@ final class Catalog {
       progress.accept("downloading " + a.name());
       HttpURLConnection c = connect(a.url(), Map.of());
       try (InputStream in = c.getInputStream()) {
-        Path tmp = store(in, c.getContentLengthLong(), n -> {});
+        Path tmp = store(in, c.getContentLengthLong(), n -> {}).path();
         Files.move(tmp, to, StandardCopyOption.REPLACE_EXISTING);
       }
       return to;
@@ -526,6 +526,15 @@ final class Catalog {
    * Authorization) and are not kept.
    */
   App addUrl(String url, String name, Map<String, String> headers, List<String> launch) throws IOException {
+    return addUrl(url, name, headers, launch, null);
+  }
+
+  /**
+   * As above, and with `sha256` (hex) naming a build serve stores already, the add is answered ready without fetching
+   * anything (the URL is not even contacted): a front end that knows the build's hash from an earlier add of it. A hash
+   * serve does not have is ignored and the URL is fetched as usual.
+   */
+  App addUrl(String url, String name, Map<String, String> headers, List<String> launch, String sha256) throws IOException {
     URI u;
     try {
       u = URI.create(url);
@@ -538,6 +547,14 @@ final class Catalog {
     pruneFailures();
     String path = u.getPath() == null ? "" : u.getPath();
     String clean = clean(name == null || name.isBlank() ? path.substring(path.lastIndexOf('/') + 1) : name);
+    if (sha256 != null) {
+      App stored = byHash(sha256, clean, launch);
+      if (stored != null) {
+        ready(stored);
+        System.err.printf("[serve] added %s from the stored build %s%n", clean, sha256.substring(0, 12));
+        return stored;
+      }
+    }
     App pending = new App(newId(), clean, null, url, true, launch);
     Download d = new Download(pending);
     String key = sourceKey(url, headers);
@@ -581,11 +598,11 @@ final class Catalog {
       try {
         HttpURLConnection c = connect(url, headers);
         d.total = c.getContentLengthLong();
-        Path tmp;
+        Staged staged;
         try (InputStream in = c.getInputStream()) {
-          tmp = store(in, d.total, n -> d.received = n);
+          staged = store(in, d.total, n -> d.received = n);
         }
-        App done = publish(tmp, pending.id(), clean, launch);
+        App done = publish(staged, pending.id(), clean, launch);
         readyUnlessAwaited(d, done);  // the warm-up's job exists before a session not yet waiting looks for it
         d.finished = System.currentTimeMillis();
         d.done.complete(done);
@@ -740,20 +757,13 @@ final class Catalog {
   }
 
   /** Moves a stored file into place by its content hash and publishes `id` for it. */
-  private App publish(Path tmp, String id, String clean, List<String> launch) throws IOException {
-    return publish(tmp, id, clean, launch, null);
+  private App publish(Staged staged, String id, String clean, List<String> launch) throws IOException {
+    return publish(staged, id, clean, launch, null);
   }
 
-  private App publish(Path tmp, String id, String clean, List<String> launch, String expectSha256) throws IOException {
-    String sha;
-    try (InputStream f = Files.newInputStream(tmp)) {
-      MessageDigest md = MessageDigest.getInstance("SHA-256");
-      byte[] buf = new byte[1 << 16];
-      for (int n; (n = f.read(buf)) > 0; ) md.update(buf, 0, n);
-      sha = HexFormat.of().formatHex(md.digest());
-    } catch (java.security.NoSuchAlgorithmException e) {
-      throw new IllegalStateException(e);
-    }
+  private App publish(Staged staged, String id, String clean, List<String> launch, String expectSha256) throws IOException {
+    Path tmp = staged.path();
+    String sha = staged.sha();
     if (expectSha256 != null && !expectSha256.equals(sha)) {
       Files.deleteIfExists(tmp);
       throw new IOException("the APK's SHA-256 is " + sha + ", not the " + expectSha256 + " the page named");
@@ -771,9 +781,18 @@ final class Catalog {
     return new App(id, clean, apk, null, true, launch);
   }
 
-  /** Copies at most maxBytes into a temporary file, which must be a ZIP. */
-  private Path store(InputStream in, long length, LongConsumer progress) throws IOException {
+  /** A file staged by {@link #store}: its path and its SHA-256 (hex), worked out as it was copied. */
+  private record Staged(Path path, String sha) {}
+
+  /** Copies at most maxBytes into a temporary file, which must be a ZIP; hashes it on the way (no second read). */
+  private Staged store(InputStream in, long length, LongConsumer progress) throws IOException {
     if (length > maxBytes) throw new IOException("too large: " + (length >> 20) + " MB (limit " + (maxBytes >> 20) + " MB)");
+    MessageDigest md;
+    try {
+      md = MessageDigest.getInstance("SHA-256");
+    } catch (java.security.NoSuchAlgorithmException e) {
+      throw new IllegalStateException(e);
+    }
     Path tmp = Files.createTempFile(uploads, "incoming-", ".part");
     try (OutputStream out = Files.newOutputStream(tmp)) {
       byte[] buf = new byte[1 << 16];
@@ -785,6 +804,7 @@ final class Catalog {
         total += n;
         if (total > maxBytes) throw new IOException("too large (limit " + (maxBytes >> 20) + " MB)");
         out.write(buf, 0, n);
+        md.update(buf, 0, n);
         progress.accept(total);
       }
       if (length >= 0 && total < length) throw new IOException("upload ended early");
@@ -800,7 +820,7 @@ final class Catalog {
       Files.delete(tmp);
       throw new IOException("not an APK (not a ZIP file)");
     }
-    return tmp;
+    return new Staged(tmp, HexFormat.of().formatHex(md.digest()));
   }
 
   // ---------------------------------------------------------------- apksim beam's builds (docs/beam.md)
