@@ -133,6 +133,8 @@ jobs:
         run: scripts/launch-priority-check.sh
       - name: serve pacing check (an H.264 tab slower than the app, on a simulated clock)
         run: scripts/check-pacer.sh
+      - name: control channel gate check (a web page's POST refused, the token wanted first)
+        run: scripts/check-control-auth.sh
       - name: virtual audio output check (a track's head as a clock, blocking writes, underruns)
         run: scripts/check-virtual-out.sh
       - name: crash report check (an hs_err report's header and crashing thread into the log, nothing else)

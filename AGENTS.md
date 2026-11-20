@@ -987,6 +987,18 @@ hashes and taps),
 erase with each slot's `<slot>.device/` (its /sdcard and Settings values, `SlotDevice`).
 `scripts/ctl.py list` / `ctl.py [@PID|@PORT|@APKNAME] CMD [ARGS] [';' CMD...]` finds running instances by themselves
 (each writes `work/tmp/<pid>/control.port`); `--control auto` takes a free port.
+Who the control channel lets in (`Control.admit`, 2026-11-19): a connection whose first line is an HTTP request
+line is closed unanswered, always: a page in the user's browser can POST to a loopback port, and the lines of its body
+ran as commands (checked: `clipboard set` from a `curl` POST with an Origin header). `--control-token-file FILE`
+(`-Dapksim.controlTokenFile`, warm launches too; a host app's option, not for serve, beam or mcp) makes every connection
+send `auth TOKEN` first (FILE's content, 16+ characters, compared in constant time; answered `ok`; anything else gets one
+`error:` line and is closed), streams included; a file that cannot be read stops the launch (exit 2; the launcher's
+sandbox profile lets that one file be read wherever it is, but a warm launch's standby has its own profile, so a token
+under ~/.config, ~/Documents or ~/Desktop needs a cold launch). The file's mode is the owner's to keep private, and
+there is no limit on wrong tokens: use a long random one. Any first line shaped `METHOD TARGET HTTP/N` counts as HTTP. Without the option `auth X`
+is answered `ok`, so a client may always send it. `scripts/drive.py` reads `APKSIM_CONTROL_TOKEN_FILE`; `ctl.py`,
+`mcp.py` and serve do not send a token yet (they start instances without one). `scripts/check-control-auth.sh` (CI,
+`ControlCheck`). The adb port has no such option.
 
 ## Simulator features (Mac window)
 The window is resizable: dragging an edge resizes the display (`Device` rewrites the whole qualifier string:

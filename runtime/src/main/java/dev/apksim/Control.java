@@ -53,7 +53,21 @@ final class Control {
         PrintWriter out = new PrintWriter(s.getOutputStream(), true)) {
       s.setTcpNoDelay(true);  // replies are small and a tool may wait on each one
       String line;
+      boolean first = true;
       while ((line = in.readLine()) != null) {
+        if (first) {
+          first = false;
+          int gate = admit(line, token);
+          if (gate == REFUSED) {
+            // No answer for a browser's request (a page could not read it anyway); a word for a tool that forgot.
+            if (!looksLikeHttp(line)) out.println("error: this control channel wants `auth TOKEN` first (--control-token-file)");
+            return;
+          }
+          if (gate == AUTHENTICATED) {
+            out.println("ok");
+            continue;
+          }
+        }
         String[] args = line.trim().split("\\s+");
         if (args[0].equals("stream")) {
           // stream [QUALITY] [h264 [KBPS]]: this connection becomes a stream of frames (FrameStream) until it closes:
@@ -131,7 +145,50 @@ final class Control {
 
   private static final java.util.regex.Pattern LINE_BREAK = java.util.regex.Pattern.compile("\\s*[\\r\\n]+\\s*");
 
+  /** The token every connection must present first (`--control-token-file`), or null: any local client may connect. */
+  private static volatile String token;
+
+  static final int REFUSED = 0, AUTHENTICATED = 1, COMMAND = 2;
+
+  private static final java.util.regex.Pattern HTTP_REQUEST =
+      java.util.regex.Pattern.compile("^\\s*\\S+\\s+\\S+\\s+HTTP/\\d.*");  // any method: no command ends in HTTP/<digit>
+
+  /** Whether a connection's first line is an HTTP request line: a browser, sent here by a web page. */
+  static boolean looksLikeHttp(String line) {
+    return HTTP_REQUEST.matcher(line).matches();
+  }
+
+  /**
+   * What a connection's first line means. An HTTP request line is always refused: a page in the user's browser can
+   * POST to a loopback port, and the lines of its body would otherwise run as commands (its request line and headers
+   * being answered "unknown command"). With a token, the first line must be `auth TOKEN`; without one, `auth ...` is
+   * answered ok, so a client may always send it, and anything else is the first command.
+   */
+  static int admit(String firstLine, String token) {
+    if (looksLikeHttp(firstLine)) return REFUSED;
+    String line = firstLine.trim();
+    boolean auth = line.startsWith("auth ") || line.equals("auth");
+    if (token == null) return auth ? AUTHENTICATED : COMMAND;
+    if (!auth) return REFUSED;
+    byte[] given = line.substring(4).trim().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    return java.security.MessageDigest.isEqual(given, token.getBytes(java.nio.charset.StandardCharsets.UTF_8)) ? AUTHENTICATED : REFUSED;
+  }
+
+  /** Reads the token from the file `--control-token-file` names. The channel does not open without it. */
+  static String readToken(String file) throws IOException {
+    String t = java.nio.file.Files.readString(Storage.absolute(file)).strip();
+    if (t.length() < 16 || t.chars().anyMatch(Character::isWhitespace)) {
+      throw new IOException("the control token in " + file + " must be at least 16 characters with no spaces");
+    }
+    return t;
+  }
+
   static void start(int port) throws IOException {
+    start(port, System.getProperty("apksim.controlTokenFile"));
+  }
+
+  static void start(int port, String tokenFile) throws IOException {
+    if (tokenFile != null) token = readToken(tokenFile);
     // Loopback only, unless told otherwise: inside a container the host reaches it through a published port.
     String bind = System.getProperty("apksim.controlBind");
     ServerSocket server = LoopbackPorts.listen(port, bind == null ? InetAddress.getLoopbackAddress() : InetAddress.getByName(bind));

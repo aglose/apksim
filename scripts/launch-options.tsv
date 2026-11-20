@@ -18,6 +18,7 @@ option	value	cli	serve	beam	mcp	note
 --clock	value	yes	yes	yes	yes	
 --control	value	yes	server-only	server-only	server-only	
 --control-bind	value	yes	no: opens a port	no: opens a port	no: opens a port	
+--control-token-file	value	yes	no: names a host file	no: names a host file	no: names a host file	
 --coverage	value	yes	no: writes files	no: writes files	no: writes files	
 --data-slots	value	yes	server-only	server-only	server-only	
 --debug	value	yes	no: opens a JDWP port	no: opens a JDWP port	no: opens a JDWP port	

@@ -48,6 +48,7 @@ Common options (each is listed with its values in the README, "Devices and launc
   --activity PKG/.Act           start this activity instead of the launcher one
   --appearance dark|light, --locale xx-YY, --timezone ZONE, --font-scale N
   --control PORT|auto           command channel (scripts/drive.py, scripts/ctl.py)
+  --control-token-file FILE     the channel answers only connections that first send `auth` and FILE's token
   --adb PORT|auto               adb device (adb connect localhost:PORT)
   --headless, --window front|nofocus|background|minimized|hidden
   --network record|replay FILE, --network-profile offline|3g|lossy
@@ -181,6 +182,9 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --exit-after-first-frame) EXTRA+=("-Dapksim.exitAfterFirstFrame=true"); shift ;;
     --control) EXTRA+=("-Dapksim.control=$2"); shift 2 ;;
     --control-bind) EXTRA+=("-Dapksim.controlBind=$2"); shift 2 ;;
+    --control-token-file)
+      CONTROL_TOKEN_FILE="$2"; [[ "$2" == /* ]] || CONTROL_TOKEN_FILE="$PWD/$2"
+      EXTRA+=("-Dapksim.controlTokenFile=$CONTROL_TOKEN_FILE"); shift 2 ;;
     --adb) EXTRA+=("-Dapksim.adb=$2"); shift 2 ;;
     --jvm) EXTRA+=("$2"); shift 2 ;;
     # A JDWP port for IntelliJ/Android Studio "Remote JVM Debug" (attach any time; the app does not wait), and app
@@ -454,7 +458,7 @@ if [[ "$OS" == Darwin && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSI
   WARM_OK=1
   for e in "${EXTRA[@]+"${EXTRA[@]}"}"; do
     case "$e" in
-      -Dapksim.activity=*|-Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.adb=*) ;;
+      -Dapksim.activity=*|-Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.controlTokenFile=*|-Dapksim.adb=*) ;;
       -Dapksim.device=*|-Dapksim.fold=*|-Dapksim.deviceKind=*|-Dapksim.skinShape=*|-Dapksim.skin=*|-Dapksim.skinsDir=*|-Dapksim.skinsShared=*|-Dapksim.appearance=*|-Dapksim.locale=*|-Dapksim.timezone=*|-Dapksim.fontScale=*|-Dapksim.permissions=*|-Dapksim.clock=*) ;;
       -Dapksim.serial=*|-Dapksim.features=*|-Dapksim.skipLibraries=*|-Dapksim.moveSharedData=*|-Dapksim.build.*|-Dapksim.bluetooth=*|-Dapksim.sensors=*|-Dapksim.sysfs.*|-Dapksim.ble.*|-Dapksim.health.*|-Dapksim.camera=*|-Dapksim.cameraSizes=*|-Dapksim.setting.*) ;;
       # Seeds and broadcasts travel twice in the hand-off's argv (macOS limits it): large ones launch cold.
@@ -607,6 +611,12 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && ( -n "${APKSIM_BEAM_SANDBOX:-}"
 (deny file-read* (subpath \"$HOME/.ssh\") (subpath \"$HOME/.aws\") (subpath \"$HOME/.gnupg\") (subpath \"$HOME/.config\")
   (subpath \"$HOME/Library/Keychains\") (subpath \"$HOME/Library/Cookies\") (subpath \"$HOME/Documents\") (subpath \"$HOME/Desktop\")
   (subpath \"$HOME/Library/Application Support/Google\") (subpath \"$HOME/Library/Application Support/Firefox\"))"
+  # The control token may be kept in one of those folders (~/.config): that one file is readable. A warm launch's
+  # standby has the profile it was started with, so there such a file stops the launch with a line saying so.
+  if [[ -n "${CONTROL_TOKEN_FILE:-}" && "$CONTROL_TOKEN_FILE" != *[\"\\]* ]]; then
+    PROFILE="$PROFILE
+(allow file-read* (literal \"$CONTROL_TOKEN_FILE\"))"
+  fi
   if [[ -n "${NO_NET:-}" ]]; then
     PROFILE="$PROFILE
 (deny network-outbound (remote ip))
