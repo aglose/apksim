@@ -103,7 +103,7 @@ is in the browser.
    `native/`, so the Java agent needs no window server): "serve.example wants to run *App name* (12 MB, SHA-256
    abcd...) on this Mac. Allow once / Always for this site / Don't allow". Choices are kept in
    `STATE/beam/trust.json`; `apksim beam trust list|revoke ORIGIN`. Refused origins get the same answer as unknown
-   ones. As for any serve: Host must be a loopback name (DNS rebinding), at most N sessions (`--max`, default 2), and
+   ones. As for any serve: Host must be a loopback name (DNS rebinding), at most N sessions (`--max`; the agent's default is 4, set by `apksim beam config max N` or `apksim beam install --max N`, read at its start), and
    only the tab's own commands pass `Session.check`. No URL scheme carries a request: a custom scheme cannot tell who
    opened it, so `apksim-beam://` (if added) only wakes the agent.
 4. **Getting the APK there.** The server issues a **beam ticket** (`POST /api/beam {session|app}`): app id, name,
@@ -201,7 +201,7 @@ keeping a session to use later is the visitor's choice.
     no; a site set to never is 403). The builds get the `keep-days` hold.
   - From the tab, by the site it came from: reopening it, or starting a newer build of the same app on a copy of its
     data (issue 181: "Saved data from the tab").
-- **Settings**: `apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS] [inspect-network on|optional|off] [allow-adb on|off] [forward-allow URL_PREFIX|none] [forward-disallow URL_PREFIX] [allow-loopback PORTS|off]`, kept in
+- **Settings**: `apksim beam config [max N] [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS] [inspect-network on|optional|off] [allow-adb on|off] [forward-allow URL_PREFIX|none] [forward-disallow URL_PREFIX] [allow-loopback PORTS|off]`, kept in
   `STATE/beam/config.json` and read at the agent's start (launchd starts it with no options, so command-line flags
   are not the place; `rec` is the flight recorder channels a session starts with, `input` by default, so a bug can be saved with `rec save` and replayed (docs/flight-recorder.md); a session's `i` message tells the page `"rec": true` and `"recChannels"` (what the instance records, the owner's choice or the app's own `--rec`), `"rec": false` when it records nothing. `inspect-network` is off by default: with `on` every session runs the network inspector unless its start declines it (`"inspect": false`, issue 389: no network engine then, for an app the inspector gets in the way of; `/beam/hello` says `"inspectOptOut": true` on an agent that honours it, and `i` says what the session got), with `optional` only a start that asks (`/beam/start`'s `"inspect": true`, issue 371; 409 when the setting is `off`, 400 when not a boolean; `/beam/hello` says `"inspect": "off|optional|on"`) and `i` says `"inspect": true`, so the page shows the app's HTTP(S) traffic as it does on a serve with `--inspect-network` (`n` messages, `inspect` commands). Only a site the owner trusted can start a session, so only it can read either. `allow-loopback PORTS|off` (issue 428, "The beam sandbox": named loopback ports the app may reach); `allow-adb on` (off by default, issue 397; a CLI setting only, not a flag of `apksim beam`) lets every trusted site's start ask for an adb device on loopback with the whole adb shell in its session: "adb commands in a session" below); the same as flags on `apksim beam` for a run in the foreground.
 - **When it is swept**: at the agent's start, hourly while it runs, and as each session ends (so `keep-days 0`
@@ -361,7 +361,7 @@ waiting on the permission prompt (Chrome draws it, a script cannot see it).
 ## Phase 1 as built (2026-11-07)
 
 - **`apksim beam [--port N] [--max N]`** (launcher `beam)`, `Serve --beam`, `Beam.java`): serve in an agent mode on
-  127.0.0.1 only (default port 47474, 2 sessions), with no page, catalog or token of its own (it refuses `--bind`,
+  127.0.0.1 only (default port 47474, 4 sessions at once: `--max N`, or the config's `max`, which `apksim beam install --max N` writes and a reinstall or upgrade keeps; `/beam/hello` says `"max"`, issue 569), with no page, catalog or token of its own (it refuses `--bind`,
   `--token`, `--apps` and the proxy options). State in `STATE/beam/` (`trust.json`, `uploads/`, `logs/`); instances in
   data slots `beam-N`, erased when their session ends unless kept (phase 1c), `--headless --no-autofill` as serve's. Builds were kept 14 days
   after their last use (serve's uploads: a day); since 1c, `keep-days` after their last session.

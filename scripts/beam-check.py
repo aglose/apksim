@@ -1271,6 +1271,8 @@ def saved_tab_checks(apksim, gp, apk, apk_path, sha, size, sid, slot_start):
     key may not."""
     g = agent(apksim, gp, "allow")
     try:
+        mx = json.loads(req(gp, "GET", "/beam/hello", B)[2]).get("max")
+        check(mx == 4, f"hello: max is the agent's default of 4 when neither --max nor the config sets one ({mx})")
         st, _, body = req(gp, "GET", "/beam/saved", B)
         listed = json.loads(body) if st == 200 else []
         mine = [x for x in listed if x.get("id") == sid]

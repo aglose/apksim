@@ -43,8 +43,8 @@ public final class Serve {
                          [--keep-days N] [--save-sessions on|off] [--keep-saved-days N|never]
              apksim beam trust [list | allow ORIGIN | deny ORIGIN | revoke ORIGIN]
              apksim beam saved | run ID [OPTIONS] | to-device ID [OPTIONS] | forget ID | sweep | status
-             apksim beam install [--port N] [--agent-idle SECONDS] [--trust ORIGIN]... | uninstall   (launchd starts it when a page asks)
-             apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS]
+             apksim beam install [--port N] [--max N] [--agent-idle SECONDS] [--trust ORIGIN]... | uninstall   (launchd starts it when a page asks)
+             apksim beam config [max N] [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS]
                                [allow-download URL] [disallow-download URL] [allow-host ADDR[:PORT]] [disallow-host ADDR[:PORT]]""";
   private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -520,7 +520,7 @@ public final class Serve {
       }
       home = "beam";
       if (!portGiven) port = Beam.DEFAULT_PORT;
-      if (!maxGiven) max = 2;
+      if (!maxGiven) max = BeamStore.DEFAULT_MAX;  // the config's `max` replaces it once the store is read (issue 569)
       if (!bitrateGiven) bitrateKbps = BEAM_KBPS;
       agent = new Beam(state);
       Catalog.hostAllowance = () -> new HostAllow(agent.hosts());
@@ -529,7 +529,8 @@ public final class Serve {
       Catalog.loopbackAllowance = () -> store.loopbackNow(port);
       BeamStore.Config c = store.config;
       store.config = new BeamStore.Config(keepDays != null ? keepDays : c.keepDays(),
-          saveSessions != null ? saveSessions : c.saveSessions(), keepSavedDays != null ? keepSavedDays : c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback());
+          saveSessions != null ? saveSessions : c.saveSessions(), keepSavedDays != null ? keepSavedDays : c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback(), c.max());
+      if (!maxGiven) max = store.config.maxSessions();
       if (!store.lockAgent(port)) {
         int other = store.agentPort();
         System.err.println("apksim beam: an agent already runs for " + state + (other > 0 ? " (port " + other + ")" : "")
@@ -2417,7 +2418,7 @@ public final class Serve {
     if (r.method().equals("GET") && r.path().equals("/beam/hello")) {
       int[] pr = Beam.protocols();
       Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + ",\"trusted\":"
-          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"allowRequest\":[\"forward\",\"loopback\",\"host\"],\"forward\":" + (o != null && agent.trusted(o) ? forwardJson() : "[]") + ",\"adb\":" + store.allowAdbNow() + ",\"loopback\":" + (o != null && agent.trusted(o) ? store.loopbackNow(port) : List.of()) + ",\"hosts\":" + (o != null && agent.trusted(o) ? hostsJson() : "[]") + ",\"maxBroadcasts\":" + dev.apksim.BroadcastSpec.COUNT_MAX + ",\"rejoinS\":" + rejoinGraceSeconds + ",\"options\":" + Catalog.optionsJson() + "}");
+          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"max\":" + max + ",\"allowRequest\":[\"forward\",\"loopback\",\"host\"],\"forward\":" + (o != null && agent.trusted(o) ? forwardJson() : "[]") + ",\"adb\":" + store.allowAdbNow() + ",\"loopback\":" + (o != null && agent.trusted(o) ? store.loopbackNow(port) : List.of()) + ",\"hosts\":" + (o != null && agent.trusted(o) ? hostsJson() : "[]") + ",\"maxBroadcasts\":" + dev.apksim.BroadcastSpec.COUNT_MAX + ",\"rejoinS\":" + rejoinGraceSeconds + ",\"options\":" + Catalog.optionsJson() + "}");
       return;
     }
     // `apksim beam status` (docs/beam.md, phase 6): to a local tool only, never a page (a browser always sends Origin).
