@@ -1181,7 +1181,7 @@ public final class Serve {
       Catalog.App a = catalog.addUrl(url, name, headers, Catalog.launchOptions(given), sha);
       if (ttl > 0) catalog.expireAt(a.id(), ttl);
       Http.json(out, 200, "{\"id\":" + Http.q(a.id()) + ",\"name\":" + Http.q(a.name()) + ",\"state\":\""
-          + (a.path() != null ? "ready" : "downloading") + "\"}");
+          + (a.path() != null ? "ready\",\"sha256\":" + Http.q(catalog.buildHash(a.path())) + "}" : "downloading\"}"));
     } catch (Catalog.Busy e) {
       Http.respond(out, 503, "text/plain; charset=utf-8", (e.getMessage() + "\n").getBytes(StandardCharsets.UTF_8), "Retry-After: 30");
     } catch (IOException e) {
@@ -1399,7 +1399,11 @@ public final class Serve {
           why = String.valueOf(e.getCause().getMessage());
         }
         b.append(",\"state\":\"failed\",\"error\":").append(Http.q(why));
-      } else b.append(",\"state\":\"ready\"");
+      } else {
+        b.append(",\"state\":\"ready\"");
+        String h = catalog.buildHash(d.done.join().path());
+        if (h != null) b.append(",\"sha256\":").append(Http.q(h));
+      }
       Http.json(out, 200, b.append(",\"received\":").append(d.received()).append(",\"total\":").append(d.total())
           .append(expiry(id)).append(",\"cache\":\"none\"}").toString());
       return;
@@ -1414,7 +1418,7 @@ public final class Serve {
         + (Session.appDevice(a) != null ? ",\"device\":" + Http.q(Session.appDevice(a)) : "")
         // Its own --device rather than its skin's: a page naming the app's skin to the agent names this device with it.
         + (a.launch().contains("--device") ? ",\"deviceGiven\":true" : "")
-        + (Session.appSkin(a) != null ? ",\"skin\":" + Http.q(Session.appSkin(a)) : "") + ",\"state\":\"ready\",\"cache\":"
+        + (Session.appSkin(a) != null ? ",\"skin\":" + Http.q(Session.appSkin(a)) : "") + ",\"state\":\"ready\"" + (catalog.buildHash(a.path()) != null ? ",\"sha256\":" + Http.q(catalog.buildHash(a.path())) : "") + ",\"cache\":"
         + Http.q(warmer.state(a)) + (detail.isEmpty() ? "" : ",\"cacheDetail\":" + Http.q(detail)) + expiry(a.id()) + "}");
   }
 
