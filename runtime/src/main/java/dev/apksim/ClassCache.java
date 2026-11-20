@@ -53,7 +53,8 @@ final class ClassCache {
 
   private record Entry(ByteBuffer pack, int offset, int length, String[] owners, byte[] answers) {}
 
-  private record Fresh(byte[] bytes, String[] owners, byte[] answers, byte[] hash) {}
+  /** {@code hash} is known for a class found by content; a translated one carries {@code lazy}, worked out at the save. */
+  private record Fresh(byte[] bytes, String[] owners, byte[] answers, byte[] hash, Supplier<byte[]> lazy) {}
 
   /** A class's content hash as a map key. */
   private record Hash(long a, long b) {
@@ -157,7 +158,7 @@ final class ClassCache {
   boolean has(int dex, String name, ToIntFunction<String> answer, Supplier<byte[]> hash) {
     synchronized (this) {
       if (valid(dex, name, answer) != null || fresh[dex].containsKey(name)) return true;
-      if (!contentPossible()) return false;
+      if (hash == null || !contentPossible()) return false;
     }
     byte[] h = hash.get(); // outside the lock: the walk is the slow part
     synchronized (this) {
@@ -200,7 +201,7 @@ final class ClassCache {
     if (e == null) return null;
     byte[] bytes = new byte[e.length];
     e.pack.get(e.offset, bytes);
-    fresh[dex].put(name, new Fresh(bytes, e.owners, e.answers, h));
+    fresh[dex].put(name, new Fresh(bytes, e.owners, e.answers, h, null));
     unsaved++;
     contentHits++;
     return e;
@@ -237,15 +238,16 @@ final class ClassCache {
   }
 
   void put(int dex, String name, byte[] bytes, Map<String, Byte> answers, Supplier<byte[]> hash) {
-    byte[] h = content && hash != null ? hash.get() : null; // outside the lock
-    put(dex, name, bytes, answers, h, 0);
+    // The hash (only for the index, which a later build reads) is worked out at the save, on the idle saver thread:
+    // here it was on the thread that translates, and a launch that finds nothing to reuse paid for it (issue 571).
+    putFresh(dex, name, bytes, answers, content ? hash : null);
   }
 
-  private synchronized void put(int dex, String name, byte[] bytes, Map<String, Byte> answers, byte[] h, int unused) {
+  private synchronized void putFresh(int dex, String name, byte[] bytes, Map<String, Byte> answers, Supplier<byte[]> lazy) {
     String[] owners = answers.keySet().toArray(new String[0]);
     byte[] a = new byte[owners.length];
     for (int i = 0; i < owners.length; i++) a[i] = answers.get(owners[i]);
-    fresh[dex].put(name, new Fresh(bytes, owners, a, h));
+    fresh[dex].put(name, new Fresh(bytes, owners, a, null, lazy));
     unsaved++;
   }
 
@@ -261,7 +263,7 @@ final class ClassCache {
         }
         if (now > 0 && now == seen) {
           synchronized (saving) {
-            save();
+            save(Long.MAX_VALUE);
           }
           seen = 0;
         } else {
@@ -280,12 +282,12 @@ final class ClassCache {
         synchronized (cache) {
           if (cache.unsaved == 0) continue;
         }
-        cache.save();
+        cache.save(1_500_000_000L);
       }
     }
   }
 
-  private void save() {
+  private void save(long hashBudgetNanos) {
     Map<Integer, Map<String, Fresh>> todo = new LinkedHashMap<>();
     List<String> names = null;
     synchronized (this) {
@@ -303,6 +305,23 @@ final class ClassCache {
         fresh[i] = new HashMap<>();
       }
       unsaved = 0;
+    }
+    // Hashes of the classes this process translated, outside the lock; past the budget (an exit) the rest go unindexed.
+    long deadline = hashBudgetNanos == Long.MAX_VALUE ? Long.MAX_VALUE : System.nanoTime() + hashBudgetNanos;
+    Map<Hash, String> hashed = new HashMap<>();
+    for (Map.Entry<Integer, Map<String, Fresh>> t : todo.entrySet()) {
+      for (Fresh f : t.getValue().values()) {
+        if (f.lazy == null || System.nanoTime() > deadline) continue;
+        try {
+          byte[] h = f.lazy.get();
+          if (h != null) hashed.put(Hash.of(h), keys[t.getKey()]);
+        } catch (RuntimeException ignored) {
+          // Unindexed only: a later build translates it again.
+        }
+      }
+    }
+    synchronized (this) {
+      indexAdds.putAll(hashed);
     }
     int written = 0;
     try {

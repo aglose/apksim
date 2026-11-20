@@ -336,8 +336,9 @@ final class AppClasses {
   private void translateAhead() {
     List<String> todo = new ArrayList<>();
     for (String name : cache.hints()) {
+      // Own pack only here: looking for the class by content hashes it, which the workers below do in parallel.
       int[] at = find(name);
-      if (at != null && !cache.has(at[0], name, this::answer, hashOf(at, name))) todo.add(name);
+      if (at != null && !cache.has(at[0], name, this::answer, null)) todo.add(name);
     }
     if (todo.isEmpty()) return;
     AtomicInteger next = new AtomicInteger();
@@ -353,6 +354,8 @@ final class AppClasses {
           if (asked.contains(name)) continue;
           int[] at = find(name);
           if (views[at[0]] == null) views[at[0]] = dexes.get(at[0]).view();
+          // Another build's pack may hold it: found by content on this thread's view, else translated.
+          if (cache.has(at[0], name, this::answer, () -> dev.apksim.dex.ClassHash.of(views[at[0]], at[1]))) continue;
           byte[] out = translate(views[at[0]], at, name);
           if (out != null && !asked.contains(name)) {
             ahead.put(name, out);
