@@ -138,7 +138,7 @@ object beside each, as the Mac shim does. Both Linux shims map `setjmp`/`sigsetj
 
 A standby (AGENTS.md "Warm launches") is a JVM that has booted the framework and waits for the next launch, which
 then skips the JVM's and the framework's start. On the Mac every launch uses one; in the image only when
-`APKSIM_STANDBY=1` is set, since a container
+`APKSIM_STANDBY=1` is set (`apksim serve --warm-standby 1` sets it for its sessions, docs/serve.md), since a container
 that runs one app or one suite has no next launch to keep it for. With it, a launch's instance starts the next standby
 a second after its first frame (or on exit), and the next launch hands over to it.
 
@@ -155,7 +155,7 @@ standby. An idle standby holds ~175 MB of anonymous memory (~290 MB resident wit
 it quits when the container's memory runs short (under a tenth of its cgroup limit and under 256 MB left, the
 inactive file cache counted free; a heuristic, which may count a large active file cache as used), and the next launch is cold. The instance a standby becomes is not the launching
 process's child, so the container's PID 1 must reap it when it exits: run long-lived containers with an init
-(`docker run --init`).
+(`docker run --init`), as `apksim serve` does itself (it runs under the image's tini when it is PID 1).
 
 ## Video
 

@@ -527,8 +527,8 @@ final class Session {
     // Never what it prints: the app's own output could name another process.
     instancePid = listenerPid(p);
     if (instancePid <= 0 && !System.getProperty("os.name", "").startsWith("Mac")) {
-      // No lsof (the Linux image), and no standby off the Mac: the launcher execs the JVM, so the process started
-      // here is the instance itself.
+      // Neither lsof nor /proc answered: without a standby the launcher execs the JVM, so the process started here is
+      // the instance itself (with one it is the client, which stands in for it until it exits).
       Process launched;
       synchronized (this) {
         launched = process;
@@ -2986,6 +2986,8 @@ final class Session {
    */
   /** The PID of the process listening on this loopback port (lsof, the kernel's answer), or -1. */
   static long listenerPid(int port) {
+    long proc = procListenerPid(port);
+    if (proc != 0) return proc;
     try {
       Process l = new ProcessBuilder("lsof", "-nP", "-iTCP:" + port, "-sTCP:LISTEN", "-t").redirectErrorStream(true).start();
       String out = new String(l.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip();
@@ -2995,6 +2997,56 @@ final class Session {
       return -1;
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
+      return -1;
+    }
+  }
+
+  /**
+   * Linux without lsof (the image): the process holding the socket that listens on this loopback port, from the
+   * kernel's own tables (/proc/net/tcp and tcp6, then each process's descriptors). 0 where there is no /proc (the Mac:
+   * lsof then), -1 when none or more than one process holds it. With a warm standby the instance is not the process
+   * serve started (that is the launcher's client), so the started process's PID is no stand-in for it (issue 561).
+   */
+  static long procListenerPid(int port) {
+    if (!Files.isReadable(Path.of("/proc/net/tcp"))) return 0;
+    try {
+      java.util.Set<String> inodes = new java.util.HashSet<>();
+      String hexPort = String.format(":%04X", port);
+      for (String table : List.of("/proc/net/tcp", "/proc/net/tcp6")) {
+        Path t = Path.of(table);
+        if (!Files.isReadable(t)) continue;
+        for (String line : Files.readAllLines(t)) {
+          String[] f = line.trim().split("\\s+");
+          // sl local_address rem_address st ... inode (field 9); state 0A is LISTEN
+          if (f.length > 9 && f[1].endsWith(hexPort) && f[3].equals("0A")) inodes.add(f[9]);
+        }
+      }
+      if (inodes.isEmpty()) return -1;
+      long found = -1;
+      try (var procs = Files.newDirectoryStream(Path.of("/proc"), p -> p.getFileName().toString().matches("\\d+"))) {
+        for (Path p : procs) {
+          try (var fds = Files.newDirectoryStream(p.resolve("fd"))) {
+            for (Path fd : fds) {
+              String target;
+              try {
+                target = Files.readSymbolicLink(fd).toString();
+              } catch (IOException e) {
+                continue;
+              }
+              if (target.startsWith("socket:[") && inodes.contains(target.substring(8, target.length() - 1))) {
+                long pid = Long.parseLong(p.getFileName().toString());
+                if (found > 0 && found != pid) return -1;
+                found = pid;
+                break;
+              }
+            }
+          } catch (IOException | SecurityException e) {
+            // another user's process, or gone
+          }
+        }
+      }
+      return found;
+    } catch (IOException | RuntimeException e) {
       return -1;
     }
   }

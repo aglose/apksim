@@ -41,7 +41,7 @@ RUN mkdir -p /opt/apksim/work/runtime/icu && \
     # apksim serve's H.264 stream: OpenH264, opened at run time (libopenh264-7 below; without it the stream stays JPEG).
     gcc -O2 -shared -fPIC -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
       -o /opt/apksim/work/runtime/libh264enc.so native/linux/h264enc_linux.c -ldl && \
-    # Warm launches (Standby.java; opt-in on Linux, APKSIM_STANDBY=1): the standby's socket
+    # Warm launches (Standby.java; opt-in on Linux, APKSIM_STANDBY=1 or serve --warm-standby): the standby's socket
     # hand-off and the launcher's client, the same sources as the Mac's.
     gcc -O2 -Wall -shared -fPIC -D_GNU_SOURCE -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
       -o /opt/apksim/work/runtime/libstandby.so native/standby.c && \
@@ -119,7 +119,8 @@ LABEL org.opencontainers.image.source=https://github.com/aglose/apksim \
 # GLES for test runs that render offscreen (dev.apksim.gl): Mesa's software EGL and GLES, on EGL's surfaceless platform
 # (no display server), where pbuffers work. Python for scripts/instrument.py (a whole suite in one container),
 # snapshot.py (screenshot tests, docs/snapshots.md), drive.py and journey.py (docs/replay.md). OpenH264 for `apksim serve`'s H.264 stream.
-RUN apt-get update && apt-get install -y --no-install-recommends libegl1 libgles2 libegl-mesa0 libgl1-mesa-dri python3 libopenh264-7 && \
+# tini: `apksim serve` as PID 1 runs under it, which reaps the instances its warm standby becomes (issue 561).
+RUN apt-get update && apt-get install -y --no-install-recommends libegl1 libgles2 libegl-mesa0 libgl1-mesa-dri python3 libopenh264-7 tini && \
     rm -rf /var/lib/apt/lists/*
 ENV EGL_PLATFORM=surfaceless
 # State (startup cache, class cache, app data) stays in the image's own work/, also when work/release marks a version.

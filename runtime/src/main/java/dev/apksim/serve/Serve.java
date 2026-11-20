@@ -35,7 +35,7 @@ public final class Serve {
   private static final String USAGE = """
       usage: apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
                           [--max-upload MB] [--max-push MB] [--allow-rec] [--no-shell] [--issue-url TEMPLATE] [--inspect-network [optional]] [--inspect-max-rules N] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
-                          [--inspect-forward-allow URL_PREFIX]... [--network-host-allow ADDR[:PORT]]... [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--in-flight N]
+                          [--inspect-forward-allow URL_PREFIX]... [--network-host-allow ADDR[:PORT]]... [--allow-origin ORIGIN]... [--warm auto|on|off] [--warm-standby 0|1] [--core-dumps] [--move-shared-data] [--in-flight N]
                           [--allow-share] [--max-viewers N] [--rejoin-grace SECONDS]
                           [--trust-proxy] [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
                           [--skins DIR]... [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N]
@@ -121,8 +121,14 @@ public final class Serve {
   boolean coreDumps;
   /** `--move-shared-data`: every instance loads 4 KB-aligned libraries with data on a code page (macOS, experimental). */
   boolean moveSharedData;
-  /** `--warm`: warm each APK's cache in the background: on Linux (no warm standby) by default, `on` also on the Mac. */
+  /** `--warm`: warm each APK's cache in the background: on Linux by default, `on` also on the Mac. */
   String warm = "auto";
+  /**
+   * `--warm-standby 0|1` (issue 561): keep a warm-launch standby booted for the next session start. -1 (not given):
+   * on on the Mac, off on Linux, where it is a JVM of ~200-300 MB that the pod's memory has to hold beside its
+   * sessions. A standby quits when the machine or its container runs short of memory (Footprint.memoryShort).
+   */
+  int warmStandby = -1;
   Warmer warmer;
   /** `--device-size NAME=WxH@density`: named sizes besides the built-in devices, in the order given. */
   final Map<String, String> deviceSizes = new LinkedHashMap<>();
@@ -377,6 +383,14 @@ public final class Serve {
             System.err.println("--warm takes auto, on or off\n" + USAGE);
             System.exit(2);
           }
+        }
+        case "--warm-standby" -> {
+          String n = need(a, v);
+          if (!n.equals("0") && !n.equals("1")) {
+            System.err.println("--warm-standby takes 0 or 1 (one standby per apksim folder)\n" + USAGE);
+            System.exit(2);
+          }
+          s.warmStandby = Integer.parseInt(n);
         }
         case "--core-dumps" -> {
           s.coreDumps = true;
@@ -715,10 +729,22 @@ public final class Serve {
     return started != null && (!Files.exists(launcher) || !Beam.version(root).equals(started));
   }
 
-  /** On the Mac, a warm-launch standby for the first session (each instance starts the next after its first frame). */
+  /** Whether sessions' instances use warm-launch standbys: `--warm-standby`, by default on the Mac only. */
+  boolean standbys() {
+    if ("0".equals(System.getenv("APKSIM_STANDBY")) && warmStandby != 1) return false;
+    return warmStandby < 0 ? isMac() : warmStandby == 1;
+  }
+
+  static boolean isMac() {
+    return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac");
+  }
+
+  /**
+   * A warm-launch standby for the first session (each instance starts the next a second after its first frame, so a
+   * session start refills it), where {@link #standbys} are on.
+   */
   void warmStandby() {
-    if (!System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac")) return;
-    if ("0".equals(System.getenv("APKSIM_STANDBY"))) return;
+    if (!standbys()) return;
     if (releaseReplaced()) return;  // no launcher to start it from; the agent exits once idle
     try {
       // The standby is the JVM sessions' instances become: it gets the no-core policy too (APKSIM_NO_CORE reaches its flags).
@@ -748,6 +774,10 @@ public final class Serve {
   void instanceEnvironment(ProcessBuilder pb) {
     if (coreDumps) pb.environment().remove("APKSIM_NO_CORE");
     else pb.environment().put("APKSIM_NO_CORE", "1");
+    // Standbys (issue 561): the launcher uses them on the Mac unless told 0, on Linux only when told 1.
+    if (!standbys()) pb.environment().put("APKSIM_STANDBY", "0");
+    else if (isMac()) pb.environment().remove("APKSIM_STANDBY");
+    else pb.environment().put("APKSIM_STANDBY", "1");
     // The agent's: an APK a web site sent, in a sandbox of its own (docs/beam.md "The beam sandbox").
     if (beam) {
       pb.environment().put("APKSIM_BEAM_SANDBOX", "1");

@@ -453,7 +453,8 @@ if [[ -n "${APKSIM_BEAM_SANDBOX:-}" ]]; then
 fi
 # A standby takes only properties read after it takes the launch: the options above and a few switches. JVM options,
 # a debugger, test runs, other -D switches (read while the standby boots) and training (APKSIM_NOCACHE) launch cold.
-# On the Mac by default (APKSIM_STANDBY=0 turns them off). On Linux only when asked, APKSIM_STANDBY=1: a container running one app or one suite has no next launch to keep a
+# On the Mac by default (APKSIM_STANDBY=0 turns them off). On Linux only when asked, APKSIM_STANDBY=1 (serve's
+# --warm-standby sets it for its instances): a container running one app or one suite has no next launch to keep a
 # ~200-300 MB JVM booted for. (cold: the client handed this launch back; it still starts the next standby.)
 STANDBY_ON=""
 if [[ "$OS" == Darwin ]]; then [[ "${APKSIM_STANDBY:-1}" != 0 ]] && STANDBY_ON=1
@@ -519,6 +520,12 @@ if [[ -n "${TRACEVIEW:-}" ]]; then
   exec "$JAVA" -XX:+UseSerialGC -Xmx256m -XX:TieredStopAtLevel=1 -cp "$ROOT/work/apksim.jar" dev.apksim.serve.TraceView "$@"
 fi
 if [[ -n "${SERVE:-}" ]]; then
+  # A container's entrypoint is PID 1, which inherits every orphan: an instance a standby became (its client is serve's
+  # child, the JVM is not) and a standby that quit. The JVM never reaps those, and each would stay a zombie, whose PID
+  # also looks alive to the next launch. tini (in the image) reaps them and passes signals on (issue 561).
+  if [[ "$OS" == Linux && $$ == 1 && "${1:-}" != --beam ]] && command -v tini >/dev/null; then
+    exec tini -- "$ROOT/apksim" serve "$@"
+  fi
   exec "$JAVA" -XX:+UseSerialGC -Xmx256m -XX:TieredStopAtLevel=1 -Dapksim.root="$ROOT" -Dapksim.state="$STATE" \
     -cp "$ROOT/work/apksim.jar" dev.apksim.serve.Serve "$@"
 fi

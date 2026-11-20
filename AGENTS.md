@@ -1509,7 +1509,7 @@ from start to ready, ~190-225 MB while it waits (~350 MB before 2026-11-14).
   `libstandby.so` and `apksim-client` from the same sources. In the arm64 image (4 CPUs) the test app's first frame is
   ~0.22 s from a standby against 0.94-1.7 s cold; an idle standby is ~175 MB of anonymous memory (~290 MB resident).
   A JVM a standby became is not the launching process's child: the container's PID 1 must reap it, or it stays a
-  zombie (`docker run --init`).
+  zombie (`docker run --init`; `apksim serve` re-runs itself under the image's tini when it is PID 1).
 - An instance from a standby has the standby's environment and PID, not the launcher's: `scripts/ctl.py` reads the
   APK from `work/tmp/<pid>/launch.info`. Resolve paths from commands with `Storage.absolute`, not
   `Path.toAbsolutePath` (the JDK fixes that at JVM start).
@@ -1583,7 +1583,7 @@ Not supported: other apps beside the running one, split APKs (`install-multiple`
 `./apksim serve [--port 8080] [--bind ADDR] [--token FILE] [--max 4] [--idle 600] [--apps DIR|FILE]... [--max-upload MB] [--allow-share]`:
 an HTTP server whose page (one self-contained file) runs a listed or uploaded APK per tab and streams it; docs/serve.md
 is the spec, the security model and the measurements. Each tab is an ordinary launch (`--headless --fresh --control
-auto`, warm on the Mac when the standby is ready, cold on Linux), read from its stderr (`[apksim] control port N`;
+auto`, warm when the standby is ready: on the Mac by default, on Linux with `--warm-standby 1`, issue 561), read from its stderr (`[apksim] control port N`;
 the rest goes to `STATE/serve/logs/<session>.log`). Serve opens two control connections: commands, pipelined, and
 `stream`, after which `FrameStream` sends each presented frame that differs from the last as a JPEG (Android's encoder,
 on its own thread; `redraw` makes the Host draw one for a new subscriber), or as H.264 when the tab asked
