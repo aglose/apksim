@@ -95,6 +95,8 @@ final class Catalog {
     volatile Download lead;
     /** When the fetch finished, 0 until then (for {@link #REUSE_MILLIS}). */
     volatile long finished;
+    /** Sessions waiting on this download in {@link #file}: they launch the app themselves, so no warm-up is queued. */
+    final java.util.concurrent.atomic.AtomicInteger waiters = new java.util.concurrent.atomic.AtomicInteger();
 
     long received() {
       return lead != null ? lead.received() : received;
@@ -444,6 +446,22 @@ final class Catalog {
       return file(published, progress, stopped);
     }
     if (d != null) {
+      d.waiters.incrementAndGet();
+      try {
+        return waitFor(d, progress, stopped);
+      } finally {
+        d.waiters.decrementAndGet();
+      }
+    }
+    if (a.path() != null) {
+      if (!Files.isRegularFile(a.path())) throw new IOException("no such APK: " + a.name());
+      return a.path();
+    }
+    return fetchConfigured(a, progress);
+  }
+
+  private Path waitFor(Download d, Consumer<String> progress, BooleanSupplier stopped) throws IOException {
+    {
       String last = "";
       while (true) {
         if (stopped.getAsBoolean()) throw new IOException("the session ended while the app downloaded");
@@ -462,10 +480,9 @@ final class Catalog {
         }
       }
     }
-    if (a.path() != null) {
-      if (!Files.isRegularFile(a.path())) throw new IOException("no such APK: " + a.name());
-      return a.path();
-    }
+  }
+
+  private Path fetchConfigured(App a, Consumer<String> progress) throws IOException {
     Path to = downloads.resolve(hash(a.url().getBytes(StandardCharsets.UTF_8)).substring(0, 24) + ".apk");
     synchronized (this) {
       if (Files.isRegularFile(to)) return to;
@@ -545,7 +562,7 @@ final class Catalog {
         try {
           Path apk = from.done.get().path();
           App done = publishRef(apk, pending.id(), clean, launch);
-          ready(done);
+          readyUnlessAwaited(d, done);
           d.done.complete(done);
           System.err.printf("[serve] added %s from %s (shared download)%n", clean, u.getHost());
         } catch (Exception e) {
@@ -565,7 +582,7 @@ final class Catalog {
           tmp = store(in, d.total, n -> d.received = n);
         }
         App done = publish(tmp, pending.id(), clean, launch);
-        ready(done);  // the warm-up's job exists before a session waiting on the download looks for it
+        readyUnlessAwaited(d, done);  // the warm-up's job exists before a session not yet waiting looks for it
         d.finished = System.currentTimeMillis();
         d.done.complete(done);
         System.err.printf("[serve] added %s (%d MB) from %s%n", clean, d.received >> 20, u.getHost());
@@ -691,6 +708,14 @@ final class Catalog {
     App a = publish(store(in, length, n -> {}), newId(), clean(name), launch, expectSha256);
     ready(a);
     return a;
+  }
+
+  /**
+   * A session already waiting on this download launches the app itself as soon as it is stored: a warm-up queued now
+   * would be a whole throwaway launch in front of it (issue 557). Nobody waiting: the background warm-up, as before.
+   */
+  private void readyUnlessAwaited(Download d, App a) {
+    if (d.waiters.get() == 0) ready(a);
   }
 
   private void ready(App a) {
