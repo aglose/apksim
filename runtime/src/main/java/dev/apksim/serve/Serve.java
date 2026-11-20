@@ -731,8 +731,10 @@ public final class Serve {
 
   /** Whether sessions' instances use warm-launch standbys: `--warm-standby`, by default on the Mac only. */
   boolean standbys() {
-    if ("0".equals(System.getenv("APKSIM_STANDBY")) && warmStandby != 1) return false;
-    return warmStandby < 0 ? isMac() : warmStandby == 1;
+    if (warmStandby >= 0) return warmStandby == 1;
+    // Not given: the environment as the launcher reads it (on the Mac unless 0, on Linux only when 1).
+    String env = System.getenv("APKSIM_STANDBY");
+    return isMac() ? !"0".equals(env) : "1".equals(env);
   }
 
   static boolean isMac() {

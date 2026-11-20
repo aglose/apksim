@@ -3040,8 +3040,8 @@ final class Session {
                 break;
               }
             }
-          } catch (IOException | SecurityException e) {
-            // another user's process, or gone
+          } catch (IOException | RuntimeException e) {
+            // another user's process, or gone (DirectoryIteratorException when it exits mid-listing)
           }
         }
       }
