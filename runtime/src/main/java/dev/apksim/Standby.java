@@ -66,8 +66,9 @@ final class Standby {
       byte[] msg = nativeAccept(listen, 2000);
       boolean stale = jarStamp() != jar || !ownsPidFile(pidFile);
       if (msg == null) {
-        // A standby is a cache (~350 MB): it gives way when the Mac runs short of memory, and the next launch is cold.
-        if (Footprint.pressure() > 1) {
+        // A standby is a cache (~200-300 MB): it gives way when the Mac, or the container on Linux, runs short of
+        // memory, and the next launch is cold.
+        if (Footprint.memoryShort()) {
           System.err.println("[apksim] standby: the system is short of memory, quitting");
           quit(pidFile, sock);
         }

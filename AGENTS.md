@@ -888,7 +888,7 @@ a recreation; Compose then scrolled to it), which a cold launch never showed. Th
 always assigned" when that flag is set, and per window `touch|keys`, the window focus and the focused view's class; in
 test runs through `executeShellCommand("apksim touchmode")`. Test runs get the starting mode only (Robolectric's
 injection does not leave touch mode on keys). `-Dapksim.touchMode=false` leaves all of it as before (launches cold).
-`TouchModeTest`, `ci-smoke.sh` (the Linux image has no standby, so the warm case is checked by hand: launch twice,
+`TouchModeTest`, `ci-smoke.sh` (the Linux image starts no standby unless asked, so the warm case is checked by hand: launch twice,
 `restart apksim://composeapp/trips`, `touchmode` must show no `focus=`).
 `thermal [none|light|moderate|severe|critical|emergency|shutdown]` (`Thermal`, issue 149): PowerManager's thermal status,
 NONE at launch; `addThermalStatusListener(Executor, listener)` registers (Robolectric's shadow covered only the one-argument
@@ -1501,7 +1501,15 @@ from start to ready, ~190-225 MB while it waits (~350 MB before 2026-11-14).
   change, so after `build.sh` + `train.sh` the next launch is cold and starts a fresh one. `./apksim --stop-standbys`
   stops them; `APKSIM_STANDBY=0` launches cold and starts none. `--jvm` options other than the `-D` switches listed in
   the launcher (read after the hand-off), `--debug`, `--instrument` and training launch cold: a property read while
-  the standby booted would be ignored. Linux has no standby.
+  the standby booted would be ignored. A standby gives way when memory runs short (`Footprint.memoryShort`: macOS's
+  pressure above normal; on Linux under a tenth of the cgroup's limit, or of MemTotal without one, and under 256 MB
+  left, the inactive file cache counted free), and the next launch is cold.
+- Linux (issue 561): opt-in, `APKSIM_STANDBY=1` (the client hands a refused launch back as `cold`, which still starts
+  the next one); off by default, as a container running one app or suite has no next launch. The image builds
+  `libstandby.so` and `apksim-client` from the same sources. In the arm64 image (4 CPUs) the test app's first frame is
+  ~0.22 s from a standby against 0.94-1.7 s cold; an idle standby is ~175 MB of anonymous memory (~290 MB resident).
+  A JVM a standby became is not the launching process's child: the container's PID 1 must reap it, or it stays a
+  zombie (`docker run --init`).
 - An instance from a standby has the standby's environment and PID, not the launcher's: `scripts/ctl.py` reads the
   APK from `work/tmp/<pid>/launch.info`. Resolve paths from commands with `Storage.absolute`, not
   `Path.toAbsolutePath` (the JDK fixes that at JVM start).
