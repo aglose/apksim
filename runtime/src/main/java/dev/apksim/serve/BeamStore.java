@@ -99,7 +99,7 @@ final class BeamStore {
 
   static final String DEFAULT_REC = "input";
 
-  /** `max` when the config does not say (issue 569): the agent runs on the visitor's own machine, so 4 (serve's default is 2). */
+  /** `max` when the config does not say (issue 569): the agent runs on the visitor's own machine, so 4 (it was 2; serve keeps its own default). */
   static final int DEFAULT_MAX = 4;
   /** The most `config max` takes: each session is ~1.6 GB resident, and more than a machine runs is only a refusal later. */
   static final int MAX_LIMIT = 64;
