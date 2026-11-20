@@ -2094,6 +2094,13 @@ offset, GLsizeiptr widened to 64 bits); `ShadowSimEGL14` is by hand, and a windo
 for window ones or named no surface type (EGL's default is windows), and drops `EGL_RECORDABLE_ANDROID`: Mesa's
 surfaceless platform has no window configs, and WebRTC's `EglBase.create()` threw "Unable to find any matching EGL
 config" in every journey that showed a live camera. Without a library the shadows fall back to Robolectric's stand-ins.
+The legacy `javax.microedition.khronos.egl.EGL10` (`EGLContext.getEGL()`) works too (issue 574): apksim.jar carries its
+own `com.google.android.gles_jni.EGLImpl` and `EGLContextImpl` ahead of the framework's (that jar's EGLImpl is not
+instrumented, so its natives cannot be shadowed, and its class initializer, like GLImpl's, called one nothing
+implements: touching EGL10 ended the app). EGLImpl is EGL10 over `android.opengl.EGL14`, so a real EGL where
+`ShadowSimEGL14` has one and Robolectric's stand-ins otherwise; a window surface is EGL14's pbuffer (512 square for a SurfaceTexture: its
+default buffer size is not read). Not done: pixmap surfaces, `eglCopyBuffers`, `EGLContext.getGL()` (null; the GL10/GL11 interface). `GlesTest`
+renders through it.
 
 ## Releases (Homebrew, install.sh)
 `scripts/package-release.sh VERSION` turns a built checkout (`scripts/setup.sh --no-train`) into

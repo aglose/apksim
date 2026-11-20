@@ -5,6 +5,9 @@ import android.opengl.EGLConfig
 import android.opengl.GLES20
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.nio.ByteBuffer
+import javax.microedition.khronos.egl.EGL10
+import javax.microedition.khronos.egl.EGLConfig as EGLConfig10
+import javax.microedition.khronos.egl.EGLContext as EGLContext10
 import java.nio.ByteOrder
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -70,6 +73,53 @@ class GlesTest {
       assertEquals("configs", 1, count[0])
     } finally {
       EGL14.eglTerminate(dpy)
+    }
+  }
+
+  /**
+   * The legacy EGL10 API, as an older camera preview renders into a SurfaceTexture (issue 574): its implementation class
+   * initialised through an unshadowed native and ended the app. A window surface made from a SurfaceTexture, a context
+   * (version 2), clear, read back, swap.
+   */
+  @Test
+  fun egl10RendersIntoAWindowSurfaceOfASurfaceTexture() {
+    val egl = EGLContext10.getEGL() as EGL10
+    val dpy = egl.eglGetDisplay(EGL10.EGL_DEFAULT_DISPLAY)
+    assertNotEquals(EGL10.EGL_NO_DISPLAY, dpy)
+    val version = IntArray(2)
+    assertTrue("eglInitialize: ${egl.eglGetError()}", egl.eglInitialize(dpy, version))
+    val texture = android.graphics.SurfaceTexture(0)
+    texture.setDefaultBufferSize(64, 64)
+    try {
+      val configs = arrayOfNulls<EGLConfig10>(1)
+      val count = IntArray(1)
+      val attribs = intArrayOf(EGL10.EGL_RED_SIZE, 8, EGL10.EGL_GREEN_SIZE, 8, EGL10.EGL_BLUE_SIZE, 8,
+        EGL10.EGL_ALPHA_SIZE, 8, 0x3040 /* EGL_RENDERABLE_TYPE */, 4 /* ES2 */, EGL10.EGL_NONE)
+      assertTrue(egl.eglChooseConfig(dpy, attribs, configs, 1, count))
+      assertEquals("configs", 1, count[0])
+      val ctx = egl.eglCreateContext(dpy, configs[0], EGL10.EGL_NO_CONTEXT,
+        intArrayOf(0x3098 /* EGL_CONTEXT_CLIENT_VERSION */, 2, EGL10.EGL_NONE))
+      assertNotEquals("eglCreateContext: ${egl.eglGetError()}", EGL10.EGL_NO_CONTEXT, ctx)
+      val surface = egl.eglCreateWindowSurface(dpy, configs[0], texture, null)
+      assertNotEquals("eglCreateWindowSurface: ${egl.eglGetError()}", EGL10.EGL_NO_SURFACE, surface)
+      assertTrue(egl.eglMakeCurrent(dpy, surface, surface, ctx))
+      try {
+        assertEquals(ctx, egl.eglGetCurrentContext())
+        GLES20.glClearColor(0f, 1f, 0f, 1f)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        val px = ByteBuffer.allocateDirect(4).order(ByteOrder.nativeOrder())
+        GLES20.glReadPixels(0, 0, 1, 1, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, px)
+        assertEquals("green", 255, px.get(1).toInt() and 0xff)
+        assertEquals("red", 0, px.get(0).toInt() and 0xff)
+        assertTrue(egl.eglSwapBuffers(dpy, surface))
+      } finally {
+        egl.eglMakeCurrent(dpy, EGL10.EGL_NO_SURFACE, EGL10.EGL_NO_SURFACE, EGL10.EGL_NO_CONTEXT)
+        egl.eglDestroySurface(dpy, surface)
+        egl.eglDestroyContext(dpy, ctx)
+      }
+    } finally {
+      texture.release()
+      egl.eglTerminate(dpy)
     }
   }
 
