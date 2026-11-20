@@ -446,8 +446,8 @@ shows it, and the tab may switch to it again by that name), and replaces the one
   (a day after its last use) the add is answered `"state": "ready"` at once with no fetch, the URL not even contacted; a hash serve
   does not have is ignored and the URL is fetched as usual. The hash, not the URL or its `headers`, is what authorises such an add (a use of the build, so its day starts again). At most 4
   real downloads run at once (a shared one counts once); another add gets `503` with `Retry-After`. At most 100 failures are kept (the oldest go).
-- `GET /api/apps/ID`: `{"id", "name", "state": "downloading"|"ready"|"failed", "error", "received", "total"}` (the
-  last three while it is downloading or has failed).
+- `GET /api/apps/ID`: `{"id", "name", "state": "downloading"|"ready"|"failed", "error", "received", "total", "sha256"}` (`error`,
+  `received` and `total` while it is downloading or has failed, `sha256` once it is ready; a POST answered `ready` carries it too).
 - **Time to live** (previews, docs/pr-preview.md): `"ttl": SECONDS` in the `POST /api/apps` body, or `?ttl=SECONDS` on
   `POST /api/upload`, 60 to 604800 (else `400`): the id expires then, used or not, instead of a day after its last use. New
   sessions and `GET /api/apps/ID` no longer find it (`404`), the hourly sweep deletes it and its APK, and sessions already running
