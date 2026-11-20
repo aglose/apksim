@@ -21,13 +21,13 @@ SERVER_INFO = {"name": "apksim", "title": "apksim", "version": "1"}
 # scripts/check-launch-options.py. --sdcard-file takes inline contents only.
 LAUNCH_OPTIONS = {"--activity", "--build", "--setting", "--feature", "--timezone", "--clock", "--anim-scale", "--serial",
                   "--bluetooth", "--status-bar", "--nav-bar", "--max-fps", "--video", "--audio", "--biometrics", "--camera",
-                  "--network-profile", "--device", "--sdcard-file", "--appearance", "--locale", "--font-scale",
+                  "--network-profile", "--wifi", "--cellular", "--wifi-signal", "--device", "--sdcard-file", "--appearance", "--locale", "--font-scale",
                   "--permissions"}
 LAUNCH_FLAGS = {"--soft-keyboard"}
 # Device controls: setting -> allowed first words/values. Values are checked against SAFE (no spaces, no paths).
 DEVICE = {"appearance": r"dark|light|toggle", "locale": r"[A-Za-z]{2,3}([-_][A-Za-z0-9]{2,8})*",
           "fontscale": r"[0-9.]+|\+|-", "rotate": r"left|right|portrait|landscape",
-          "network": r"online|offline|3g|lossy", "permission": r"(allow|deny|reset)|(grant|revoke) [A-Za-z0-9_.]+",
+          "network": r"online|offline|3g|lossy|wifi (on|off|toggle|signal -[0-9]{1,3}|signal level [0-4])|cellular (on|off|toggle)", "permission": r"(allow|deny|reset)|(grant|revoke) [A-Za-z0-9_.]+",
           "timezone": r"[A-Za-z0-9_/+:-]+", "animscale": r"[0-9.]+|toggle", "bluetooth": r"on|off|toggle",
           "device": r"phone|foldable|tablet|desktop|tv|watch|watch-small|watch-large|[0-9]+x[0-9]+(@[0-9]+(\.[0-9]+)?)?", "lock": r"", "unlock": r"",
           "home": r"", "resume": r"", "recreate": r""}

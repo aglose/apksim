@@ -77,8 +77,10 @@ final class DeviceControls {
     "debug layout toggle", "a11y show", "keyboard soft", "device phone", "device foldable", "device tablet",
     "device desktop", "device tv", "network online", "network offline", "network 3g", "network lossy",
     "bars status toggle", "bars nav toggle", "rec save", "camera off", "camera pattern", "camera image {file}",
-    "screenshot skin", "device pixel-10-pro-fold", "fold toggle",
+    "screenshot skin", "device pixel-10-pro-fold", "fold toggle", "network wifi toggle", "network cellular toggle",
   };
+  private static final int TAG_WIFI = 49;
+  private static final int TAG_CELLULAR = 50;
   /** Device > Skin's skins, by menu position (SimWindow.TAG_SKIN_FIRST + 1 + index); None is TAG_SKIN_FIRST. */
   private static volatile List<String> skinMenu = List.of();
   private static final int TAG_DEVICE_FIRST = 31;
@@ -690,8 +692,11 @@ final class DeviceControls {
         return location().run(a);
       }
       case "network" -> {
-        // network [online|offline|3g|lossy|latency MS|bandwidth KBPS|unmatched [clear]|save] (docs/network.md).
-        return dev.apksim.net.Net.command(a);
+        // network [online|offline|3g|lossy|latency MS|bandwidth KBPS|unmatched [clear]|save] (docs/network.md), and
+        // the radios: network wifi [on|off|toggle|signal DBM|signal level N], network cellular [on|off|toggle] (Radios).
+        String r = Radios.networkCommand(a);
+        showRadios();
+        return r;
       }
       case "notifications" -> {
         return notifications().run(a);
@@ -1113,6 +1118,12 @@ final class DeviceControls {
     SystemBars.apply(d);
   }
 
+  /** Features > Network's Wi-Fi and Mobile Data check marks. */
+  static void showRadios() {
+    SimWindow.setMenuState(TAG_WIFI, Radios.wifi);
+    SimWindow.setMenuState(TAG_CELLULAR, Radios.cellular);
+  }
+
   /** The window's title: the APK and the device it runs on, with the display's size while it is being resized. */
   void showTitle() {
     Device d = Device.current();
@@ -1123,6 +1134,7 @@ final class DeviceControls {
     SimWindow.setMenuState(TAG_STATUS_BAR, SystemBars.statusBar(d));
     SimWindow.setMenuState(TAG_NAV_BAR, SystemBars.navBar(d));
     SimWindow.setMenuState(TAG_SLOW_ANIMATIONS, ValueAnimator.getDurationScale() > 1f);  // --anim-scale 10
+    showRadios();
     String skin = Skinning.name();
     SimWindow.setMenuState(SimWindow.TAG_SKIN_FIRST, skin == null);
     List<String> names = skinMenu;

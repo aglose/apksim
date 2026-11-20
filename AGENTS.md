@@ -806,6 +806,13 @@ window only; a `.mp4` name gets MP4, else QuickTime; the last picture is held to
 `zoom actual|fit|in|out` (window size only), `permission [allow|deny|grant NAME|revoke NAME|reset]`,
 `notifications [open N|last|clear]`, `location LAT LNG|run|bike|drive|gpx FILE|none`,
 `network [online|offline|3g|lossy|latency MS|bandwidth KBPS|unmatched [clear]|save|reconnect]` (see "Network"),
+`network wifi [on|off|toggle|signal DBM|signal level N]` and `network cellular [on|off|toggle]` (`Radios`: Wi-Fi and
+mobile data as a phone's two switches, and Wi-Fi's signal; `--wifi on|off`, `--cellular on|off`, `--wifi-signal
+DBM|level:N` at launch; Wi-Fi off with mobile data on makes a metered TYPE_MOBILE/TRANSPORT_CELLULAR network the default,
+both off is offline as `network offline` is; the signal reaches WifiInfo, the network's capabilities and
+RSSI_CHANGED_ACTION; Features > Network > Wi-Fi / Mobile Data, `svc wifi|data`, `cmd wifi set-wifi-enabled`, `cmd phone
+data`; mobile data is off by default, as apksim never showed a cellular network; docs/network.md "Wi-Fi and mobile
+data", `RadiosTest`),
 `biometrics [enroll|unenroll|match|nomatch|cancel]`, `bluetooth [on|off|toggle]` (`Bluetooth`: the adapter, on at
 launch as an emulator boots, `--bluetooth off` otherwise; each switch, the app's own BluetoothAdapter.enable()/disable()
 included (`ShadowSimBluetoothAdapter`, allowed at any targetSdk as Robolectric allowed it), goes TURNING_ON then ON, or

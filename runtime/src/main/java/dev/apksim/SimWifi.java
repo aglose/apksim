@@ -29,12 +29,13 @@ import org.robolectric.shadows.ShadowWifiManager;
  * RssiUtil), the static calculateSignalLevel(rssi, numLevels) by the classic formula (MIN_RSSI -100, MAX_RSSI -55),
  * and getConnectionInfo a connection at -50 dBm on 5 GHz while there is a network (`network offline`: disconnected,
  * rssi -127), its SSID, BSSID and network id redacted without ACCESS_FINE_LOCATION, its MAC always, as a device does.
+ * The signal is Radios' (`network wifi signal DBM`), and Wi-Fi's switch too (`network wifi off`: isWifiEnabled false,
+ * WIFI_STATE_DISABLED); the app's own setWifiEnabled switches it, as Robolectric let it at any targetSdk.
  * HostNetworks gives the Wi-Fi network's capabilities the same (redacted) WifiInfo and signal strength.
  */
 final class SimWifi {
   private SimWifi() {}
 
-  static final int RSSI = -50;
   static final int FREQUENCY = 5180;
   static final int LINK_SPEED = 866;
   /** The emulator's network name. */
@@ -84,7 +85,7 @@ final class SimWifi {
     WifiInfo info = new WifiInfo();
     info.setMacAddress(REDACTED_MAC);
     info.setSupplicantState(SupplicantState.COMPLETED);
-    info.setRssi(RSSI);
+    info.setRssi(Radios.rssi);
     info.setFrequency(FREQUENCY);
     info.setLinkSpeed(LINK_SPEED);
     info.setTxLinkSpeedMbps(LINK_SPEED);
@@ -120,6 +121,32 @@ final class SimWifi {
       if (rssi <= -100) return 0;
       if (rssi >= -55) return numLevels - 1;
       return (int) ((float) (rssi + 100) * (numLevels - 1) / 45f);
+    }
+
+    @Implementation
+    @Override
+    protected boolean isWifiEnabled() {
+      super.isWifiEnabled();  // its ACCESS_WIFI_STATE check
+      return Radios.wifi;
+    }
+
+    @Implementation
+    @Override
+    protected int getWifiState() {
+      super.getWifiState();  // its ACCESS_WIFI_STATE check
+      return Radios.wifiState();
+    }
+
+    /**
+     * Switches Wi-Fi as `network wifi on|off` does, after this returns (the system server's switch is asynchronous).
+     * Robolectric's answer stands (false when it was told the app may not change Wi-Fi).
+     */
+    @Implementation
+    @Override
+    protected boolean setWifiEnabled(boolean enabled) {
+      boolean ok = super.setWifiEnabled(enabled);
+      if (ok) new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> Radios.setWifi(enabled));
+      return ok;
     }
 
     @Implementation
