@@ -34,7 +34,7 @@ import java.util.concurrent.TimeUnit;
 public final class Serve {
   private static final String USAGE = """
       usage: apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--apps DIR|FILE]...
-                          [--max-upload MB] [--max-push MB] [--allow-rec] [--no-shell] [--issue-url TEMPLATE] [--inspect-network [optional]] [--inspect-max-rules N] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
+                          [--max-upload MB] [--max-push MB] [--allow-rec] [--allow-logcat] [--no-shell] [--issue-url TEMPLATE] [--inspect-network [optional]] [--inspect-max-rules N] [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--no-network]
                           [--inspect-forward-allow URL_PREFIX]... [--network-host-allow ADDR[:PORT]]... [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--in-flight N]
                           [--allow-share] [--max-viewers N] [--rejoin-grace SECONDS]
                           [--trust-proxy] [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]...
@@ -83,6 +83,8 @@ public final class Serve {
   long maxPushMb = 16;
   long maxPushTotalMb = 64;
   boolean allowRec;
+  /** `--allow-logcat` (issue 554): a tab may turn the app's Log output into the session's log. */
+  boolean allowLogcat;
   /**
    * `--allow-share`: a session's tab gets a link with which others watch it, view only (docs/serve.md "Shared
    * sessions"); the link's key stands in for the server's token, for that session's screen and nothing else. It can be
@@ -260,6 +262,10 @@ public final class Serve {
         case "--allow-rec" -> {
           s.allowRec = true;
           continue;  // no value: the next argument is an option of its own
+        }
+        case "--allow-logcat" -> {
+          s.allowLogcat = true;
+          continue;  // no value
         }
         case "--allow-share" -> {
           s.allowShare = true;
@@ -1779,6 +1785,9 @@ public final class Serve {
     }
     // Issue 532: `audio=stream` asks for the app's sound as `u` messages on this tab's socket (never a viewer's).
     if ("stream".equals(r.param("audio"))) options.put("audiostream", "1");
+    // Issue 554: `logcat=1` starts the session with the app's Log output in its log, where it may (the tab can say `logcat on` later).
+    if ("1".equals(r.param("logcat")) && (beam || allowLogcat)) options.put("logcat", "1");
+    else if ("1".equals(r.param("logcat"))) ws.sendText("r refused: logcat (this server does not allow the app's log in the session's log: --allow-logcat): it starts without");
     // Issue 371: the network inspector for this session alone, where the server allows it (`--inspect-network optional`).
     // The agent's sessions ask in `/beam/start` instead (the grant's launch), never here.
     // The page's own query carries inspect=1 to the agent too: said only when the start did not get it.
@@ -1898,7 +1907,7 @@ public final class Serve {
    */
   private String info(Session x, String shareKey, boolean rejoined) {
     return "i {\"id\":" + Http.q(x.id) + ",\"app\":" + Http.q(x.app.name()) + ",\"device\":" + Http.q(x.device)
-        + ",\"idleLimitS\":" + idleSeconds + (beam ? ",\"keep\":" + x.keep : "")
+        + ",\"idleLimitS\":" + idleSeconds + ",\"logcat\":" + (beam || allowLogcat) + (beam ? ",\"keep\":" + x.keep : "")
         // What the page may offer: the report (a recording, needs --allow-rec) and the network inspector.
         + (beam ? ",\"rec\":" + (x.recChannels() != null) + (x.recChannels() != null ? ",\"recChannels\":" + Http.q(x.recChannels()) : "")
             : ",\"rec\":" + allowRec + (issueUrl != null ? ",\"issueUrl\":" + Http.q(issueUrl) : ""))

@@ -13,7 +13,7 @@ This page is the spec, then how it is built, then what was measured.
 
 ```
 apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] [--rejoin-grace SECONDS] [--apps DIR|FILE]...
-             [--max-upload MB] [--max-push MB] [--allow-rec] [--no-shell] [--issue-url TEMPLATE] [--inspect-network [optional]] [--inspect-max-rules N] [--inspect-forward-allow URL_PREFIX]... [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--in-flight N] [--no-network]
+             [--max-upload MB] [--max-push MB] [--allow-rec] [--allow-logcat] [--no-shell] [--issue-url TEMPLATE] [--inspect-network [optional]] [--inspect-max-rules N] [--inspect-forward-allow URL_PREFIX]... [--quality Q] [--bitrate KBPS] [--codec auto|jpeg] [--in-flight N] [--no-network]
              [--allow-origin ORIGIN]... [--warm auto|on|off] [--core-dumps] [--move-shared-data] [--trust-proxy]
              [--public-origin URL] [--base-path /PATH] [--device-size NAME=WxH@DENSITY]... [--skins DIR]...
              [--allow-beam] [--beam-port N] [--keep-max N] [--keep-days N] [--allow-share] [--max-viewers N]
@@ -49,6 +49,11 @@ apksim serve [--port N] [--bind ADDR] [--token FILE] [--max N] [--idle SECONDS] 
   of them in all.
 - `--allow-rec`: a tab may use the flight recorder (below). Off by default: a recording holds the app's network calls
   and logs. (`apksim beam` always allows it: the instance is the visitor's own.)
+- `--allow-logcat` (issue 554): a tab may send `logcat on|off`, or open its socket with `/ws?logcat=1`, and the app's own
+  `android.util.Log` lines (Timber, OkHttp's logging interceptor...) then go to the session's log (`GET
+  /api/sessions/ID/log`), as `logcat on` on the control port does. Off by default: the log may hold what the app logs
+  about its user. Without it the message is answered `r refused: logcat (...)`. The `i` message says `"logcat": true|false`.
+  `apksim beam` always allows it (the log is read on the visitor's own Mac, `GET /beam/sessions/ID/log?key=`).
 - `--issue-url TEMPLATE` (with `--allow-rec`) and `--inspect-network`: the page's report button opens a prefilled new-issue page, and a
   tab sees the app's HTTP(S) exchanges and may answer or slow a URL (docs/pr-preview.md "Report button and network inspector").
   Off by default: the second shows the app's traffic. `--inspect-network optional` allows it per session instead: only a tab
@@ -344,7 +349,8 @@ The first launch of a large APK translates its classes and extracts its librarie
 4-5 minutes on 4 CPUs in the Linux image; later launches ~10 s), and Linux has no standby to hide that. So serve warms
 the cache itself:
 
-- Each APK stored by an upload or a URL add, and each APK a `--apps` catalog lists (a URL one once downloaded), is queued,
+- Each APK stored by an upload or a URL add (not one a session is already waiting on as it downloads: that session
+  launches the app itself, and a warm-up would be a throwaway launch in front of it), and each APK a `--apps` catalog lists (a URL one once downloaded), is queued,
   and warmed one at a time at low priority (`nice -n 10`): an ordinary headless launch (`--exit-after-first-frame`,
   with the app's own launch options) that leaves the same caches a session finds. It does not count against `--max`
   and takes a data slot (`serve-N`) while it runs, as a session does; the slot is erased when the warm-up ends, fails or

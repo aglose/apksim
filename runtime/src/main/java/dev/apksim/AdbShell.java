@@ -44,6 +44,11 @@ import org.robolectric.RuntimeEnvironment;
  * Supports `;`, `&&`, `||`, quoting and `>`/`>>` into a file; no pipes (pipe on the Mac: `adb shell ... | grep`).
  */
 final class AdbShell {
+  /** A property set with `setprop` in this process, or null (LogTags reads `log.tag.*` from here). */
+  static String setProp(String name) {
+    return SET_PROPS.get(name);
+  }
+
   private static final Map<String, String> SET_PROPS = new ConcurrentHashMap<>();
   private static final AtomicInteger SHOTS = new AtomicInteger();
 

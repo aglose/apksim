@@ -15,9 +15,9 @@ if [[ -n "${APKSIM_HOME:-}" ]]; then STATE="$APKSIM_HOME"
 elif [[ -f "$ROOT/work/release" ]]; then STATE="$HOME/.apksim"
 else STATE="$ROOT/work"; fi
 mkdir -p "$STATE"
-# A failed test app download (train.failed) is tried again from a launch at most once an hour; apksim --train always.
+# A failed training (the test app download, or a stage: train.failed) is tried again from a launch at most once an hour; apksim --train always.
 if [[ -n "$BACKGROUND" && -n "$(find "$STATE/train.failed" -mmin -60 2>/dev/null)" ]]; then
-  echo "train.sh: the test app download failed less than an hour ago; not trying again yet (apksim --train does)" >&2
+  echo "train.sh: the training failed less than an hour ago (see train.log); not trying again yet (apksim --train does)" >&2
   exit 0
 fi
 # Default: the test app as built here, else the released one (scripts/setup.sh fetches it into a checkout; an
@@ -78,6 +78,7 @@ if [[ -n "$RELEASE_APK" && ! -f "$RELEASE_APK" ]]; then
 fi
 if [[ ! -f "$APK" ]]; then
   echo "train.sh: no APK to train on: $APK does not exist" >&2
+  [[ -n "$BACKGROUND" ]] && touch "$STATE/train.failed"
   echo "train.sh: build the test app (./gradlew :app:assembleDebug in testapks/composeapp), run scripts/fetch-testapp.sh, or pass an APK: train.sh [--headless] APP.apk" >&2
   exit 1
 fi
@@ -87,6 +88,8 @@ stage() {
   local name="$1"; shift
   if ! APKSIM_NOCACHE=1 "$ROOT/apksim" "$@" > "$STATE/train-$name.log" 2>&1 || [[ "$name" == create && ! -s "$NEW" ]]; then
     echo "train.sh: the $name stage failed; see $STATE/train-$name.log" >&2
+    # Not started again beside every launch: a launch tries again in an hour (apksim --train at once).
+    [[ -n "$BACKGROUND" ]] && touch "$STATE/train.failed"
     tail -5 "$STATE/train-$name.log" >&2
     exit 1
   fi
