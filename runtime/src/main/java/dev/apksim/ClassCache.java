@@ -15,6 +15,7 @@ import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -53,7 +54,8 @@ final class ClassCache {
 
   private record Entry(ByteBuffer pack, int offset, int length, String[] owners, byte[] answers) {}
 
-  private record Fresh(byte[] bytes, String[] owners, byte[] answers, byte[] hash) {}
+  /** {@code hash} is known for a class found by content; a translated one carries {@code lazy}, worked out at the save. */
+  private record Fresh(byte[] bytes, String[] owners, byte[] answers, byte[] hash, Supplier<byte[]> lazy) {}
 
   /** A class's content hash as a map key. */
   private record Hash(long a, long b) {
@@ -82,6 +84,7 @@ final class ClassCache {
   private Map<Hash, String> index;
   private final Map<String, Map<String, Entry>> otherPacks = new HashMap<>();
   private final Map<Hash, String> indexAdds = new HashMap<>();
+  private volatile boolean exiting;
   private int hintsSaved;
   private int unsaved;
   int hits;
@@ -157,11 +160,11 @@ final class ClassCache {
   boolean has(int dex, String name, ToIntFunction<String> answer, Supplier<byte[]> hash) {
     synchronized (this) {
       if (valid(dex, name, answer) != null || fresh[dex].containsKey(name)) return true;
-      if (!contentPossible()) return false;
+      if (hash == null || !contentPossible()) return false;
     }
     byte[] h = hash.get(); // outside the lock: the walk is the slow part
     synchronized (this) {
-      return h != null && byContent(dex, name, answer, h) != null;
+      return fresh[dex].containsKey(name) || (h != null && byContent(dex, name, answer, h) != null);
     }
   }
 
@@ -190,7 +193,8 @@ final class ClassCache {
    * kept to be saved into this DEX file's own pack, so the next launch of this build need not look.
    */
   private Entry byContent(int dex, String name, ToIntFunction<String> answer, byte[] h) {
-    if (!content || h == null || fresh[dex].containsKey(name)) return null;
+    if (!content || h == null) return null;
+    if (fresh[dex].containsKey(name)) return null;  // taken meanwhile by another thread: callers look in `fresh`
     if (index == null) index = loadIndex();
     String key = index.get(Hash.of(h));
     if (key == null || key.equals(keys[dex])) return null;
@@ -200,7 +204,7 @@ final class ClassCache {
     if (e == null) return null;
     byte[] bytes = new byte[e.length];
     e.pack.get(e.offset, bytes);
-    fresh[dex].put(name, new Fresh(bytes, e.owners, e.answers, h));
+    fresh[dex].put(name, new Fresh(bytes, e.owners, e.answers, h, null));
     unsaved++;
     contentHits++;
     return e;
@@ -225,7 +229,14 @@ final class ClassCache {
     byte[] h = hash.get(); // outside the lock: the walk is the slow part
     synchronized (this) {
       Entry e = byContent(dex, name, answer, h);
-      return e == null ? null : copy(e);
+      if (e != null) return copy(e);
+      Fresh f = fresh[dex].get(name);  // put or found by another thread while this one hashed
+      if (f == null) return null;
+      for (int i = 0; i < f.owners.length; i++) {
+        if (answer.applyAsInt(f.owners[i]) != f.answers[i]) return null;
+      }
+      hits++;
+      return f.bytes.clone();
     }
   }
 
@@ -237,15 +248,16 @@ final class ClassCache {
   }
 
   void put(int dex, String name, byte[] bytes, Map<String, Byte> answers, Supplier<byte[]> hash) {
-    byte[] h = content && hash != null ? hash.get() : null; // outside the lock
-    put(dex, name, bytes, answers, h, 0);
+    // The hash (only for the index, which a later build reads) is worked out at the save, on the idle saver thread:
+    // here it was on the thread that translates, and a launch that finds nothing to reuse paid for it (issue 571).
+    putFresh(dex, name, bytes, answers, content ? hash : null);
   }
 
-  private synchronized void put(int dex, String name, byte[] bytes, Map<String, Byte> answers, byte[] h, int unused) {
+  private synchronized void putFresh(int dex, String name, byte[] bytes, Map<String, Byte> answers, Supplier<byte[]> lazy) {
     String[] owners = answers.keySet().toArray(new String[0]);
     byte[] a = new byte[owners.length];
     for (int i = 0; i < owners.length; i++) a[i] = answers.get(owners[i]);
-    fresh[dex].put(name, new Fresh(bytes, owners, a, h));
+    fresh[dex].put(name, new Fresh(bytes, owners, a, null, lazy));
     unsaved++;
   }
 
@@ -261,7 +273,7 @@ final class ClassCache {
         }
         if (now > 0 && now == seen) {
           synchronized (saving) {
-            save();
+            save(Long.MAX_VALUE);
           }
           seen = 0;
         } else {
@@ -275,17 +287,38 @@ final class ClassCache {
 
   /** Saves what this process translated since the last save, before it exits (it halts, so no daemon gets to). */
   static void flush() {
+    for (ClassCache cache : OPEN) cache.exiting = true;  // a saver in the middle of hashing lets go of `saving`
     for (ClassCache cache : OPEN) {
       synchronized (cache.saving) {
         synchronized (cache) {
           if (cache.unsaved == 0) continue;
         }
-        cache.save();
+        cache.save(1_500_000_000L);
       }
     }
   }
 
-  private void save() {
+  private void save(long hashBudgetNanos) {
+    // Hash first, before anything leaves `fresh`, so a class stays findable meanwhile. The saver stops as an exit begins
+    // (`exiting`: flush takes over, with a budget); past the budget the rest go unindexed.
+    List<Fresh> work = new ArrayList<>();
+    synchronized (this) {
+      for (int i = 0; i < keys.length; i++) {
+        for (Fresh f : fresh[i].values()) if (f.lazy != null) work.add(f);
+      }
+    }
+    long deadline = hashBudgetNanos == Long.MAX_VALUE ? Long.MAX_VALUE : System.nanoTime() + hashBudgetNanos;
+    Map<Fresh, byte[]> hashes = new IdentityHashMap<>();
+    for (Fresh f : work) {
+      if (hashBudgetNanos == Long.MAX_VALUE ? exiting : System.nanoTime() > deadline) break;
+      try {
+        byte[] h = f.lazy.get();
+        if (h != null) hashes.put(f, h);
+      } catch (RuntimeException ignored) {
+        // Unindexed only: a later build translates it again.
+      }
+    }
+    if (hashBudgetNanos == Long.MAX_VALUE && exiting) return;  // flush saves it all, under the same lock, next
     Map<Integer, Map<String, Fresh>> todo = new LinkedHashMap<>();
     List<String> names = null;
     synchronized (this) {
@@ -298,7 +331,8 @@ final class ClassCache {
         if (loaded[i] == null) loaded[i] = load(read(keys[i] + ".pack"));
         todo.put(i, fresh[i]);
         for (Fresh f : fresh[i].values()) {
-          if (f.hash != null) indexAdds.put(Hash.of(f.hash), keys[i]);
+          byte[] h = f.hash != null ? f.hash : hashes.get(f);
+          if (h != null) indexAdds.put(Hash.of(h), keys[i]);
         }
         fresh[i] = new HashMap<>();
       }

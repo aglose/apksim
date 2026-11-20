@@ -338,7 +338,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     stands for. A class missing from its DEX file's pack is looked up there, and a hit is used and copied into the
     new pack, so the next launch takes the ordinary path (`saved N translated classes (M found by content ...)`).
     Anything the walk cannot read (invoke-custom, method handles, an unknown opcode) gives no hash: that class is keyed
-    by its DEX file alone. Known miss: const-string/jumbo against const-string (a string index crossing 65,535 between
+    by its DEX file alone. `has(..., null)` asks the class's own pack only. Hashes of classes this process translated are worked out at the save (before anything leaves `fresh`; an exit's `flush` makes the saver let go at once) (idle saver thread; an exit gives them 1.5 s, the rest go unindexed), not on the translating thread, and the load-ahead workers do the content lookup in parallel, not the planner serially (issue 571). Known miss: const-string/jumbo against const-string (a string index crossing 65,535 between
     builds) changes the instruction's size and so the offsets after it, so that class hashes differently. The hash is worked out outside the cache's lock, and
     only once the index has an entry. The index is not age-swept (each save drops entries whose pack is gone); two
     processes saving at once keep the last writer's (missed reuse, never a wrong class); a beamed build's cache does not
