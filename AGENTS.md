@@ -533,7 +533,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     it ends, or a newer build of the same app started on a copy (`/beam/start`'s `saved`/`dataFrom`, `GET /beam/saved`,
     issue 181; `ApkSigners`: the same key, as Android requires of an update), and the flight recorder channels a beam
     session starts with (`apksim beam config rec input|all|off|CHANNELS`, `input` by default; an app's own `--rec`
-    wins); `DeviceHandoff`: `apksim beam to-device ID [-s SERIAL] [--data] [--settings KEYS|all] [--install
+    wins), and the agent's session limit (`apksim beam config max N`, 1-64, also written by `beam install --max N`; default 4, an explicit `apksim beam --max N` wins; `/beam/hello` says `max`, issue 569); `DeviceHandoff`: `apksim beam to-device ID [-s SERIAL] [--data] [--settings KEYS|all] [--install
     replace|skip] [--yes] [--dry-run]`, a saved session carried on to an adb device (the build compared by hash and
     signer, the device's data backed up before the slot is written through `run-as`, settings without identity keys, an
     undo script; docs/beam.md "Moving a session to a device", issue 191; no real device has run it yet); `BeamLaunchd`: `apksim beam install|uninstall`, launchd starting the agent
