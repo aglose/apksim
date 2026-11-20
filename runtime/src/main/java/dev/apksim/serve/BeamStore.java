@@ -52,35 +52,44 @@ final class BeamStore {
    * (`off` by default): the network inspector shows the page that started a session the app's traffic. `on`: every session
    * runs it; `optional` (issue 371): a start that asks (`/beam/start`'s `"inspect": true`) gets it, the others do not.
    */
-  record Config(double keepDays, boolean saveSessions, double keepSavedDays, String rec, String inspectNetwork, boolean allowAdb, List<String> forwardAllow, String allowLoopback) {
-    static final Config DEFAULT = new Config(2, false, DEFAULT_KEEP_SAVED_DAYS, "input", "off", false, List.of(), "");
+  record Config(double keepDays, boolean saveSessions, double keepSavedDays, String rec, String inspectNetwork, boolean allowAdb, List<String> forwardAllow, String allowLoopback, int max) {
+    static final Config DEFAULT = new Config(2, false, DEFAULT_KEEP_SAVED_DAYS, "input", "off", false, List.of(), "", 0);
 
     Config(double keepDays, boolean saveSessions, double keepSavedDays) {
-      this(keepDays, saveSessions, keepSavedDays, DEFAULT_REC, "off", false, List.of(), "");
+      this(keepDays, saveSessions, keepSavedDays, DEFAULT_REC, "off", false, List.of(), "", 0);
     }
 
     Config withRec(String r) {
-      return new Config(keepDays, saveSessions, keepSavedDays, r, inspectNetwork, allowAdb, forwardAllow, allowLoopback);
+      return new Config(keepDays, saveSessions, keepSavedDays, r, inspectNetwork, allowAdb, forwardAllow, allowLoopback, max);
     }
 
     Config withInspect(String mode) {
-      return new Config(keepDays, saveSessions, keepSavedDays, rec, mode, allowAdb, forwardAllow, allowLoopback);
+      return new Config(keepDays, saveSessions, keepSavedDays, rec, mode, allowAdb, forwardAllow, allowLoopback, max);
     }
 
     Config withAdb(boolean on) {
-      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, on, forwardAllow, allowLoopback);
+      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, on, forwardAllow, allowLoopback, max);
     }
 
     Config withLoopback(String ports) {
-      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, allowAdb, forwardAllow, ports);
+      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, allowAdb, forwardAllow, ports, max);
     }
 
     Config withForwardAllow(List<String> prefixes) {
-      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, allowAdb, List.copyOf(prefixes), allowLoopback);
+      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, allowAdb, List.copyOf(prefixes), allowLoopback, max);
+    }
+
+    Config withMax(int n) {
+      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, allowAdb, forwardAllow, allowLoopback, n);
+    }
+
+    /** The sessions the agent runs at once (issue 569): `max`, else {@link #DEFAULT_MAX}. */
+    int maxSessions() {
+      return max > 0 ? max : DEFAULT_MAX;
     }
 
     String describe() {
-      return "keep-days " + num(keepDays) + ", save-sessions " + (saveSessions ? "on" : "off") + ", keep-saved-days "
+      return "max " + maxSessions() + ", keep-days " + num(keepDays) + ", save-sessions " + (saveSessions ? "on" : "off") + ", keep-saved-days "
           + (keepSavedDays < 0 ? "never" : num(keepSavedDays)) + ", rec " + rec
           + ", inspect-network " + inspectNetwork + ", allow-adb " + (allowAdb ? "on" : "off")
           + ", forward-allow " + (forwardAllow.isEmpty() ? "none" : String.join(" ", forwardAllow))
@@ -89,6 +98,11 @@ final class BeamStore {
   }
 
   static final String DEFAULT_REC = "input";
+
+  /** `max` when the config does not say (issue 569): the agent runs on the visitor's own machine, so 4 (serve's default is 2). */
+  static final int DEFAULT_MAX = 4;
+  /** The most `config max` takes: each session is ~1.6 GB resident, and more than a machine runs is only a refusal later. */
+  static final int MAX_LIMIT = 64;
 
   /** At most this many loopback ports may be opened (each is a rule of every beamed instance's sandbox profile). */
   static final int LOOPBACK_MAX = 16;
@@ -180,7 +194,8 @@ final class BeamStore {
             : m.get("keep-saved-days") instanceof Number n && n.doubleValue() >= 0 ? n.doubleValue() : -1;
         String rec = m.get("rec") instanceof String r && recSetting(r) != null ? recSetting(r) : c.rec();
         c = new Config(keep, save, saved, rec, inspectMode(m.get("inspect-network"), c.inspectNetwork()), Boolean.TRUE.equals(m.get("allow-adb")), forwardList(m.get("forward-allow")),
-            m.get("allow-loopback") instanceof String l && ports(l) != null ? ports(l) : "");
+            m.get("allow-loopback") instanceof String l && ports(l) != null ? ports(l) : "",
+            m.get("max") instanceof Number mx && mx.intValue() >= 1 && mx.intValue() <= MAX_LIMIT ? mx.intValue() : 0);
       }
     } catch (IOException | RuntimeException e) {
       System.err.println("[beam] cannot read " + configFile + " (using the defaults): " + e.getMessage());
@@ -198,8 +213,19 @@ final class BeamStore {
     String json = "{\n  \"keep-days\": " + num(c.keepDays()) + ",\n  \"save-sessions\": " + c.saveSessions()
         + ",\n  \"keep-saved-days\": " + (c.keepSavedDays() < 0 ? "\"never\"" : num(c.keepSavedDays())) + ",\n  \"rec\": \"" + c.rec() + "\",\n  \"inspect-network\": \"" + c.inspectNetwork() + "\",\n  \"allow-adb\": " + c.allowAdb()
         + ",\n  \"forward-allow\": [" + c.forwardAllow().stream().map(Http::q).collect(java.util.stream.Collectors.joining(", ")) + "]"
-        + ",\n  \"allow-loopback\": \"" + c.allowLoopback() + "\"\n}\n";
+        + ",\n  \"allow-loopback\": \"" + c.allowLoopback() + "\""
+        + (c.max() > 0 ? ",\n  \"max\": " + c.max() : "") + "\n}\n";
     writeAtomically(configFile, json);
+  }
+
+  /** A `max` value (1 to {@link #MAX_LIMIT}), or null. */
+  static Integer maxValue(String v) {
+    try {
+      int n = Integer.parseInt(v);
+      return n >= 1 && n <= MAX_LIMIT ? n : null;
+    } catch (NumberFormatException | NullPointerException e) {
+      return null;
+    }
   }
 
   /** A `keep-days` or `keep-saved-days` value (`never` only where allowed: -1), or null. */
@@ -1050,19 +1076,19 @@ final class BeamStore {
             case "keep-days" -> {
               Double d = days(v, false);
               if (d == null) return usage();
-              c = new Config(d, c.saveSessions(), c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback());
+              c = new Config(d, c.saveSessions(), c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback(), c.max());
               changed = true;
             }
             case "save-sessions" -> {
               Boolean b = onOff(v);
               if (b == null) return usage();
-              c = new Config(c.keepDays(), b, c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback());
+              c = new Config(c.keepDays(), b, c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback(), c.max());
               changed = true;
             }
             case "keep-saved-days" -> {
               Double d = days(v, true);
               if (d == null) return usage();
-              c = new Config(c.keepDays(), c.saveSessions(), d, c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback());
+              c = new Config(c.keepDays(), c.saveSessions(), d, c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback(), c.max());
               changed = true;
             }
             case "inspect-network" -> {
@@ -1122,6 +1148,16 @@ final class BeamStore {
                 return 2;
               }
               c = c.withLoopback(ps);
+              changed = true;
+            }
+            // Issue 569: the sessions the agent runs at once, read at its start (`apksim beam install --max N` writes the same).
+            case "max" -> {
+              Integer n = maxValue(v);
+              if (n == null) {
+                System.err.println("apksim beam config max: takes a number of sessions from 1 to " + MAX_LIMIT);
+                return 2;
+              }
+              c = c.withMax(n);
               changed = true;
             }
             case "rec" -> {
@@ -1289,7 +1325,7 @@ final class BeamStore {
              apksim beam forget --all [--site ORIGIN] [--app PREFIX] [--builds]
                                                 erases every saved session (of one site, or whose app starts with PREFIX); one a tab has
                                                 open is skipped; --builds (agent stopped) also removes, now, the builds nothing keeps
-             apksim beam config [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS]
+             apksim beam config [max N] [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS]
                                 [inspect-network on|optional|off]   (a trusted page sees the app's HTTP(S) traffic: of every session, or only of a start that asks)
                                 [allow-adb on|off]   (every trusted site's page may ask for an adb device on this Mac's loopback and run any adb shell command in its session)
                                 [forward-allow URL_PREFIX|none] [forward-disallow URL_PREFIX]   (where a page's forward rules may send the app's requests: http://127.0.0.1:PORT/api for a backend on this Mac)

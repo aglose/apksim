@@ -21,7 +21,7 @@ final class BeamLaunchd {
   private BeamLaunchd() {}
 
   /**
-   * `install [--port N] [--label L] [--agent-idle S] [--trust ORIGIN]...` or `uninstall [--label L]`. Returns the exit
+   * `install [--port N] [--max N] [--label L] [--agent-idle S] [--trust ORIGIN]...` or `uninstall [--label L]`. Returns the exit
    * code. `--trust` allows a site as `apksim beam trust allow` does (issue 178: a team's setup instructions pre-allow
    * their own dashboard, so its first start shows no dialog).
    */
@@ -29,6 +29,7 @@ final class BeamLaunchd {
     String label = LABEL;
     int port = Beam.DEFAULT_PORT;
     int idle = 600;
+    Integer max = null;  // --max N (issue 569): stored as the config's `max`, which the agent reads at its start
     Path dryRun = null;  // --dry-run DIR: the jobs written there, nothing loaded (to look at them, or for checks)
     List<String> trust = new ArrayList<>();
     for (int i = 0; i < args.size(); i++) {
@@ -41,6 +42,13 @@ final class BeamLaunchd {
         }
         case "--port" -> port = Integer.parseInt(v);
         case "--agent-idle" -> idle = Integer.parseInt(v);
+        case "--max" -> {
+          max = BeamStore.maxValue(v);
+          if (max == null || !cmd.equals("install")) {
+            System.err.println("--max takes a number of sessions from 1 to " + BeamStore.MAX_LIMIT + " (install only)");
+            return usage();
+          }
+        }
         case "--dry-run" -> dryRun = Path.of(v);
         case "--trust" -> {
           String o = Serve.origin(v);
@@ -87,6 +95,12 @@ final class BeamLaunchd {
             + "  <key>ProcessType</key><string>Interactive</string>\n" + env, logs.resolve("agent.log")));
     write(sweep, plist(label + ".sweep", guarded(exe, agent, sweep, label + ".sweep", label, List.of("beam", "sweep")),
         "  <key>StartInterval</key><integer>86400</integer>\n" + env, logs.resolve("sweep.log")));
+    if (max != null && dryRun == null) {
+      // In the config beside the other settings, not in the job's arguments: it survives the next install and an upgrade.
+      BeamStore st = new BeamStore(state);
+      st.writeConfig(st.readConfig().withMax(max));
+      System.out.println("sessions at once: " + max + " (apksim beam config max N changes it; the agent reads it at its start)");
+    }
     for (String o : trust) {
       new Beam(state).setTrust(o, "always");
       System.out.println("allowed " + o + " (it runs apps here without asking; apksim beam trust revoke " + o + " undoes it)");
@@ -192,7 +206,7 @@ final class BeamLaunchd {
   }
 
   private static int usage() {
-    System.err.println("usage: apksim beam install [--port N] [--agent-idle SECONDS] [--trust ORIGIN]... [--dry-run DIR] | apksim beam uninstall");
+    System.err.println("usage: apksim beam install [--port N] [--max N] [--agent-idle SECONDS] [--trust ORIGIN]... [--dry-run DIR] | apksim beam uninstall");
     return 2;
   }
 }
