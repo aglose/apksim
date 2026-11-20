@@ -19,6 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 import java.util.function.ToIntFunction;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
@@ -27,6 +28,13 @@ import java.util.zip.ZipFile;
 /**
  * Translated classes kept between launches. There is one pack per DEX file, named by the DEX's CRC, so a rebuilt
  * APK reuses the classes of every DEX file that did not change (debug builds put each library in its own).
+ *
+ * <p>A DEX file whose CRC is new is not all new: a rebuilt debug app changes the checksum of nearly every file while
+ * ~99.7% of its classes are what they were (a string added anywhere moves every index after it). So each saved
+ * class is also recorded in an index, by a hash of its own definition with the indices resolved to names
+ * ({@link dev.apksim.dex.ClassHash}), pointing at the pack that holds it. A class missing from its DEX file's pack is
+ * looked up there, and a hit is used and copied into the new pack, so the next launch of this build takes the
+ * ordinary path. {@code -Dapksim.classContent=false} turns it off.
  *
  * <p>A translation reads two things outside its own class: whether each class it calls is an interface, and, for a
  * super call that names an interface, the superclasses and interfaces on the way to it (AppClasses keeps each of
@@ -45,7 +53,15 @@ final class ClassCache {
 
   private record Entry(ByteBuffer pack, int offset, int length, String[] owners, byte[] answers) {}
 
-  private record Fresh(byte[] bytes, String[] owners, byte[] answers) {}
+  private record Fresh(byte[] bytes, String[] owners, byte[] answers, byte[] hash) {}
+
+  /** A class's content hash as a map key. */
+  private record Hash(long a, long b) {
+    static Hash of(byte[] h) {
+      ByteBuffer bb = ByteBuffer.wrap(h);
+      return new Hash(bb.getLong(), bb.getLong());
+    }
+  }
 
   /** The caches this process opened (the app's, and a test APK's), for {@link #flush} on the way out. */
   private static final List<ClassCache> OPEN = new java.util.concurrent.CopyOnWriteArrayList<>();
@@ -60,15 +76,26 @@ final class ClassCache {
   private final Path hintFile;
   private final LinkedHashSet<String> hints = new LinkedHashSet<>();
   private final List<String> previous;
+  private final boolean content;
+  private final Path indexFile;
+  /** Content hash to the key of the pack holding that class; read when the first class misses its own pack. */
+  private Map<Hash, String> index;
+  private final Map<String, Map<String, Entry>> otherPacks = new HashMap<>();
+  private final Map<Hash, String> indexAdds = new HashMap<>();
   private int hintsSaved;
   private int unsaved;
   int hits;
+  /** How many of {@link #hits} came from another build's pack, by content. */
+  int contentHits;
 
   @SuppressWarnings("unchecked")
   private ClassCache(Path dir, Path seed, String[] keys, String pkg) {
     this.dir = dir;
     this.seed = seed;
     this.keys = keys;
+    content = Boolean.parseBoolean(System.getProperty("apksim.classContent", "true"))
+        && !Boolean.getBoolean("apksim.debugInfo") && dev.apksim.dex.Coverage.cacheKey().isEmpty();
+    indexFile = pkg == null || pkg.isEmpty() ? null : dir.resolve(pkg + ".index");
     hintFile = pkg == null || pkg.isEmpty() ? null : dir.resolve(pkg + ".classes");
     Path hintsIn = hintFile == null ? null : read(hintFile.getFileName().toString());
     if (hintsIn != null && Files.isRegularFile(hintsIn)) {
@@ -126,13 +153,16 @@ final class ClassCache {
   }
 
   /** Whether a usable translation of the class is cached. */
-  synchronized boolean has(int dex, String name, ToIntFunction<String> answer) {
-    return valid(dex, name, answer) != null || fresh[dex].containsKey(name);
+  synchronized boolean has(int dex, String name, ToIntFunction<String> answer, Supplier<byte[]> hash) {
+    return valid(dex, name, answer) != null || fresh[dex].containsKey(name) || byContent(dex, name, answer, hash) != null;
   }
 
   private Entry valid(int dex, String name, ToIntFunction<String> answer) {
     if (loaded[dex] == null) loaded[dex] = load(read(keys[dex] + ".pack"));
-    Entry e = loaded[dex].get(name);
+    return check(loaded[dex].get(name), answer);
+  }
+
+  private static Entry check(Entry e, ToIntFunction<String> answer) {
     if (e == null) return null;
     for (int i = 0; i < e.owners.length; i++) {
       if (answer.applyAsInt(e.owners[i]) != e.answers[i]) return null;
@@ -140,9 +170,46 @@ final class ClassCache {
     return e;
   }
 
+  /**
+   * The entry of an identical class (by content hash) in a pack of another build, if the index knows one. A hit is
+   * kept to be saved into this DEX file's own pack, so the next launch of this build need not look.
+   */
+  private Entry byContent(int dex, String name, ToIntFunction<String> answer, Supplier<byte[]> hash) {
+    if (!content || hash == null) return null;
+    Fresh f = fresh[dex].get(name);
+    if (f != null) return null;
+    byte[] h = hash.get();
+    if (h == null) return null;
+    if (index == null) index = loadIndex();
+    String key = index.get(Hash.of(h));
+    if (key == null || key.equals(keys[dex])) return null;
+    Map<String, Entry> pack = otherPacks.get(key);
+    if (pack == null) otherPacks.put(key, pack = load(read(key + ".pack")));
+    Entry e = check(pack.get(name), answer);
+    if (e == null) return null;
+    byte[] bytes = new byte[e.length];
+    e.pack.get(e.offset, bytes);
+    fresh[dex].put(name, new Fresh(bytes, e.owners, e.answers, h));
+    unsaved++;
+    contentHits++;
+    return e;
+  }
+
   /** The cached translation of a class in DEX file {@code dex}, if its recorded answers still hold. */
-  synchronized byte[] get(int dex, String name, ToIntFunction<String> answer) {
+  synchronized byte[] get(int dex, String name, ToIntFunction<String> answer, Supplier<byte[]> hash) {
     Entry e = valid(dex, name, answer);
+    if (e == null) {
+      Fresh f = fresh[dex].get(name);
+      if (f != null) {
+        // Translated or taken from another build's pack since the last save, and not yet in this one's pack.
+        for (int i = 0; i < f.owners.length; i++) {
+          if (answer.applyAsInt(f.owners[i]) != f.answers[i]) return null;
+        }
+        hits++;
+        return f.bytes.clone();
+      }
+      e = byContent(dex, name, answer, hash);
+    }
     if (e == null) return null;
     byte[] out = new byte[e.length];
     e.pack.get(e.offset, out);
@@ -150,11 +217,11 @@ final class ClassCache {
     return out;
   }
 
-  synchronized void put(int dex, String name, byte[] bytes, Map<String, Byte> answers) {
+  synchronized void put(int dex, String name, byte[] bytes, Map<String, Byte> answers, Supplier<byte[]> hash) {
     String[] owners = answers.keySet().toArray(new String[0]);
     byte[] a = new byte[owners.length];
     for (int i = 0; i < owners.length; i++) a[i] = answers.get(owners[i]);
-    fresh[dex].put(name, new Fresh(bytes, owners, a));
+    fresh[dex].put(name, new Fresh(bytes, owners, a, content && hash != null ? hash.get() : null));
     unsaved++;
   }
 
@@ -206,6 +273,9 @@ final class ClassCache {
         if (fresh[i].isEmpty()) continue;
         if (loaded[i] == null) loaded[i] = load(read(keys[i] + ".pack"));
         todo.put(i, fresh[i]);
+        for (Fresh f : fresh[i].values()) {
+          if (f.hash != null) indexAdds.put(Hash.of(f.hash), keys[i]);
+        }
         fresh[i] = new HashMap<>();
       }
       unsaved = 0;
@@ -247,6 +317,7 @@ final class ClassCache {
         }
         written += add.size();
       }
+      if (!todo.isEmpty()) saveIndex();
       if (names != null) {
         Path tmp = dir.resolve(hintFile.getFileName() + Storage.tmpTag());
         Files.write(tmp, names);
@@ -257,7 +328,71 @@ final class ClassCache {
       System.err.println("[apksim] could not save translated classes: " + e);
       return;
     }
-    if (!Boolean.getBoolean("apksim.quiet")) System.err.printf("[apksim] saved %d translated classes%n", written);
+    if (!Boolean.getBoolean("apksim.quiet")) {
+      if (contentHits > 0) System.err.printf("[apksim] saved %d translated classes (%d found by content in another build's pack)%n", written, contentHits);
+      else System.err.printf("[apksim] saved %d translated classes%n", written);
+    }
+  }
+
+  private static final int INDEX_MAGIC = 0x41584931; // "AXI1"
+
+  /** The index on disk (empty when there is none or it is damaged: a lookup then finds nothing). */
+  private Map<Hash, String> loadIndex() {
+    Map<Hash, String> m = new HashMap<>();
+    Path f = indexFile == null ? null : read(indexFile.getFileName().toString());
+    if (f == null || !Files.isRegularFile(f)) return m;
+    try {
+      ByteBuffer b = ByteBuffer.wrap(Files.readAllBytes(f));
+      if (b.getInt() != INDEX_MAGIC) return m;
+      int nk = b.getInt();
+      String[] names = new String[nk];
+      for (int i = 0; i < nk; i++) names[i] = readString(b);
+      int n = b.getInt();
+      for (int i = 0; i < n; i++) {
+        long hi = b.getLong();
+        long lo = b.getLong();
+        m.put(new Hash(hi, lo), names[b.getInt()]);
+      }
+    } catch (IOException | RuntimeException e) {
+      System.err.println("[apksim] ignoring damaged class index " + f.getFileName() + ": " + e);
+      return new HashMap<>();
+    }
+    return m;
+  }
+
+  /** Adds what this save wrote to the index, dropping entries whose pack is gone, and writes it. Under {@code saving}. */
+  private void saveIndex() throws IOException {
+    if (!content || indexFile == null) return;
+    Map<Hash, String> all;
+    synchronized (this) {
+      if (index == null) index = loadIndex();
+      index.putAll(indexAdds);
+      indexAdds.clear();
+      all = new HashMap<>(index);
+    }
+    Map<String, Boolean> alive = new HashMap<>();
+    all.values().removeIf(k -> !alive.computeIfAbsent(k, key -> Files.exists(dir.resolve(key + ".pack"))));
+    List<String> names = new ArrayList<>(new LinkedHashSet<>(all.values()));
+    Map<String, Integer> at = new HashMap<>();
+    for (int i = 0; i < names.size(); i++) at.put(names.get(i), i);
+    ByteArrayOutputStream bytes = new ByteArrayOutputStream(all.size() * 20 + 1024);
+    DataOutputStream out = new DataOutputStream(bytes);
+    out.writeInt(INDEX_MAGIC);
+    out.writeInt(names.size());
+    for (String k : names) writeString(out, k);
+    out.writeInt(all.size());
+    for (Map.Entry<Hash, String> e : all.entrySet()) {
+      out.writeLong(e.getKey().a());
+      out.writeLong(e.getKey().b());
+      out.writeInt(at.get(e.getValue()));
+    }
+    out.flush();
+    Path tmp = dir.resolve(indexFile.getFileName() + Storage.tmpTag());
+    Files.write(tmp, bytes.toByteArray());
+    Files.move(tmp, indexFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+    synchronized (this) {
+      index = all;
+    }
   }
 
   private static void writeEntry(DataOutputStream out, String name, String[] owners, byte[] answers, byte[] bytes)
@@ -323,7 +458,7 @@ final class ClassCache {
   /** Drops packs unused for two weeks and the caches of runtime builds unused for a day. */
   private void sweep() throws IOException {
     long now = System.currentTimeMillis();
-    try (DirectoryStream<Path> packs = Files.newDirectoryStream(dir, "*.{pack,classes}")) {
+    try (DirectoryStream<Path> packs = Files.newDirectoryStream(dir, "*.{pack,classes,index}")) {
       for (Path p : packs) {
         if (now - Files.getLastModifiedTime(p).toMillis() > 14L * 24 * 3600_000) Files.deleteIfExists(p);
       }
