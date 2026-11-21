@@ -41,6 +41,7 @@ public final class ClassCacheSiblingsCheck {
     boolean expect = mode.equals("read-found");
     // A new build has no load hints of its own: it takes the newest sibling's (issue 583), and none without one.
     if (expect != c.hints().contains("p/A")) fail("hints " + c.hints() + " with" + (expect ? "" : "out") + " a sibling");
+    if (expect) c.loaded("p/A");  // a class the sibling's hints already name: the new build must still save hints of its own
     byte[] got = c.get(0, "p/A", n -> 0, () -> HASH);
     if (expect && !Arrays.equals(got, CODE)) fail("the class was not found by content in a sibling's pack: " + Arrays.toString(got));
     if (!expect && got != null) fail("a class was found with no sibling named");

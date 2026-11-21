@@ -113,11 +113,13 @@ final class ClassCache {
     // A beamed build's first launch has no hints of its own: the newest earlier build's (issue 583) let the classes
     // its app loaded be looked up by content and translated on worker threads, as outside beam, where hints are kept
     // per package, rather than one by one on the main thread.
+    boolean borrowed = false;
     if (hintFile != null && (hintsIn == null || !Files.isRegularFile(hintsIn))) {
       for (Path sib : siblings) {
         Path q = sib.resolve(hintFile.getFileName().toString());
         if (Files.isRegularFile(q, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
           hintsIn = q;
+          borrowed = true;
           break;
         }
       }
@@ -129,7 +131,9 @@ final class ClassCache {
         // Hints only speed things up.
       }
     }
-    hintsSaved = hints.size();
+    // Borrowed hints are not this build's yet: its first save writes them, or a build whose launch loaded only classes
+    // the sibling named would keep none, and get no siblings once it has packs of its own (Serve.beamSiblings).
+    hintsSaved = borrowed ? 0 : hints.size();
     previous = List.copyOf(hints);
     loaded = new Map[keys.length];
     fresh = new Map[keys.length];

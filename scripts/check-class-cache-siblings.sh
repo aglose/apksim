@@ -41,4 +41,5 @@ run read-found bbbb "$S/beam/cache/a"
 [[ "$(find "$S/beam/cache/a" -type f -exec shasum {} + | sort)" == "$BEFORE" ]] || { echo "FAIL: the sibling's folder changed"; exit 1; }
 OUT="$(ls -d "$S"/beam/out/*)"
 ls "$OUT"/classes/*/bbbb.pack >/dev/null || { echo "FAIL: the class found by content was not saved into the new build's own pack"; exit 1; }
+ls "$OUT"/classes/*/p.pkg.classes >/dev/null || { echo "FAIL: the new build saved no load hints of its own"; exit 1; }
 echo "class cache siblings: ok"

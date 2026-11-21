@@ -574,8 +574,7 @@ sandbox of their own (`APKSIM_BEAM_SANDBOX`, set by the agent; standbys named wi
   also takes the newest sibling's load hints, so the classes the app loaded last time are looked up and translated on
   worker threads while the framework starts, as outside beam (issue 583); the siblings' indexes are read on a thread of
   their own as the cache opens. Each launch's index keeps the entries of every pack of its build, not only those it
-  rewrote: before, a launch's index named only its own packs and replaced the build's, so a later build found a third
-  of the classes at most. An unsigned
+  rewrote: before, a launch's index named only the packs that launch rewrote and replaced the build's. An unsigned
   build, one with no site, or one whose bytes another site ran first (its folder's `identity` is that site's) shares
   nothing, and neither does a build whose own cache already holds its `identity` and a saved pack: it is given no siblings, which also spares reading its APK for signers at each start (issue 583). The agent's cache warm-up knows no site, so only page sessions use siblings. `scripts/check-class-cache-siblings.sh` (CI).
 - **Deleting what an APK could write**: the agent runs outside any sandbox and erases slots, `.device` folders,
