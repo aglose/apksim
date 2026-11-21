@@ -84,8 +84,11 @@ final class ClassCache {
   private final Path indexFile;
   /** Content hash to the key of the pack holding that class; read when the first class misses its own pack. */
   private Map<Hash, String> index;
-  /** Earlier builds' index entries (read only, beam): consulted after {@link #index}, never written out. */
-  private Map<Hash, String> siblingIndex;
+  /**
+   * Earlier builds' index entries (read only, beam): consulted after {@link #index}, never written out. Read on a thread
+   * of its own as the cache opens (issue 583: under the cache's lock at the first lookup, every class load waited).
+   */
+  private final java.util.concurrent.CompletableFuture<Map<Hash, String>> siblingIndex;
   private final Map<String, Map<String, Entry>> otherPacks = new HashMap<>();
   private final Map<Hash, String> indexAdds = new HashMap<>();
   private volatile boolean exiting;
@@ -107,6 +110,18 @@ final class ClassCache {
     indexFile = pkg == null || pkg.isEmpty() ? null : dir.resolve(pkg + ".index");
     hintFile = pkg == null || pkg.isEmpty() ? null : dir.resolve(pkg + ".classes");
     Path hintsIn = hintFile == null ? null : read(hintFile.getFileName().toString());
+    // A beamed build's first launch has no hints of its own: the newest earlier build's (issue 583) let the classes
+    // its app loaded be looked up by content and translated on worker threads, as outside beam, where hints are kept
+    // per package, rather than one by one on the main thread.
+    if (hintFile != null && (hintsIn == null || !Files.isRegularFile(hintsIn))) {
+      for (Path sib : siblings) {
+        Path q = sib.resolve(hintFile.getFileName().toString());
+        if (Files.isRegularFile(q, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+          hintsIn = q;
+          break;
+        }
+      }
+    }
     if (hintsIn != null && Files.isRegularFile(hintsIn)) {
       try {
         hints.addAll(Files.readAllLines(hintsIn));
@@ -119,6 +134,21 @@ final class ClassCache {
     loaded = new Map[keys.length];
     fresh = new Map[keys.length];
     for (int i = 0; i < keys.length; i++) fresh[i] = new HashMap<>();
+    if (content && indexFile != null && !siblings.isEmpty()) {
+      siblingIndex = new java.util.concurrent.CompletableFuture<>();
+      Thread t = new Thread(() -> {
+        Map<Hash, String> m = Map.of();
+        try {
+          m = readSiblingIndexes();
+        } finally {
+          siblingIndex.complete(m);  // always: a lookup waits for it
+        }
+      }, "apksim-class-index");
+      t.setDaemon(true);
+      t.start();
+    } else {
+      siblingIndex = java.util.concurrent.CompletableFuture.completedFuture(Map.of());
+    }
   }
 
   /**
@@ -418,18 +448,21 @@ final class ClassCache {
     return readIndex(indexFile == null ? null : read(indexFile.getFileName().toString()));
   }
 
-  /** Earlier builds' indexes (a beamed instance's siblings), newest first; read once. */
-  private synchronized Map<Hash, String> siblingIndex() {
-    if (siblingIndex == null) {
-      Map<Hash, String> m = new HashMap<>();
-      if (content && indexFile != null) {
-        for (Path s : siblings) {
-          for (Map.Entry<Hash, String> e : readIndex(s.resolve(indexFile.getFileName().toString())).entrySet()) m.putIfAbsent(e.getKey(), e.getValue());
-        }
+  /** Earlier builds' indexes (a beamed instance's siblings), newest first, as read ahead. */
+  private Map<Hash, String> siblingIndex() {
+    return siblingIndex.join();
+  }
+
+  private Map<Hash, String> readSiblingIndexes() {
+    Map<Hash, String> m = new HashMap<>();
+    try {
+      for (Path s : siblings) {
+        for (Map.Entry<Hash, String> e : readIndex(s.resolve(indexFile.getFileName().toString())).entrySet()) m.putIfAbsent(e.getKey(), e.getValue());
       }
-      siblingIndex = m;
+    } catch (RuntimeException e) {
+      // Nothing found by content in a sibling: translated as without one.
     }
-    return siblingIndex;
+    return m;
   }
 
   private static Map<Hash, String> readIndex(Path f) {
@@ -440,15 +473,18 @@ final class ClassCache {
       if (b.getInt() != INDEX_MAGIC) return m;
       int nk = b.getInt();
       String[] names = new String[nk];
-      for (int i = 0; i < nk; i++) names[i] = readString(b);
+      for (int i = 0; i < nk; i++) {
+        names[i] = readString(b);
+        // A pack key names a file beside the index: never a path (an app's own instance wrote this file). Checked once
+        // per name, not per entry (a pattern compiled for each of ~30,000 entries, issue 583).
+        if (!names[i].matches("[0-9a-zA-Z_-]{1,80}")) names[i] = null;
+      }
       int n = b.getInt();
       for (int i = 0; i < n; i++) {
         long hi = b.getLong();
         long lo = b.getLong();
         String k = names[b.getInt()];
-        // A pack key names a file beside the index: never a path (an app's own instance wrote this file).
-        if (!k.matches("[0-9a-zA-Z_-]{1,80}")) continue;
-        m.put(new Hash(hi, lo), k);
+        if (k != null) m.put(new Hash(hi, lo), k);
       }
     } catch (IOException | RuntimeException e) {
       System.err.println("[apksim] ignoring damaged class index " + f.getFileName() + ": " + e);
@@ -468,7 +504,10 @@ final class ClassCache {
       all = new HashMap<>(index);
     }
     Map<String, Boolean> alive = new HashMap<>();
-    all.values().removeIf(k -> !alive.computeIfAbsent(k, key -> Files.exists(dir.resolve(key + ".pack"))));
+    // A pack is alive in this process's folder or, for a beamed instance, in its build's cache (the seed): its out
+    // folder holds only the packs this launch rewrote, and the agent moves this index over the build's, so entries
+    // for the others were lost at every launch but the first (issue 583).
+    all.values().removeIf(k -> !alive.computeIfAbsent(k, key -> Files.exists(read(key + ".pack"))));
     List<String> names = new ArrayList<>(new LinkedHashSet<>(all.values()));
     Map<String, Integer> at = new HashMap<>();
     for (int i = 0; i < names.size(); i++) at.put(names.get(i), i);
