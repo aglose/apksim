@@ -7,6 +7,9 @@
 // 120 Hz), which turns its IOSurface into a Metal texture, blits it into a drawable and presents it.
 // So the difference between them is only how the pixels arrive. A drawable that was never shown (replaced by a newer
 // one before its vsync) counts as dropped.
+// Environment: LAYER=1 shows each IOSurface as a plain CALayer's contents instead of through Metal (as apksim's own
+// window does; reports present to the display link's target refresh, since layer contents have no presented time);
+// DRAWABLES=N the Metal layer's drawable count (3); ACTIVATE=1 makes the window key and the app active.
 // Build: clang -O2 -fobjc-arc -framework Cocoa -framework Metal -framework QuartzCore -framework IOSurface
 //        -framework VideoToolbox -framework CoreMedia -framework CoreVideo -o work/surfaceshow
 //        scripts/spike-s1/surfaceshow.m
