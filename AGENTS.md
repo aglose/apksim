@@ -189,8 +189,8 @@ Read README.md for results and limits; this file covers how to work on the code.
     test screens and no app, any number of frames: iterate on the animation there. The built-in skins
     `pixel-10-pro-fold`, `galaxy-z-fold7`, `galaxy-z-flip7` and `galaxy-z-trifold` (`--skin NAME`, which implies the
     device; docs/skins.md "Built-in skins") are pairs: `frame.png` around the inner display and `cover.png` around the
-    cover display (skin.json's `cover`), drawn by `scripts/gen-fold-skin.java` (the Pixel) and
-    `scripts/gen-samsung-skins.java` (Samsung, the S25, S25+, S25 Ultra and A56 phones too) from the devices'
+    cover display (skin.json's `cover`) with `back.png` and the `fold` look, all drawn by `scripts/gen-device-skins.java`
+    (the Samsung S25, S25+, S25 Ultra and A56 phones too) from the devices'
     published sizes at each panel's pixels per millimetre; `Skinning.part` picks the cover frame, corners and camera
     cutout while the device is closed, so the skin stays on through a fold. Not done: the posture in flight-recorder
     checkpoints (a replayed shape has one frame), a fold while rotated, a TriFold in its two-panel posture (it has
@@ -718,7 +718,7 @@ Read README.md for results and limits; this file covers how to work on the code.
   `make-media.sh` (test clips), `docker-build.sh` and `ci-smoke.sh` (Linux image, CI), `network-check.sh` and
   `network-fixture.py` (record, replay and conditions against the test app, see "Network"), `package-release.sh` (see
   "Releases"),
-  `gen-samsung-skins.java` (the built-in Samsung skins, see `Fold`), `fold-frames.m` (the fold animation rendered
+  `gen-device-skins.java` (every built-in skin, see `Fold`), `fold-frames.m` (the fold animation rendered
   from a skin's frames, no app: see `Fold`),
   `gen-window-frames.py` and `window-frames-check.py` (each window's frame of the test app's window screens on an API 36
   emulator, `testapks/composeapp/window-frames-api36.tsv`, against apksim's `windows`; scenes in `window-frames-scenes.txt`,

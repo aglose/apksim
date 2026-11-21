@@ -1,8 +1,10 @@
-// Draws the built-in Samsung skins (runtime/src/main/resources/dev/apksim/skins/galaxy-*), frames and skin.json:
-//   java scripts/gen-samsung-skins.java [OUT_DIR]
+// Draws the built-in skins (runtime/src/main/resources/dev/apksim/skins/: the Pixel 10 Pro Fold and the Samsung
+// phones and foldables), frames and skin.json:
+//   java scripts/gen-device-skins.java [OUT_DIR]
 // Each frame is drawn here from the device's published sizes (the body's millimetres, the panel's pixels and diagonal),
-// not taken from any artwork, at the panel's own pixels per millimetre, so a skin's bezels are the device's. The phones
-// run at the resolution Samsung ships them with (FHD+), so their panels are drawn at that resolution's density. The
+// not taken from any artwork, at the panel's own pixels per millimetre, so a skin's bezels are the device's. The Pixel
+// 10 Pro Fold closes as a book, its hinge down the cover side's left edge, its cameras in a block on the back. Samsung's
+// phones run at the resolution Samsung ships them with (FHD+), so their panels are drawn at that resolution's density. The
 // folding ones have a cover frame too (skin.json's "cover"): the Z Fold7 closes as a book, its hinge down the cover
 // side's left edge; the Z Flip7 as a clamshell, its FlexWindow on the top half's back with the hinge below it and the
 // cameras inside the window's bottom left; the Z TriFold in three, a hinge down each side of its cover. Each folding
@@ -32,7 +34,7 @@ import java.util.List;
 import java.util.Locale;
 import javax.imageio.ImageIO;
 
-public class GenSamsungSkins {
+public class GenDeviceSkins {
   static final int MARGIN = 10;  // room outside the body for the buttons
 
   /** A camera drawn over the screen: centre in screen pixels, radius; a lens (a big ring) or a punch hole. */
@@ -54,6 +56,7 @@ public class GenSamsungSkins {
     List<String> hinges = new ArrayList<>();
     double[] gapsX = {}, gapsY = {};
     boolean flash;  // a flash beside the lenses (the Flip's cover)
+    boolean pixelCameras;  // the back's cameras in a Pixel's block, not a Galaxy's column
     Color metal = new Color(0x6e7075);  // the frame's aluminium (a folding device's colour)
     Color glass = new Color(0x202226);  // its back glass
     // Results: the body in the frame's pixels.
@@ -132,6 +135,18 @@ public class GenSamsungSkins {
     phone(root, "galaxy-a56", "Galaxy A56", new Part(1080, 2340, 6.7).body(77.5, 162.2, 0, 0).bottomExtra(1.5).radii(10.2, 7.6)
         .hole(0.5, 4.6, 3.2).button(0.26, 0.34).button(0.36, 0.40));
 
+    // Pixel 10 Pro Fold: open 150.4 x 155.2 mm around an 8.0" 2076x2152 panel, the selfie camera in the right half's top
+    // right corner; closed 76.3 x 155.2 mm around a 6.4" 1080x2364 one, the hinge down the left edge. Moonstone: a
+    // blue-grey polished frame and frosted glass; softer corners than Samsung's.
+    Part pixelOpen = new Part(2076, 2152, 8.0).body(150.4, 155.2, 0, 0).radii(7.0, 4.6).hole(0.918, 6.0, 4.0)
+        .button(0.27, 0.34).button(0.38, 0.50).colour(0x6f7b89, 0x5d6875);
+    pixelOpen.gapsX = new double[] {0.5};
+    pixelOpen.pixelCameras = true;
+    Part pixelCover = new Part(1080, 2364, 6.4).body(76.3, 155.2, 1.6, 0).radii(8.0, 6.0).hole(0.5, 5.2, 3.8)
+        .button(0.27, 0.34).button(0.38, 0.50).colour(0x6f7b89, 0x5d6875);
+    pixelCover.hinges.add("left");
+    foldable(root, "pixel-10-pro-fold", "Pixel 10 Pro Fold", pixelOpen, pixelCover, "book");
+
     // Galaxy Z Fold7: open 143.2 x 158.4 mm around an 8.0" 1968x2184 panel, the selfie camera in the right half's top;
     // closed 72.8 x 158.4 mm around a 6.5" 1080x2520 one, the hinge down the left edge (2 mm more there).
     // Blue Shadow: a dark navy frame and frosted glass.
@@ -180,7 +195,7 @@ public class GenSamsungSkins {
     j.append("  \"frame\": \"frame.png\",\n  \"screen\": ").append(screen(p)).append(",\n");
     j.append("  \"device\": \"").append(name).append("\",\n  \"kind\": \"phone\",\n");
     j.append("  \"cutout\": ").append(cutout(p)).append(",\n");
-    j.append("  \"source\": { \"author\": \"apksim (drawn by scripts/gen-samsung-skins.java)\", \"license\": \"Apache-2.0\" }\n}\n");
+    j.append("  \"source\": { \"author\": \"apksim (drawn by scripts/gen-device-skins.java)\", \"license\": \"Apache-2.0\" }\n}\n");
     Files.writeString(new File(dir, "skin.json").toPath(), j);
   }
 
@@ -208,7 +223,7 @@ public class GenSamsungSkins {
           .append(Math.round(open.bodyY + open.bodyH * b.to)).append("]");
     }
     j.append("] },\n");
-    j.append("  \"source\": { \"author\": \"apksim (drawn by scripts/gen-samsung-skins.java)\", \"license\": \"Apache-2.0\" }\n}\n");
+    j.append("  \"source\": { \"author\": \"apksim (drawn by scripts/gen-device-skins.java)\", \"license\": \"Apache-2.0\" }\n}\n");
     Files.writeString(new File(dir, "skin.json").toPath().toAbsolutePath(), j.toString().replace(",\n  \"cutout\": null", ""));
   }
 
@@ -395,7 +410,8 @@ public class GenSamsungSkins {
       // The left half's back (on the right from behind) is the cover display; the right half's has the cameras.
       double half = bw / 2;
       coverGlass(g, bx + half + 0.9 * mm, by + 1.6 * mm, half - 2.5 * mm, bh - 3.2 * mm, p.screenR * mm * 1.2);
-      island(g, bx + 6.5 * mm, by + 6.5 * mm, 15.5 * mm, 42 * mm, 3, mm, p);
+      if (p.pixelCameras) pixelBlock(g, bx + 7 * mm, by + 7 * mm, mm, p);
+      else island(g, bx + 6.5 * mm, by + 6.5 * mm, 15.5 * mm, 42 * mm, 3, mm, p);
     } else if (across) {
       // The top half's back: the FlexWindow, edge to edge above the hinge, the lenses in its bottom left.
       double top = p.screenY + p.sh * 0.5 - 3.6 * mm / 2 - 1.0 * mm;
@@ -447,6 +463,30 @@ public class GenSamsungSkins {
     g.fill(s);
     g.setPaint(new GradientPaint((float) x, (float) y, new Color(255, 255, 255, 30), (float) (x + w * 0.6), (float) (y + h * 0.5), new Color(255, 255, 255, 0)));
     g.fill(s);
+  }
+
+  /**
+   * A Pixel's camera block: a raised rounded rectangle in polished metal, the three lenses two above one, the flash and
+   * the temperature sensor beside them.
+   */
+  static void pixelBlock(Graphics2D g, double x, double y, double mm, Part p) {
+    double w = 33 * mm, h = 23 * mm, r = 8 * mm;
+    g.setPaint(new Color(0, 0, 0, 80));
+    g.fill(new RoundRectangle2D.Double(x + 0.4 * mm, y + 0.7 * mm, w, h, 2 * r, 2 * r));
+    g.setPaint(new LinearGradientPaint(new Point2D.Double(x, y), new Point2D.Double(x + w, y + h), new float[] {0f, 0.5f, 1f},
+        new Color[] {shade(p.metal, 1.5), shade(p.metal, 1.05), shade(p.metal, 0.7)}));
+    g.fill(new RoundRectangle2D.Double(x, y, w, h, 2 * r, 2 * r));
+    g.setPaint(new Color(0x0d0e10));
+    g.fill(new RoundRectangle2D.Double(x + 1.2 * mm, y + 1.2 * mm, w - 2.4 * mm, h - 2.4 * mm, 2 * (r - 1.2 * mm), 2 * (r - 1.2 * mm)));
+    double lr = 4.6 * mm;
+    lens(g, x + 7.4 * mm, y + 6.6 * mm, lr, mm);
+    lens(g, x + 18.6 * mm, y + 6.6 * mm, lr, mm);
+    lens(g, x + 7.4 * mm, y + 16.6 * mm, lr * 0.85, mm);
+    double fr = 1.3 * mm;
+    g.setPaint(new Color(0xd9ceb0));
+    g.fill(new Ellipse2D.Double(x + 26.5 * mm - fr, y + 6.6 * mm - fr, 2 * fr, 2 * fr));
+    g.setPaint(new Color(0x222326));
+    g.fill(new Ellipse2D.Double(x + 26.5 * mm - fr, y + 12.5 * mm - fr, 2 * fr, 2 * fr));
   }
 
   /** A raised camera island: a rounded slab in the frame's metal with lenses down it and a flash beside. */

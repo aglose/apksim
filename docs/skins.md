@@ -139,7 +139,7 @@ These skins come with apksim, inside apksim.jar (`runtime/src/main/resources/dev
 
 | Skin | Frames |
 |---|---|
-| `pixel-10-pro-fold` | open (2076x2152, the camera in the screen's top right corner) and, through `cover`, closed (the 1080x2364 panel, of which the display is 1079 px wide: whole dp; the camera top centre, the hinge on the left) |
+| `pixel-10-pro-fold` | open (2076x2152, the camera in the screen's top right corner) and, through `cover`, closed (the 1080x2364 panel, of which the display is 1079 px wide: whole dp; the camera top centre, the hinge on the left); Moonstone, the camera block on its back |
 | `galaxy-z-fold7` | open (1968x2184, the camera at the top of the right half) and closed (1080x2520, the hinge on the left) |
 | `galaxy-z-flip7` | open (1080x2520, the hinge's breaks in the side rails) and closed (the 948x1048 FlexWindow edge to edge, the two lenses and the flash inside its bottom left, the hinge below it) |
 | `galaxy-z-trifold` | open (2160x1584, the hinges' breaks at its thirds) and closed (1080x2520, a hinge down each side) |
@@ -149,8 +149,8 @@ They are found after the store and the shared folders, so a stored skin of the s
 shows them as `built-in`. A page of `serve` or `beam` is given a folding skin's cover frame (`cover.png`) and its
 geometry (`cover` in `/api/skins`), but draws only the open frame itself: closed, it draws none unless it draws the
 cover. Every frame is drawn from the device's published sizes, not taken from artwork, at the panel's own pixels per
-millimetre, so the bezels are the device's: the Pixel's by `scripts/gen-fold-skin.java`, the Samsung ones by
-`scripts/gen-samsung-skins.java` (`java scripts/gen-samsung-skins.java` writes the frames and skin.json files; the
+millimetre, so the bezels are the device's, by `scripts/gen-device-skins.java` (`java scripts/gen-device-skins.java`
+writes the frames, backs and skin.json files; the
 panels must agree with `Fold.java`). In the Mac window a fold plays as the device closing or opening in its frame
 (AGENTS.md, `Fold`); `scripts/fold-frames.m` renders that animation from a skin's frames, with no app running.
 

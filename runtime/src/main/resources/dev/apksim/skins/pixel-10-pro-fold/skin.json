@@ -2,14 +2,15 @@
   "name": "pixel-10-pro-fold",
   "title": "Pixel 10 Pro Fold",
   "frame": "frame.png",
-  "screen": { "x": 74, "y": 72, "width": 2076, "height": 2152, "cornerRadius": 104 },
+  "screen": { "x": 79, "y": 76, "width": 2076, "height": 2152, "cornerRadius": 68 },
   "device": "pixel-10-pro-fold",
   "kind": "foldable",
-  "cutout": { "type": "hole", "x": 1980, "y": 164, "radius": 30 },
+  "cutout": { "type": "hole", "x": 1985, "y": 164, "radius": 39 },
   "cover": {
     "frame": "cover.png",
-    "screen": { "x": 81, "y": 72, "width": 1080, "height": 2364, "cornerRadius": 96 },
-    "cutout": { "type": "hole", "x": 621, "y": 156, "radius": 30 }
+    "screen": { "x": 93, "y": 69, "width": 1080, "height": 2364, "cornerRadius": 96 },
+    "cutout": { "type": "hole", "x": 633, "y": 152, "radius": 40 }
   },
-  "source": { "author": "apksim (drawn by scripts/gen-fold-skin.java)", "license": "Apache-2.0" }
+  "fold": { "back": "back.png", "edge": "#6f7b89", "body": { "x": 10, "y": 10, "width": 2214, "height": 2284, "radius": 103 }, "keys": [[627, 787], [878, 1152]] },
+  "source": { "author": "apksim (drawn by scripts/gen-device-skins.java)", "license": "Apache-2.0" }
 }

@@ -300,7 +300,7 @@ skin_closed="$(drive 'fold closed' 'wait 1000' skin)"
 # (A pause after Back: a device switch sent with it recreates the activity before its finish lands, and it stays.)
 skin_phone="$(drive 'fold open' back 'wait 500' 'device phone' 'wait 1000' skin)"
 echo "Fold skin: $skin_open | $skin_closed | $skin_phone"
-[[ "$skin_open" == *'frame 2224x2296 px'* && "$skin_closed" == *'frame 1242x2508 px'*'corners 96'* && "$skin_phone" == *'off; stored:'* ]] \
+[[ "$skin_open" == *'frame 2224x2296 px'* && "$skin_closed" == *'frame 1240x2502 px'*'corners 96'* && "$skin_phone" == *'off; stored:'* ]] \
   || { echo "the built-in fold skin did not follow the fold, or stayed on a phone" >&2; exit 1; }
 # Samsung's other ways of folding (Fold.Hinge): the Z Flip7's clamshell has its fold across the middle and a small
 # cover display; the Z TriFold has two folds, down its thirds, and a tablet's density inside.

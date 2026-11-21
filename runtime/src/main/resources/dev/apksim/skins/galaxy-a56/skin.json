@@ -6,5 +6,5 @@
   "device": "galaxy-a56",
   "kind": "phone",
   "cutout": { "type": "hole", "x": 597, "y": 127, "radius": 34 },
-  "source": { "author": "apksim (drawn by scripts/gen-samsung-skins.java)", "license": "Apache-2.0" }
+  "source": { "author": "apksim (drawn by scripts/gen-device-skins.java)", "license": "Apache-2.0" }
 }

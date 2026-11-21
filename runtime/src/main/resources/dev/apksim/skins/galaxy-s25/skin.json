@@ -6,5 +6,5 @@
   "device": "galaxy-s25",
   "kind": "phone",
   "cutout": { "type": "hole", "x": 587, "y": 109, "radius": 34 },
-  "source": { "author": "apksim (drawn by scripts/gen-samsung-skins.java)", "license": "Apache-2.0" }
+  "source": { "author": "apksim (drawn by scripts/gen-device-skins.java)", "license": "Apache-2.0" }
 }
