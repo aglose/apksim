@@ -622,7 +622,11 @@ fi
 # Robolectric mishandles spaces in its dependency path, so always go through a link without any.
 TMP="${TMPDIR:-/tmp}"
 LIBS="${TMP%/}/apksim-$(printf '%s' "$ROOT" | { shasum 2>/dev/null || sha1sum; } | cut -c1-12)"
-[[ -e "$LIBS" ]] || ln -sfn "$ROOT/work/lib" "$LIBS"
+# Two launches starting together (a first launch and the training it starts) can both find no link: ln's unlink and
+# symlink are two steps, so the slower one fails "File exists" once the other's link is there, which is what it wanted.
+if [[ ! -e "$LIBS" ]] && ! ln -sfn "$ROOT/work/lib" "$LIBS" 2>/dev/null && [[ ! -e "$LIBS" ]]; then
+  echo "[apksim] cannot link $LIBS to $ROOT/work/lib" >&2; exit 1
+fi
 CP="$ROOT/work/apksim.jar:$(ls "$LIBS"/ | sed "s#^#$LIBS/#" | grep "\.jar$" | grep -v nativeruntime-dist | tr '\n' ':')"
 # `exec` keeps this PID, which is how a later launch knows whether this scratch dir is still in use.
 mkdir -p "$STATE/tmp/$$"
