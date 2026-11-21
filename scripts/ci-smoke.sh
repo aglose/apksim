@@ -300,8 +300,22 @@ skin_closed="$(drive 'fold closed' 'wait 1000' skin)"
 # (A pause after Back: a device switch sent with it recreates the activity before its finish lands, and it stays.)
 skin_phone="$(drive 'fold open' back 'wait 500' 'device phone' 'wait 1000' skin)"
 echo "Fold skin: $skin_open | $skin_closed | $skin_phone"
-[[ "$skin_open" == *'frame 2224x2296 px'* && "$skin_closed" == *'frame 1242x2508 px'*'corners 96'* && "$skin_phone" == *'off; stored:'* ]] \
+[[ "$skin_open" == *'frame 2234x2304 px'* && "$skin_closed" == *'frame 1240x2502 px'*'corners 96'* && "$skin_phone" == *'off; stored:'* ]] \
   || { echo "the built-in fold skin did not follow the fold, or stayed on a phone" >&2; exit 1; }
+# Samsung's other ways of folding (Fold.Hinge): the Z Flip7's clamshell has its fold across the middle and a small
+# cover display; the Z TriFold has two folds, down its thirds, and a tablet's density inside.
+drive 'device galaxy-z-flip7' 'wait 1000' 'open apksim://fold' 'wait 2000' >/dev/null
+flip_open="$(fold)"
+drive 'fold closed' 'wait 2000' >/dev/null
+flip_closed="$(fold)"
+drive 'fold open' 'wait 1000' 'device galaxy-z-trifold' 'wait 2000' >/dev/null
+tri_open="$(fold)"
+drive back 'wait 500' 'device phone' 'wait 1000' >/dev/null
+echo "Samsung folds: $flip_open-> $flip_closed-> $tri_open"
+[[ "$flip_open" == 'text="fold: flat horizontal 0,1260-1078,1260" text="window: 411x960 dp" text="hinge: 180" ' \
+  && "$flip_closed" == 'text="fold: none" text="window: 361x399 dp" text="hinge: 0" ' \
+  && "$tri_open" == 'text="fold: flat vertical 720,0-720,1584 | flat vertical 1440,0-1440,1584" text="window: 1080x792 dp" text="hinge: 180" ' ]] \
+  || { echo "a Samsung folding device's folds were not what the app saw" >&2; exit 1; }
 
 # ACTION_TIME_TICK (issue 109): a receiver registered at runtime hears one tick when the app's clock crosses a minute,
 # and none more within that minute (the test app's apksim://timezone counts them as "ticks: N").

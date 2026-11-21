@@ -1,0 +1,10 @@
+{
+  "name": "galaxy-s25",
+  "title": "Galaxy S25",
+  "frame": "frame.png",
+  "screen": { "x": 47, "y": 42, "width": 1080, "height": 2340, "cornerRadius": 115 },
+  "device": "galaxy-s25",
+  "kind": "phone",
+  "cutout": { "type": "hole", "x": 587, "y": 109, "radius": 34 },
+  "source": { "author": "apksim (drawn by scripts/gen-device-skins.java)", "license": "Apache-2.0" }
+}

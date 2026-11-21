@@ -2,7 +2,7 @@
 
 A skin is a device frame image plus the device it frames. apksim stores them and `apksim skin` adds, shows and
 exports them. They are local data: anyone can add their own, and a private skin stays on the machine; apksim itself
-carries one, for its folding device ("Built-in skins"). This page is the format, the commands, and how a running instance draws one ("Drawing"). `serve` and `beam`
+carries skins for its named folding devices and Samsung phones ("Built-in skins"). This page is the format, the commands, and how a running instance draws one ("Drawing"). `serve` and `beam`
 hand them to a browser tab, which draws the frame around its canvas (docs/serve.md "Skins").
 
 ## Format
@@ -45,6 +45,13 @@ mask.png          optional: the screen's shape (alpha), for round or notched scr
   around the cover display, with the same fields as the skin's own. It is drawn, and its corners and cutout told to
   the app, while the device is closed (`fold closed`, `--fold closed`); the skin stays on through a fold. `skin add`
   has no option for it: write it into skin.json by hand.
+- `fold` is optional, for a folding device's fold animation in the Mac window: `{"back": "back.png", "edge":
+  "#rrggbb", "body": {"x", "y", "width", "height", "radius"}, "keys": [[top, bottom], ...]}`. `back` is the open
+  device seen from behind, upright (the front's left edge on its right), `frame.png`'s size: a panel's back that has
+  no display (the Flip's bottom half, the TriFold's left panel) is drawn from it. `edge` is the frame's metal, the
+  colour of the sides drawn between front and back; `body` is the body's rectangle and corner radius in `frame.png`'s
+  pixels, the outline the sides follow; `keys` are the side keys on the body's right edge, as pixel rows. Without
+  it a fold draws plain glass and grey sides around the picture's edge.
 - The aspect of `screen` must match the device's pixels within 1%, or the skin is refused with both sizes.
 
 ## Commands
@@ -127,13 +134,25 @@ the screen's corners, on the floating button and on the bezel (`window click X Y
 
 ## Built-in skins
 
-`pixel-10-pro-fold` ("Pixel 10 Pro Fold") comes with apksim, inside apksim.jar (`runtime/src/main/resources/dev/apksim/skins/`),
-and is found after the store and the shared folders, so a stored skin of that name replaces it; `skin list` shows it as
-`built-in`. It frames `--device pixel-10-pro-fold` open (2076x2152, the camera in the screen's top right corner) and,
-through `cover`, closed (the 1080x2364 panel, of which the display is 1079 px wide: whole dp; the camera top centre,
-the hinge on the left). A page of `serve` or `beam` is given the cover frame (`cover.png`) and its geometry (`cover` in `/api/skins`) but draws only the open frame itself: closed, it draws none unless it draws the cover. Both frames are drawn by
-`scripts/gen-fold-skin.java` from the device's published sizes, not taken from artwork. In the Mac window a fold plays
-as the device closing or opening in this frame (AGENTS.md, `Fold`).
+These skins come with apksim, inside apksim.jar (`runtime/src/main/resources/dev/apksim/skins/`). Each frames the
+`--device` of the same name:
+
+| Skin | Frames |
+|---|---|
+| `pixel-10-pro-fold` | open (2076x2152, the camera in the screen's top right corner) and, through `cover`, closed (the 1080x2364 panel, of which the display is 1079 px wide: whole dp; the camera top centre, the hinge on the left); Moonstone, the camera block on its back |
+| `galaxy-z-fold7` | open (1968x2184, the camera at the top of the right half) and closed (1080x2520, the hinge on the left) |
+| `galaxy-z-flip7` | open (1080x2520, the hinge's breaks in the side rails) and closed (the 948x1048 FlexWindow edge to edge, the two lenses and the flash inside its bottom left, the hinge below it) |
+| `galaxy-z-trifold` | open (2160x1584, the hinges' breaks at its thirds) and closed (1080x2520, a hinge down each side) |
+| `galaxy-s25`, `galaxy-s25-plus`, `galaxy-s25-ultra`, `galaxy-a56` | the phone (1080x2340, the punch hole top centre) |
+
+They are found after the store and the shared folders, so a stored skin of the same name replaces one; `skin list`
+shows them as `built-in`. A page of `serve` or `beam` is given a folding skin's cover frame (`cover.png`) and its
+geometry (`cover` in `/api/skins`), but draws only the open frame itself: closed, it draws none unless it draws the
+cover. Every frame is drawn from the device's published sizes, not taken from artwork, at the panel's own pixels per
+millimetre, so the bezels are the device's, by `scripts/gen-device-skins.java` (`java scripts/gen-device-skins.java`
+writes the frames, backs and skin.json files; the
+panels must agree with `Fold.java`). In the Mac window a fold plays as the device closing or opening in its frame
+(AGENTS.md, `Fold`); `scripts/fold-frames.m` renders that animation from a skin's frames, with no app running.
 
 ## Where skins are
 

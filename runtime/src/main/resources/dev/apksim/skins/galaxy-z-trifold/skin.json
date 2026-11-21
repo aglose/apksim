@@ -1,0 +1,16 @@
+{
+  "name": "galaxy-z-trifold",
+  "title": "Galaxy Z TriFold",
+  "frame": "frame.png",
+  "screen": { "x": 59, "y": 57, "width": 2160, "height": 1584, "cornerRadius": 44 },
+  "device": "galaxy-z-trifold",
+  "kind": "foldable",
+  "cutout": { "type": "hole", "x": 1859, "y": 95, "radius": 19 },
+  "cover": {
+    "frame": "cover.png",
+    "screen": { "x": 93, "y": 72, "width": 1080, "height": 2520, "cornerRadius": 83 },
+    "cutout": { "type": "hole", "x": 633, "y": 138, "radius": 34 }
+  },
+  "fold": { "back": "back.png", "edge": "#4a4b50", "body": { "x": 10, "y": 10, "width": 2258, "height": 1678, "radius": 67 }, "keys": [[346, 513], [564, 698]] },
+  "source": { "author": "apksim (drawn by scripts/gen-device-skins.java)", "license": "Apache-2.0" }
+}

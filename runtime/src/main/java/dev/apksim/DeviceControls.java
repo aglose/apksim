@@ -78,6 +78,8 @@ final class DeviceControls {
     "device desktop", "device tv", "network online", "network offline", "network 3g", "network lossy",
     "bars status toggle", "bars nav toggle", "rec save", "camera off", "camera pattern", "camera image {file}",
     "screenshot skin", "device pixel-10-pro-fold", "fold toggle", "network wifi toggle", "network cellular toggle",
+    "device galaxy-s25", "device galaxy-s25-plus", "device galaxy-s25-ultra", "device galaxy-a56", "device galaxy-z-fold7",
+    "device galaxy-z-flip7", "device galaxy-z-trifold",
   };
   private static final int TAG_WIFI = 49;
   private static final int TAG_CELLULAR = 50;
@@ -86,8 +88,13 @@ final class DeviceControls {
   private static final int TAG_DEVICE_FIRST = 31;
   private static final String[] DEVICE_MENU = {"phone", "foldable", "tablet", "desktop", "tv"};
   private static final int TAG_DEVICE_PIXEL_FOLD = 47;
-  /** How long the Mac window's fold animation runs once the new display has drawn. */
-  private static final int FOLD_ANIMATION_MS = 900;
+  /** Device Type's named devices after the Pixel fold (the tags after TAG_CELLULAR), by device name. */
+  private static final int TAG_DEVICE_NAMED_FIRST = 51;
+  /**
+   * How long the Mac window's fold animation runs once the new display has drawn, by Fold.Hinge: a book's one swing; a
+   * clamshell's fold and the turn that shows its cover display; a tri-fold's two panels one after the other.
+   */
+  private static final int[] FOLD_ANIMATION_MS = {1000, 1500, 1700};
   /** The next reshape puts the window at actual size though the device is the same: a fold's other display. */
   private boolean actualSizeNext;
   private static final int TAG_SOFT_KEYBOARD = 30;
@@ -835,13 +842,18 @@ final class DeviceControls {
           // The Mac window plays the fold over the switch (simwindow.m "fold animation"); the app sees only the switch.
           Device d = spec.display(to);
           boolean turned = rotation % 2 == 1;
-          boolean animate = !turned && SimWindow.foldBegin();
-          actualSizeNext = true;  // each display at actual size (or fitted), not at the other's zoom
+          boolean closing = to == Fold.State.CLOSED;
+          boolean animate = !turned && SimWindow.foldBegin(spec.hinge().ordinal(), spec.panelMm() / spec.openHeightMm());
+          // The device keeps its size on the Mac's screen: the other display at its own panel's pixel density, against
+          // this one's at the window's zoom (fitted to the screen if need be).
+          SimWindow.foldZoom(spec.ppi(closing) / spec.ppi(!closing));
+          actualSizeNext = true;
           try {
             r = reshape(d, turned ? d.heightPx() : d.widthPx(), turned ? d.widthPx() : d.heightPx(), false, before) + "; ";
           } finally {
             actualSizeNext = false;
-            if (animate) SimWindow.foldRun(to == Fold.State.CLOSED, Integer.getInteger("apksim.foldAnimationMs", FOLD_ANIMATION_MS));
+            SimWindow.foldZoom(0);
+            if (animate) SimWindow.foldRun(closing, Integer.getInteger("apksim.foldAnimationMs", FOLD_ANIMATION_MS[spec.hinge().ordinal()]));
           }
         } else {
           Fold.changed();
@@ -1130,7 +1142,9 @@ final class DeviceControls {
     SimWindow.setTitle(System.getProperty("apksim.windowTitle", "apksim") + " - " + d.name()
         + " " + d.widthDp() + "\u00d7" + d.heightDp() + " dp");
     for (int i = 0; i < DEVICE_MENU.length; i++) SimWindow.setMenuState(TAG_DEVICE_FIRST + i, DEVICE_MENU[i].equals(d.name()));
-    SimWindow.setMenuState(TAG_DEVICE_PIXEL_FOLD, Fold.spec(d) != null);
+    SimWindow.setMenuState(TAG_DEVICE_PIXEL_FOLD, d.name().equals("pixel-10-pro-fold"));
+    if (Fold.spec(d) != null) SimWindow.foldWarm();  // the fold animation's shaders, once a process
+    for (int t = TAG_DEVICE_NAMED_FIRST; t < MENU.length; t++) SimWindow.setMenuState(t, MENU[t].equals("device " + d.name()));
     SimWindow.setMenuState(TAG_STATUS_BAR, SystemBars.statusBar(d));
     SimWindow.setMenuState(TAG_NAV_BAR, SystemBars.navBar(d));
     SimWindow.setMenuState(TAG_SLOW_ANIMATIONS, ValueAnimator.getDurationScale() > 1f);  // --anim-scale 10

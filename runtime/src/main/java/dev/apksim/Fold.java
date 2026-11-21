@@ -11,23 +11,57 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * (DeviceControls.reshape). Plain Java: Device uses it before the framework exists, and in serve's JVM.
  */
 public final class Fold {
-  /** A folding device's displays in pixels, natural orientation, at one density. */
-  record Spec(String device, int innerW, int innerH, int coverW, int coverH, float density) {
+  /**
+   * How a device folds. BOOK: one hinge down the middle of the inner display (natural orientation), the left half closing
+   * over the right with the cover display on its back. CLAMSHELL: one hinge across the middle, the inner display folding
+   * in half top to bottom, the cover display on the back of the top half (upright with the hinge at its bottom).
+   * TRIFOLD: two hinges, at a third and two thirds of the inner display's width, folded inward one after the other (a G
+   * fold): the left panel first, onto the middle one, then the right over both, with the cover display on its back.
+   */
+  enum Hinge { BOOK, CLAMSHELL, TRIFOLD }
+
+  /**
+   * A folding device's displays in pixels, natural orientation, each with its density and its diagonal in inches (the
+   * panel's physical size: the Mac window keeps the device's size on screen through a fold), and the thickness of one
+   * panel unfolded against the open device's height in its natural orientation (the fold animation's edges).
+   */
+  record Spec(String device, Hinge hinge, int innerW, int innerH, float innerDensity, float innerInches,
+      int coverW, int coverH, float coverDensity, float coverInches, float panelMm, float openHeightMm) {
     Device display(State s) {
-      int wDp = Math.round((s == State.CLOSED ? coverW : innerW) / density);
-      int hDp = Math.round((s == State.CLOSED ? coverH : innerH) / density);
+      boolean closed = s == State.CLOSED;
+      float density = closed ? coverDensity : innerDensity;
+      int wDp = Math.round((closed ? coverW : innerW) / density);
+      int hDp = Math.round((closed ? coverH : innerH) / density);
       // The pixels the framework makes of whole dp at this density (it rounds down), so the window and the display
-      // agree: the cover display comes out 1079 px wide, one short of the panel's 1080.
+      // agree: the Pixel's cover display comes out 1079 px wide, one short of the panel's 1080.
       return new Device(device, "foldable", wDp, hDp, density, (int) (wDp * density), (int) (hDp * density));
+    }
+
+    /** The panel's pixels per inch, open (the inner display) or closed (the cover display). */
+    double ppi(boolean closed) {
+      return closed ? Math.hypot(coverW, coverH) / coverInches : Math.hypot(innerW, innerH) / innerInches;
+    }
+
+    /** The hinges' positions across the inner display, as fractions of its width (BOOK, TRIFOLD) or height (CLAMSHELL). */
+    float[] hinges() {
+      return hinge == Hinge.TRIFOLD ? new float[] {1 / 3f, 2 / 3f} : new float[] {0.5f};
     }
   }
 
   enum State { OPEN, HALF, CLOSED }
 
-  // Pixel 10 Pro Fold: the panels' pixels are Google's; 390 dpi is the Pixel 9 Pro Fold's emulator definition, not
-  // read from a device (852x883 dp open, 443x970 dp closed).
+  // The panels' pixels and sizes are the makers' published ones; the densities are not read from devices. Pixel 10 Pro
+  // Fold: 390 dpi is the Pixel 9 Pro Fold's emulator definition (852x883 dp open, 443x970 dp closed). Samsung: 420 dpi
+  // (Samsung's usual for FHD+ panels), the TriFold's 10-inch inner display 320 dpi (a tablet's: 1080x792 dp).
   private static final Spec[] SPECS = {
-    new Spec("pixel-10-pro-fold", 2076, 2152, 1080, 2364, 390 / 160f),
+    new Spec("pixel-10-pro-fold", Hinge.BOOK, 2076, 2152, 390 / 160f, 8.0f, 1080, 2364, 390 / 160f, 6.4f, 5.2f, 155.2f),
+    // Galaxy Z Fold7: 8.0" 1968x2184 inside, 6.5" 1080x2520 cover; 143.2 x 158.4 x 4.2 mm open.
+    new Spec("galaxy-z-fold7", Hinge.BOOK, 1968, 2184, 420 / 160f, 8.0f, 1080, 2520, 420 / 160f, 6.5f, 4.2f, 158.4f),
+    // Galaxy Z Flip7: 6.9" 1080x2520 inside, 4.1" 948x1048 FlexWindow; 75.2 x 166.7 x 6.5 mm open.
+    new Spec("galaxy-z-flip7", Hinge.CLAMSHELL, 1080, 2520, 420 / 160f, 6.9f, 948, 1048, 420 / 160f, 4.1f, 6.5f, 166.7f),
+    // Galaxy Z TriFold: 10.0" 2160x1584 inside (wider than tall), 6.5" 1080x2520 cover; 214.1 x 159.2 mm open, its
+    // thinnest panel 3.9 mm.
+    new Spec("galaxy-z-trifold", Hinge.TRIFOLD, 2160, 1584, 320 / 160f, 10.0f, 1080, 2520, 420 / 160f, 6.5f, 3.9f, 159.2f),
   };
 
   /** Set by the `fold` command; until then the launch's --fold (read each time: a standby boots before it is known). */
@@ -47,10 +81,18 @@ public final class Fold {
     return d == null ? null : spec(d.name());
   }
 
+  /** Every folding device, open: Device's presets. */
   static List<Device> devices() {
     List<Device> out = new java.util.ArrayList<>();
     for (Spec s : SPECS) out.add(s.display(State.OPEN));
     return out;
+  }
+
+  /** The folding devices' names, for messages. */
+  static String names() {
+    StringBuilder sb = new StringBuilder();
+    for (Spec s : SPECS) sb.append(sb.length() > 0 ? ", " : "").append(s.device);
+    return sb.toString();
   }
 
   static State state() {
@@ -122,12 +164,31 @@ public final class Fold {
   }
 
   /**
-   * The fold of a display w x h pixels at this rotation, as {left, top, right, bottom} in display pixels (a line: no
-   * width), or null when the device has none or is closed. In the natural orientation it runs top to bottom.
+   * The folds of a display w x h pixels, each {left, top, right, bottom} in display pixels (a line: no width), or null
+   * when the device has none or is closed. In the natural orientation a book's and a tri-fold's run top to bottom, a
+   * clamshell's left to right. Whether the display is turned is read from its shape against the inner panel's, not
+   * from the rotation: the framework counts a display wider than tall as turned (ROTATION_90), and the tri-fold's
+   * inner display is wider than tall in its natural orientation. (rotation is kept for callers; it is not needed.)
    */
-  public static int[] bounds(int w, int h, int rotation) {
-    if (spec(Device.peek()) == null || state() == State.CLOSED) return null;
-    return rotation % 2 == 0 ? new int[] {w / 2, 0, w / 2, h} : new int[] {0, h / 2, w, h / 2};
+  public static int[][] bounds(int w, int h, int rotation) {
+    Spec s = spec(Device.peek());
+    if (s == null || state() == State.CLOSED) return null;
+    boolean turned = w != h && (w > h) != (s.innerW > s.innerH);
+    boolean vertical = (s.hinge == Hinge.CLAMSHELL) == turned;  // the line runs top to bottom
+    float[] at = s.hinges();
+    int[][] out = new int[at.length][];
+    for (int i = 0; i < at.length; i++) {
+      // A quarter turn the other way puts the first hinge at the other end: ROTATION_90 turns the natural left to the
+      // bottom, ROTATION_270 to the top. Thirds and halves come out the same either way.
+      if (vertical) {
+        int x = Math.round(w * at[i]);
+        out[i] = new int[] {x, 0, x, h};
+      } else {
+        int y = Math.round(h * at[i]);
+        out[i] = new int[] {0, y, w, y};
+      }
+    }
+    return out;
   }
 
   public static boolean halfOpened() {
@@ -149,7 +210,7 @@ public final class Fold {
    */
   static String testRunCommand(String[] a) {
     Device d = Device.current();
-    if (spec(d) == null) return "error: " + d.name() + " does not fold (--device " + SPECS[0].device + ")";
+    if (spec(d) == null) return "error: " + d.name() + " does not fold (--device " + names() + ")";
     State was = state();
     if (a.length < 2) return was.name().toLowerCase(java.util.Locale.ROOT);
     Object[] target = target(a, was);
@@ -165,8 +226,8 @@ public final class Fold {
 
   static String describe(int w, int h, int rotation) {
     Device d = Device.current();
-    if (spec(d) == null) return d.name() + " does not fold (device " + SPECS[0].device + ")";
-    int[] b = bounds(w, h, rotation);
+    if (spec(d) == null) return d.name() + " does not fold (device " + names() + ")";
+    int[][] b = bounds(w, h, rotation);
     String posture = switch (state()) {
       case OPEN -> "open";
       case HALF -> "half";
@@ -174,6 +235,12 @@ public final class Fold {
     };
     float deg = angle();
     return posture + ", hinge " + (deg == Math.rint(deg) ? String.valueOf((int) deg) : String.valueOf(deg)) + " (" + d.describe() + ", " + w + "x" + h + " px"
-        + (b == null ? ", cover display" : ", fold " + (b[0] == b[2] ? "x=" + b[0] : "y=" + b[1])) + ")";
+        + (b == null ? ", cover display" : folds(b)) + ")";
+  }
+
+  private static String folds(int[][] b) {
+    StringBuilder sb = new StringBuilder(b.length == 1 ? ", fold " : ", folds ");
+    for (int i = 0; i < b.length; i++) sb.append(i > 0 ? " " : "").append(b[i][0] == b[i][2] ? "x=" + b[i][0] : "y=" + b[i][1]);
+    return sb.toString();
   }
 }

@@ -38,6 +38,16 @@ public final class Skin {
    * cutout). The same name and device; drawn, and told to the app, while the device is closed (Skinning).
    */
   public Skin cover;
+  /**
+   * A folding skin's look in the fold animation (skin.json's "fold"; null without one): "back", the open device seen
+   * from behind (an image the size of the frame, upright, so the front's left edge is on its right); "edge", the
+   * frame's metal as #rrggbb; "body", the body's rectangle and corner radius in the frame's pixels; "keys", the side
+   * keys on the body's right edge as [top, bottom] pairs in the frame's pixels.
+   */
+  public String foldBack;
+  public String foldEdge;
+  public int[] foldBody;  // x, y, width, height, radius
+  public int[][] foldKeys = new int[0][];
 
   /** "local" (the skin store) or "shared" (a folder named by APKSIM_SKINS). */
   public String origin = "local";
@@ -74,6 +84,27 @@ public final class Skin {
     s.kind = m.get("kind") instanceof String k ? k : null;
     s.cutout = m.get("cutout") instanceof Map ? (Map<String, Object>) m.get("cutout") : null;
     s.source = m.get("source") instanceof Map ? (Map<String, Object>) m.get("source") : null;
+    if (m.get("fold") instanceof Map) {
+      Map<String, Object> fm = (Map<String, Object>) m.get("fold");
+      s.foldBack = fm.get("back") instanceof String b ? b : null;
+      s.foldEdge = fm.get("edge") instanceof String e && e.matches("#[0-9a-fA-F]{6}") ? e : null;
+      if (fm.get("body") instanceof Map) {
+        Map<String, Object> bm = (Map<String, Object>) fm.get("body");
+        s.foldBody = new int[] {num(bm, "x", "fold.body"), num(bm, "y", "fold.body"), num(bm, "width", "fold.body"),
+            num(bm, "height", "fold.body"), bm.get("radius") == null ? 0 : num(bm, "radius", "fold.body")};
+      }
+      if (fm.get("keys") instanceof List<?> kl) {
+        List<int[]> keys = new ArrayList<>();
+        for (Object k : kl) {
+          if (k instanceof List<?> pair && pair.size() == 2 && pair.get(0) instanceof Number a && pair.get(1) instanceof Number b) {
+            keys.add(new int[] {a.intValue(), b.intValue()});
+          } else {
+            throw new IOException("skin.json: fold.keys must be [top, bottom] pairs of pixels");
+          }
+        }
+        s.foldKeys = keys.toArray(new int[0][]);
+      }
+    }
     if (m.get("cover") instanceof Map) {
       Map<String, Object> cm = (Map<String, Object>) m.get("cover");
       if (!(cm.get("frame") instanceof String) || !(cm.get("screen") instanceof Map)) throw new IOException("skin.json's \"cover\" needs \"frame\" and \"screen\"");
@@ -157,6 +188,12 @@ public final class Skin {
       }
     }
     if (frameLand != null) image(frameLand, "frame-land", p);
+    if (foldBack != null) {
+      BufferedImage bk = image(foldBack, "fold back", p);
+      if (bk != null && fr != null && (bk.getWidth() != fr.getWidth() || bk.getHeight() != fr.getHeight())) {
+        p.add("fold back " + foldBack + " is " + bk.getWidth() + "x" + bk.getHeight() + " but the frame is " + fr.getWidth() + "x" + fr.getHeight());
+      }
+    }
     if (cover != null) {
       BufferedImage cf = image(cover.frame, "cover frame", p);
       if (cf != null && (cover.width <= 0 || cover.height <= 0 || cover.x < 0 || cover.y < 0 || cover.x + cover.width > cf.getWidth()
@@ -210,8 +247,26 @@ public final class Skin {
     b.append("  \"device\": ").append(q(device));
     if (kind != null) b.append(",\n  \"kind\": ").append(q(kind));
     if (cutout != null) b.append(",\n  \"cutout\": ").append(obj(cutout));
+    if (foldBack != null || foldEdge != null || foldBody != null || foldKeys.length > 0) b.append(",\n  \"fold\": ").append(foldJson());
     if (source != null && !source.isEmpty()) b.append(",\n  \"source\": ").append(obj(source));
     return b.append("\n}\n").toString();
+  }
+
+  /** skin.json's "fold" object. */
+  String foldJson() {
+    List<String> parts = new ArrayList<>();
+    if (foldBack != null) parts.add("\"back\": " + q(foldBack));
+    if (foldEdge != null) parts.add("\"edge\": " + q(foldEdge));
+    if (foldBody != null) {
+      parts.add("\"body\": { \"x\": " + foldBody[0] + ", \"y\": " + foldBody[1] + ", \"width\": " + foldBody[2] + ", \"height\": "
+          + foldBody[3] + ", \"radius\": " + foldBody[4] + " }");
+    }
+    if (foldKeys.length > 0) {
+      StringBuilder k = new StringBuilder("\"keys\": [");
+      for (int i = 0; i < foldKeys.length; i++) k.append(i > 0 ? ", " : "").append("[").append(foldKeys[i][0]).append(", ").append(foldKeys[i][1]).append("]");
+      parts.add(k.append("]").toString());
+    }
+    return "{ " + String.join(", ", parts) + " }";
   }
 
   /** The skin as `list --json` and `show --json` give it, with the resolved device. */
