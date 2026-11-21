@@ -1520,6 +1520,9 @@ from start to ready, ~190-225 MB while it waits (~350 MB before 2026-11-14).
   instances, which the agent starts itself: docs/beam.md "The beam sandbox"), not per working directory.
   Instances start the next one 1 s after their first frame (`--spawn-standby`, inside their own sandbox) or on exit.
   A launch waits for a booting standby only past its first second (a cold launch is ~1.3 s), else launches cold.
+- A beamed launch that goes cold prints `[apksim] cold launch: WHY (standby name "..")` (any launch with `APKSIM_COLD_WHY_LOG=1`;
+  the agent echoes it as `[serve] session ID: cold launch: ...`; issue 577), and `/beam/hello` from a trusted page boots a
+  standby (docs/beam.md "Standbys").
 - A standby quits after an hour unused (`-Dapksim.standbyIdle` seconds) and when `work/apksim.jar` or `work/app.aot`
   change, so after `build.sh` + `train.sh` the next launch is cold and starts a fresh one. `./apksim --stop-standbys`
   stops them; `APKSIM_STANDBY=0` launches cold and starts none. `--jvm` options other than the `-D` switches listed in
