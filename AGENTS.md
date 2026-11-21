@@ -343,8 +343,13 @@ Read README.md for results and limits; this file covers how to work on the code.
     only once the index has an entry. The index is not age-swept (each save drops entries whose pack is gone); two
     processes saving at once keep the last writer's (missed reuse, never a wrong class); a beamed instance's content lookup also reads, read only,
     the caches of up to three earlier builds of the same package from the same site and signing key
-    (`-Dapksim.beamSiblingCaches`, `Serve.beamSiblings`, issue 578; `scripts/check-class-cache-siblings.sh`, CI). Not yet
-    measured on a real page's rebuild (the issue's 7-10 s). Off with
+    (`-Dapksim.beamSiblingCaches`, `Serve.beamSiblings`, issue 578; `scripts/check-class-cache-siblings.sh`, CI). Issue 583:
+    a build whose own cache holds its `identity` and a pack gets no siblings (its signers, a read of the whole APK, are
+    not needed); a new build's first launch takes the newest sibling's load hints (so lookups run on the ahead workers);
+    the siblings' indexes are read on a thread of their own as the cache opens; and a save keeps index entries whose pack
+    is in the seed (a beamed launch's index named only the packs it rewrote, and the agent moves it over the build's).
+    Measured through a real agent on two debug builds of a large app (socket to first frame): a new build 4.3-4.5 s
+    before, 3.5-3.6 s after (5.6 s with no earlier build), the same build again 3.4-3.6 s before, 2.4 s after. Off with
     debug info or coverage, and `-Dapksim.classContent=false`. `scripts/class-hash-check.java OLD.apk NEW.apk` hashes and
     translates every class of two builds: equal hashes must translate to equal bytes (exit 1 otherwise) and it counts
     the classes that translate alike but hash apart. It saves once translating pauses for 3 s, and again on the way out (`quit`, closing the window, Cmd+Q,
