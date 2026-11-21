@@ -278,6 +278,40 @@ final class Skinning {
     return s;
   }
 
+  /**
+   * What the fold animation draws of the skin beyond its frames (skin.json's "fold"), or null without a skin or one: [0]
+   * the back picture's PNG bytes (null without one), [1] the frame's metal as 0xRRGGBB (-1: none given), [2] the
+   * body's x, y, width, height and corner radius as fractions of frame.png (top down; the radius of its height), then
+   * each key's top and bottom (fractions of its height). The open frame's, whatever the posture: a fold's open device.
+   */
+  static Object[] foldLook() {
+    Skin s = skin;
+    if (s == null || frameW <= 0 || frameH <= 0 || (s.foldBack == null && s.foldEdge == null && s.foldBody == null)) return null;
+    byte[] back = null;
+    if (s.foldBack != null && !s.foldBack.contains("..") && !s.foldBack.startsWith("/") && !s.foldBack.contains("\\")) {
+      try {
+        back = Files.readAllBytes(s.dir.resolve(s.foldBack));
+        int[] bs = pngSize(back, s.foldBack);
+        if (bs[0] != frameW || bs[1] != frameH) back = null;  // not the frame's size: drawn without it
+      } catch (IOException e) {
+        back = null;
+      }
+    }
+    int edge = s.foldEdge == null ? -1 : Integer.parseInt(s.foldEdge.substring(1), 16);
+    float[] geom = new float[5 + 2 * s.foldKeys.length];
+    int[] b = s.foldBody != null ? s.foldBody : new int[] {0, 0, frameW, frameH, 0};
+    geom[0] = (float) b[0] / frameW;
+    geom[1] = (float) b[1] / frameH;
+    geom[2] = (float) b[2] / frameW;
+    geom[3] = (float) b[3] / frameH;
+    geom[4] = (float) b[4] / frameH;
+    for (int i = 0; i < s.foldKeys.length; i++) {
+      geom[5 + 2 * i] = (float) s.foldKeys[i][0] / frameH;
+      geom[6 + 2 * i] = (float) s.foldKeys[i][1] / frameH;
+    }
+    return new Object[] {back, edge, geom};
+  }
+
   static void off() {
     skin = null;
     clear();

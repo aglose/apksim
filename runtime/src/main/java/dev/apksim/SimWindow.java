@@ -353,7 +353,10 @@ final class SimWindow {
    * a fold animation will play ({@link #foldRun} after the switch); false without a visible window.
    */
   static boolean foldBegin(int hinge, float thickness) {
-    return !headless && Boolean.parseBoolean(System.getProperty("apksim.foldAnimation", "true")) && nativeFoldBegin(hinge, thickness);
+    if (headless || !Boolean.parseBoolean(System.getProperty("apksim.foldAnimation", "true"))) return false;
+    Object[] look = Skinning.foldLook();  // the skin's back, metal and outline, when it has them
+    return nativeFoldBegin(hinge, thickness, look == null ? null : (byte[]) look[0], look == null ? -1 : (Integer) look[1],
+        look == null ? null : (float[]) look[2]);
   }
 
   /**
@@ -372,8 +375,11 @@ final class SimWindow {
     if (!headless) nativeFoldZoom((float) ratio);
   }
 
-  /** hinge: Fold.Hinge's ordinal; thickness: one panel's thickness against the open device's height. */
-  private static native boolean nativeFoldBegin(int hinge, float thickness);
+  /**
+   * hinge: Fold.Hinge's ordinal; thickness: one panel's thickness against the open device's height; back, edge, geom:
+   * Skinning.foldLook's (null, -1, null without them).
+   */
+  private static native boolean nativeFoldBegin(int hinge, float thickness, byte[] back, int edge, float[] geom);
 
   private static native void nativeFoldZoom(float ratio);
 

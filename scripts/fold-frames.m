@@ -85,7 +85,24 @@ int main(int argc, char **argv) {
     CGFloat ow = CGImageGetWidth(openFrame) / s, oh = CGImageGetHeight(openFrame) / s;
     CGFloat cw = CGImageGetWidth(coverFrame) / (s * zoom), ch = CGImageGetHeight(coverFrame) / (s * zoom);
     NSDictionary *sc = skin[@"screen"];
-    FoldSpec f;
+    FoldSpec f = {0};
+    f.edge = -1;
+    // The skin's fold look: its back picture, metal, outline and keys (docs/skins.md).
+    NSDictionary *look = skin[@"fold"];
+    size_t PW = CGImageGetWidth(openFrame), PH = CGImageGetHeight(openFrame);
+    if (look[@"back"]) f.back = loadPng([dir stringByAppendingPathComponent:look[@"back"]]);
+    if ([look[@"edge"] isKindOfClass:NSString.class]) f.edge = (int)strtol([look[@"edge"] UTF8String] + 1, NULL, 16);
+    NSDictionary *b = look[@"body"];
+    if (b) {
+      f.body = CGRectMake([b[@"x"] doubleValue] / PW, [b[@"y"] doubleValue] / PH, [b[@"width"] doubleValue] / PW, [b[@"height"] doubleValue] / PH);
+      f.bodyRadius = [b[@"radius"] doubleValue] / PH;
+    }
+    for (NSArray *k in look[@"keys"]) {
+      if (f.keys >= 4) break;
+      f.key[2 * f.keys] = [k[0] doubleValue] / PH;
+      f.key[2 * f.keys + 1] = [k[1] doubleValue] / PH;
+      f.keys++;
+    }
     f.hinge = hinge;
     f.thickness = atof(argv[4]);
     f.openLit = devicePicture(openFrame, sc, YES, NO);

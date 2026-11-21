@@ -28,6 +28,12 @@ typedef struct {
   CGImageRef openLit, openDark, closedLit, closedDark;  // the device as drawn, its screen on and off
   CGRect openRect, closedRect;  // where the open and the closed device are, in the parent's coordinates (y up)
   CGRect openScreen;     // the open picture's screen, as fractions of the picture, top down
+  CGImageRef back;       // the open device seen from behind, upright, the open picture's size (a skin's), or NULL
+  int edge;              // the frame's metal as 0xRRGGBB, or -1
+  CGRect body;           // the body in the open picture, as fractions, top down (empty: the whole picture)
+  CGFloat bodyRadius;    // its corner radius, as a fraction of the picture's height
+  int keys;              // side keys on the body's right edge (at most 4): top and bottom, fractions of the picture's height
+  CGFloat key[8];
   BOOL closing;
   double seconds;
 } FoldSpec;
@@ -175,38 +181,6 @@ static CGImageRef foldMirrored(CGImageRef img, BOOL horizontal) {
   return out;
 }
 
-// How far in from an edge of the picture the device starts, along its middle, as a fraction of the picture (a skin's
-// frame leaves a margin for its buttons). side: 0 left, 1 right, 2 top, 3 bottom. at: where along the edge (0..1, top
-// down or left to right) to look.
-static CGFloat foldInset(CGImageRef img, int side, CGFloat at) {
-  size_t w = CGImageGetWidth(img), h = CGImageGetHeight(img);
-  BOOL row = side < 2;
-  size_t n = row ? w : h;
-  if (n == 0 || n > 16384) return 0;
-  CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-  CGContextRef ctx = CGBitmapContextCreate(NULL, row ? w : 1, row ? 1 : h, 8, 0, cs, (CGBitmapInfo)kCGImageAlphaPremultipliedLast);
-  CGColorSpaceRelease(cs);
-  if (!ctx) return 0;
-  // Draw the picture so that the wanted row (or column) lands on the context's one row (column); y is bottom up.
-  if (row) CGContextDrawImage(ctx, CGRectMake(0, -(CGFloat)h * (1 - at) + 0.5, w, h), img);
-  else CGContextDrawImage(ctx, CGRectMake(-(CGFloat)w * at + 0.5, 0, w, h), img);
-  uint8_t *px = CGBitmapContextGetData(ctx);
-  size_t stride = CGBitmapContextGetBytesPerRow(ctx);
-  size_t i = 0;
-  for (; i < n / 4; i++) {
-    size_t k = side == 0 || side == 2 ? i : n - 1 - i;  // a column's first pixel in memory is its top
-    uint8_t a = row ? px[k * 4 + 3] : px[k * stride + 3];
-    if (a >= 128) break;
-  }
-  CGContextRelease(ctx);
-  return (CGFloat)i / n;
-}
-
-static BOOL foldRoundCorner(CGImageRef img) {
-  CGFloat top = foldInset(img, 0, 0.004), mid = foldInset(img, 0, 0.5);
-  return top > mid + 0.004 || top >= 0.24;
-}
-
 // ---------------------------------------------------------------- layers
 
 static CAKeyframeAnimation *foldKeys(NSString *key, NSArray *values, CFTimeInterval t0, double seconds) {
@@ -301,20 +275,40 @@ static CAGradientLayer *foldNearShade(CALayer *face, CGImageRef img, CGRect cont
   return g;
 }
 
-// The metal edge of a panel, between its front and its back, seen while it is on its way over.
-static CAGradientLayer *foldRail(CGSize size, BOOL alongY) {
-  CAGradientLayer *r = [CAGradientLayer layer];
-  r.bounds = CGRectMake(0, 0, size.width, size.height);
-  r.startPoint = alongY ? CGPointMake(0, 0.5) : CGPointMake(0.5, 0);
-  r.endPoint = alongY ? CGPointMake(1, 0.5) : CGPointMake(0.5, 1);
-  r.colors = @[(id)[NSColor colorWithSRGBRed:0.30 green:0.31 blue:0.33 alpha:1].CGColor,
-               (id)[NSColor colorWithSRGBRed:0.74 green:0.75 blue:0.78 alpha:1].CGColor,
-               (id)[NSColor colorWithSRGBRed:0.52 green:0.53 blue:0.56 alpha:1].CGColor,
-               (id)[NSColor colorWithSRGBRed:0.24 green:0.25 blue:0.27 alpha:1].CGColor];
-  r.locations = @[@0, @0.35, @0.65, @1];
-  r.cornerRadius = MIN(size.width, size.height) / 2;
-  r.doubleSided = NO;
-  return r;
+// A colour of the frame's metal, times f (lighter above 1).
+static CGColorRef foldMetal(int rgb, double f) {
+  double r = ((rgb >> 16) & 255) / 255.0, g = ((rgb >> 8) & 255) / 255.0, b = (rgb & 255) / 255.0;
+  return [NSColor colorWithSRGBRed:fmin(1, r * f) green:fmin(1, g * f) blue:fmin(1, b * f) alpha:1].CGColor;
+}
+
+// A normal of a panel's (0: fixed, 1: the first to fold, 2: the tri-fold's right one) turned as its hinge is.
+static FoldVec foldTurn(FoldVec v, int hinge, int panel, double a1, double a2) {
+  if (panel == 0) return v;
+  if (hinge == FOLD_CLAMSHELL) {
+    double b = -a1;
+    return (FoldVec){v.x, v.y * cos(b) - v.z * sin(b), v.y * sin(b) + v.z * cos(b)};
+  }
+  double a = panel == 1 ? a1 : -a2;
+  return (FoldVec){v.x * cos(a) + v.z * sin(a), v.y, -v.x * sin(a) + v.z * cos(a)};
+}
+
+// A strip of a panel's side: a quad standing between its front (z 0) and back (z -depth), along the outline from its
+// middle (x, y) with outward normal (nx, ny), len long, out further out than the outline (a key stands proud of it).
+static CAGradientLayer *foldWall(CGFloat x, CGFloat y, CGFloat nx, CGFloat ny, CGFloat len, CGFloat depth, CGFloat out, int rgb, double lift) {
+  CAGradientLayer *w = [CAGradientLayer layer];
+  w.bounds = CGRectMake(0, 0, len, depth);
+  w.position = CGPointMake(x + nx * out, y + ny * out);
+  w.zPosition = -depth / 2;
+  // Stood up (its normal along -y), then turned to face (nx, ny).
+  w.transform = CATransform3DConcat(CATransform3DMakeRotation(M_PI_2, 1, 0, 0), CATransform3DMakeRotation(atan2(nx, -ny), 0, 0, 1));
+  // Machined aluminium: a bright chamfer along each edge, the flat band between.
+  w.colors = @[(__bridge id)foldMetal(rgb, 1.75 * lift), (__bridge id)foldMetal(rgb, 1.08 * lift), (__bridge id)foldMetal(rgb, 0.92 * lift),
+               (__bridge id)foldMetal(rgb, 1.0 * lift), (__bridge id)foldMetal(rgb, 1.6 * lift)];
+  w.locations = @[@0, @0.1, @0.5, @0.9, @1];
+  w.startPoint = CGPointMake(0.5, 0);
+  w.endPoint = CGPointMake(0.5, 1);
+  w.doubleSided = NO;
+  return w;
 }
 
 // A panel's back with no screen, in the front's outline mirrored (img is the mirrored picture): its aluminium rim and
@@ -340,6 +334,33 @@ static CALayer *foldPlainBack(CGRect frame, CGImageRef mirroredOutline, CGRect c
   glass.locations = @[@0, @0.55, @1];
   [b addSublayer:glass];
   return b;
+}
+
+// A panel's back, rect in device coordinates, in a holder a thickness behind the front and facing the other way: the
+// skin's back picture's part for it (seen from behind, so its slice is the front's mirrored), else plain glass in the
+// front's outline mirrored. Returns the holder; *light gets the face's darkening and glint (glint NSNull for plain).
+static CALayer *foldBackFace(CALayer *panel, CGRect rect, const FoldSpec *f, CGImageRef mirrorX, CGFloat W, CGFloat H, CGFloat t,
+                             CGFloat corner, NSMutableArray *faces) {
+  CGRect slice = foldSlice(rect, W, H);
+  slice.origin.x = 1 - slice.origin.x - slice.size.width;
+  CALayer *holder = [CALayer layer];
+  holder.frame = rect;
+  holder.zPosition = -t;
+  holder.transform = CATransform3DMakeRotation(M_PI, 0, 1, 0);
+  holder.doubleSided = NO;
+  [panel addSublayer:holder];
+  if (f->back) {
+    FoldLit l = foldFace(holder, holder.bounds, NULL, f->back, slice, kCALayerLeftEdge | kCALayerRightEdge | kCALayerBottomEdge | kCALayerTopEdge,
+                         [NSMutableArray array]);
+    [faces addObject:l.dark];
+    [faces addObject:l.glint];
+  } else {
+    CALayer *b = foldPlainBack(holder.bounds, mirrorX, slice, corner, 0.004 * H + 1);
+    [holder addSublayer:b];
+    [faces addObject:b];
+    [faces addObject:[NSNull null]];
+  }
+  return holder;
 }
 
 static CATransform3D foldAbout(CATransform3D r, CGFloat x, CGFloat y, CGFloat z) {
@@ -379,10 +400,14 @@ static CALayer *foldScene(const FoldSpec *f, CGPoint origin, CFTimeInterval t0) 
     hx1 = -W / 2 + W * (sc.origin.x + sc.size.width / 2);
     hy = H / 2 - H * (sc.origin.y + sc.size.height / 2);
   }
-  BOOL rounded = foldRoundCorner(f->openLit);
-  CGFloat corner = rounded ? 0.045 * H : 0;  // a body's corner radius: about 7 mm of 158
+  // The body's outline in device coordinates (the skin's; a bare screen's is the picture, square).
+  CGRect body = f->body.size.width > 0 ? f->body : CGRectMake(0, 0, 1, 1);
+  CGFloat bx0 = -W / 2 + W * body.origin.x, bx1 = bx0 + W * body.size.width;
+  CGFloat by1 = H / 2 - H * body.origin.y, by0 = by1 - H * body.size.height;
+  CGFloat corner = fmin(f->bodyRadius * H, fmin(bx1 - bx0, by1 - by0) / 2);
+  int metal = f->edge >= 0 ? f->edge : 0x6e7075;
 
-  CGImageRef mirrorX = foldMirrored(f->openLit, YES), mirrorY = foldMirrored(f->openLit, NO);
+  CGImageRef mirrorX = foldMirrored(f->openLit, YES);
   NSMutableArray *innerLit = [NSMutableArray array], *coverLit = [NSMutableArray array];
   const unsigned int ALL = kCALayerLeftEdge | kCALayerRightEdge | kCALayerBottomEdge | kCALayerTopEdge;
 
@@ -400,7 +425,6 @@ static CALayer *foldScene(const FoldSpec *f, CGPoint origin, CFTimeInterval t0) 
   NSMutableArray *faces = [NSMutableArray array];  // light per face, matching foldFaceNormal's numbering
   NSMutableArray<CAGradientLayer *> *nearShades = [NSMutableArray array];  // [face shade, hinge index] pairs below
   NSMutableArray<NSNumber *> *nearHinge = [NSMutableArray array];
-  NSMutableArray<CALayer *> *rails = [NSMutableArray array];  // the clamshell's stack edges, shown once it is folded
 
   if (hinge == FOLD_BOOK) {
     CGRect left = CGRectMake(-W / 2, -H / 2, hx1 + W / 2, H), right = CGRectMake(hx1, -H / 2, W / 2 - hx1, H);
@@ -420,12 +444,6 @@ static CALayer *foldScene(const FoldSpec *f, CGPoint origin, CFTimeInterval t0) 
     [nearShades addObject:foldNearShade(fixedPanel.sublayers[0], f->openLit, foldSlice(right, W, H), CGPointMake(0, 0.5), CGPointMake(1, 0.5))];
     [nearShades addObject:foldNearShade(moving1.sublayers[0], f->openLit, foldSlice(left, W, H), CGPointMake(1, 0.5), CGPointMake(0, 0.5))];
     [nearHinge addObject:@1]; [nearHinge addObject:@1];
-    CGFloat inset = foldInset(f->openLit, 0, 0.5) * W;
-    CAGradientLayer *rail = foldRail(CGSizeMake(t, H - 2 * corner), YES);
-    rail.position = CGPointMake(-W / 2 + inset, 0);
-    rail.zPosition = -t / 2;
-    rail.transform = CATransform3DMakeRotation(-M_PI_2, 0, 1, 0);
-    [moving1 addSublayer:rail];
     stack = CGRectMake(hx1, -H / 2, hx1 + W / 2, H);
     stackTop = t;
   } else if (hinge == FOLD_CLAMSHELL) {
@@ -436,14 +454,8 @@ static CALayer *foldScene(const FoldSpec *f, CGPoint origin, CFTimeInterval t0) 
     [faces addObject:tf.dark]; [faces addObject:tf.glint];
     FoldLit bf = foldFace(moving1, bottom, f->openDark, f->openLit, foldSlice(bottom, W, H), ALL & ~kCALayerTopEdge, innerLit);
     [faces addObject:bf.dark]; [faces addObject:bf.glint];
-    // The bottom half's back: its glass, in its outline mirrored top to bottom, a thickness behind it.
-    CGRect mb = foldSlice(bottom, W, H);
-    mb.origin.y = 1 - mb.origin.y - mb.size.height;
-    CALayer *bottomBack = foldPlainBack(bottom, mirrorY, mb, corner, 0.004 * H + 1);
-    bottomBack.zPosition = -t;
-    bottomBack.transform = CATransform3DMakeRotation(M_PI, 1, 0, 0);
-    [moving1 addSublayer:bottomBack];
-    [faces addObject:bottomBack]; [faces addObject:[NSNull null]];
+    // The bottom half's back: the skin's back picture's glass, a thickness behind it.
+    foldBackFace(moving1, bottom, f, mirrorX, W, H, t, corner, faces);
     CALayer *coverHolder = [CALayer layer];
     coverHolder.frame = top;
     coverHolder.zPosition = -t;
@@ -455,25 +467,6 @@ static CALayer *foldScene(const FoldSpec *f, CGPoint origin, CFTimeInterval t0) 
     [nearShades addObject:foldNearShade(fixedPanel.sublayers[0], f->openLit, foldSlice(top, W, H), CGPointMake(0.5, 0), CGPointMake(0.5, 1))];
     [nearShades addObject:foldNearShade(moving1.sublayers[0], f->openLit, foldSlice(bottom, W, H), CGPointMake(0.5, 1), CGPointMake(0.5, 0))];
     [nearHinge addObject:@1]; [nearHinge addObject:@1];
-    // The bottom half's outer edge, and the closed device's sides for its turn (two panels thick).
-    CGFloat insetB = foldInset(f->openLit, 3, 0.5) * H;
-    CAGradientLayer *rail = foldRail(CGSizeMake(W - 2 * corner, t), NO);
-    rail.position = CGPointMake(0, -H / 2 + insetB);
-    rail.zPosition = -t / 2;
-    rail.transform = CATransform3DMakeRotation(M_PI_2, 1, 0, 0);
-    [moving1 addSublayer:rail];
-    CGFloat at = (sc.origin.y + sc.size.height * 0.25);
-    CGFloat insetL = foldInset(f->openLit, 0, at) * W, insetR = foldInset(f->openLit, 1, at) * W;
-    CGFloat railH = top.size.height - 2 * corner;
-    CAGradientLayer *l = foldRail(CGSizeMake(2 * t, railH), YES), *r = foldRail(CGSizeMake(2 * t, railH), YES);
-    l.position = CGPointMake(-W / 2 + insetL, CGRectGetMidY(top));
-    l.transform = CATransform3DMakeRotation(-M_PI_2, 0, 1, 0);
-    r.position = CGPointMake(W / 2 - insetR, CGRectGetMidY(top));
-    r.transform = CATransform3DMakeRotation(M_PI_2, 0, 1, 0);
-    [fixedPanel addSublayer:l];
-    [fixedPanel addSublayer:r];
-    [rails addObject:l];
-    [rails addObject:r];
     stack = top;
     stackTop = t;
   } else {
@@ -489,13 +482,7 @@ static CALayer *foldScene(const FoldSpec *f, CGPoint origin, CFTimeInterval t0) 
     [faces addObject:mf.dark]; [faces addObject:mf.glint];
     FoldLit lf = foldFace(moving1, left, f->openDark, f->openLit, foldSlice(left, W, H), ALL & ~kCALayerRightEdge, innerLit);
     [faces addObject:lf.dark]; [faces addObject:lf.glint];
-    CGRect ml = foldSlice(left, W, H);
-    ml.origin.x = 1 - ml.origin.x - ml.size.width;
-    CALayer *leftBack = foldPlainBack(left, mirrorX, ml, corner, 0.004 * H + 1);
-    leftBack.zPosition = -t;
-    leftBack.transform = CATransform3DMakeRotation(M_PI, 0, 1, 0);
-    [moving1 addSublayer:leftBack];
-    [faces addObject:leftBack]; [faces addObject:[NSNull null]];
+    foldBackFace(moving1, left, f, mirrorX, W, H, t, corner, faces);
     FoldLit rf = foldFace(moving2, right, f->openDark, f->openLit, foldSlice(right, W, H), ALL & ~kCALayerLeftEdge, innerLit);
     [faces addObject:rf.dark]; [faces addObject:rf.glint];
     CALayer *coverHolder = [CALayer layer];
@@ -512,21 +499,89 @@ static CALayer *foldScene(const FoldSpec *f, CGPoint origin, CFTimeInterval t0) 
     [nearShades addObject:foldNearShade(midFace, f->openLit, foldSlice(mid, W, H), CGPointMake(1, 0.5), CGPointMake(0, 0.5))];
     [nearShades addObject:foldNearShade(moving2.sublayers[0], f->openLit, foldSlice(right, W, H), CGPointMake(0, 0.5), CGPointMake(1, 0.5))];
     [nearHinge addObject:@1]; [nearHinge addObject:@1]; [nearHinge addObject:@2]; [nearHinge addObject:@2];
-    CGFloat insetL = foldInset(f->openLit, 0, 0.5) * W, insetR = foldInset(f->openLit, 1, 0.5) * W;
-    CAGradientLayer *lr = foldRail(CGSizeMake(t, H - 2 * corner), YES), *rr = foldRail(CGSizeMake(t, H - 2 * corner), YES);
-    lr.position = CGPointMake(-W / 2 + insetL, 0);
-    lr.zPosition = -t / 2;
-    lr.transform = CATransform3DMakeRotation(-M_PI_2, 0, 1, 0);
-    [moving1 addSublayer:lr];
-    rr.position = CGPointMake(W / 2 - insetR, 0);
-    rr.zPosition = -t / 2;
-    rr.transform = CATransform3DMakeRotation(M_PI_2, 0, 1, 0);
-    [moving2 addSublayer:rr];
     stack = CGRectMake(2 * hx2 - W / 2, -H / 2, W / 2 - hx2, H);
     stackTop = 2 * t;
   }
   CGImageRelease(mirrorX);
-  CGImageRelease(mirrorY);
+
+  // The sides: the body's outline, counterclockwise, as straight runs and its corners in short steps, cut where a hinge
+  // crosses it; each piece a wall on the panel it belongs to, the panel's thickness deep. Keys stand out of the right side.
+  CGPoint pts[160];
+  int np = 0;
+  const int ARC = 8;
+  CGFloat cuts[2] = {hinge == FOLD_CLAMSHELL ? hy : hx1, hx2};
+  int ncuts = hinge == FOLD_TRIFOLD ? 2 : 1;
+  CGPoint arcCentre[4] = {{bx1 - corner, by0 + corner}, {bx1 - corner, by1 - corner}, {bx0 + corner, by1 - corner}, {bx0 + corner, by0 + corner}};
+  for (int side = 0; side < 4; side++) {
+    // side 0 bottom (left to right), 1 right (up), 2 top (right to left), 3 left (down); then the corner after it.
+    CGPoint a = side == 0 ? CGPointMake(bx0 + corner, by0) : side == 1 ? CGPointMake(bx1, by0 + corner)
+              : side == 2 ? CGPointMake(bx1 - corner, by1) : CGPointMake(bx0, by1 - corner);
+    pts[np++] = a;
+    BOOL horizontal = side % 2 == 0;
+    if (horizontal == (hinge != FOLD_CLAMSHELL)) {
+      for (int k = 0; k < ncuts; k++) {
+        int c = side < 2 ? k : ncuts - 1 - k;  // in the order the side runs
+        CGFloat v = cuts[c];
+        if (horizontal && v > bx0 + corner && v < bx1 - corner) pts[np++] = CGPointMake(v, a.y);
+        if (!horizontal && v > by0 + corner && v < by1 - corner) pts[np++] = CGPointMake(a.x, v);
+      }
+    }
+    if (corner >= 1) {
+      CGPoint c = arcCentre[side];
+      double a0 = -M_PI_2 + side * M_PI_2;
+      for (int k = 0; k < ARC; k++) {
+        double ang = a0 + M_PI_2 * k / ARC;
+        pts[np++] = CGPointMake(c.x + corner * cos(ang), c.y + corner * sin(ang));
+      }
+    }
+  }
+  NSMutableArray<CALayer *> *walls = [NSMutableArray array];
+  NSMutableArray<NSValue *> *wallNormal = [NSMutableArray array];  // its outward normal, x and y
+  NSMutableArray<NSNumber *> *wallPanel = [NSMutableArray array];
+  NSArray<CALayer *> *panels = moving2 ? @[fixedPanel, moving1, moving2] : @[fixedPanel, moving1];
+  for (int i = 0; i < np; i++) {
+    CGPoint a = pts[i], b = pts[(i + 1) % np];
+    CGFloat dx = b.x - a.x, dy = b.y - a.y, len = hypot(dx, dy);
+    if (len < 0.5) continue;
+    CGFloat nx = dy / len, ny = -dx / len;
+    CGPoint m = CGPointMake((a.x + b.x) / 2, (a.y + b.y) / 2);
+    int panel = hinge == FOLD_CLAMSHELL ? (m.y < hy ? 1 : 0) : m.x < hx1 ? 1 : (hinge == FOLD_TRIFOLD && m.x > hx2) ? 2 : 0;
+    CAGradientLayer *w = foldWall(m.x, m.y, nx, ny, len + 0.8, t, 0, metal, 1);  // a little long: no cracks between pieces
+    [panels[panel] addSublayer:w];
+    [walls addObject:w];
+    [wallNormal addObject:[NSValue valueWithPoint:NSMakePoint(nx, ny)]];
+    [wallPanel addObject:@(panel)];
+  }
+  for (int k = 0; k < f->keys && k < 4; k++) {
+    CGFloat ky1 = H / 2 - H * f->key[2 * k], ky0 = H / 2 - H * f->key[2 * k + 1];
+    if (ky1 - ky0 < 1) continue;
+    CGFloat my = (ky0 + ky1) / 2;
+    int panel = hinge == FOLD_CLAMSHELL ? (my < hy ? 1 : 0) : hinge == FOLD_TRIFOLD ? 2 : 0;
+    CGFloat proud = MAX(1, t * 0.09);
+    CAGradientLayer *key = foldWall(bx1, my, 1, 0, ky1 - ky0, t * 0.55, proud, metal, 1.12);
+    key.cornerRadius = t * 0.2;
+    [panels[panel] addSublayer:key];
+    [walls addObject:key];
+    [wallNormal addObject:[NSValue valueWithPoint:NSMakePoint(1, 0)]];
+    [wallPanel addObject:@(panel)];
+  }
+  NSMutableArray *wallDark[160], *wallGlint[160];
+  NSUInteger nw = MIN(walls.count, 160);
+  CALayer *wallShade[160], *wallShine[160];
+  for (NSUInteger k = 0; k < nw; k++) {
+    wallDark[k] = [NSMutableArray array];
+    wallGlint[k] = [NSMutableArray array];
+    wallShade[k] = [CALayer layer];
+    wallShade[k].frame = walls[k].bounds;
+    wallShade[k].backgroundColor = CGColorGetConstantColor(kCGColorBlack);
+    wallShade[k].cornerRadius = walls[k].cornerRadius;
+    wallShine[k] = [CALayer layer];
+    wallShine[k].frame = walls[k].bounds;
+    wallShine[k].backgroundColor = CGColorGetConstantColor(kCGColorWhite);
+    wallShine[k].cornerRadius = walls[k].cornerRadius;
+    [walls[k] addSublayer:wallShade[k]];
+    [walls[k] addSublayer:wallShine[k]];
+  }
 
   // The inner screens, which face each other once shut: hidden then, or they would show through the closed picture's
   // transparent margin along the hinge. Each with the hinge whose closing presses it (2: the tri-fold's right one).
@@ -540,7 +595,7 @@ static CALayer *foldScene(const FoldSpec *f, CGPoint origin, CFTimeInterval t0) 
 
   // Sample the run.
   NSMutableArray *deviceT = [NSMutableArray array], *m1T = [NSMutableArray array], *m2T = [NSMutableArray array];
-  NSMutableArray *innerA = [NSMutableArray array], *coverA = [NSMutableArray array], *railsA = [NSMutableArray array];
+  NSMutableArray *innerA = [NSMutableArray array], *coverA = [NSMutableArray array];
   NSUInteger nf = faces.count / 2;
   NSMutableArray *darkA[8], *glintA[8];
   for (NSUInteger i = 0; i < nf; i++) {
@@ -574,7 +629,14 @@ static CALayer *foldScene(const FoldSpec *f, CGPoint origin, CFTimeInterval t0) 
     [m2T addObject:[NSValue valueWithCATransform3D:r2]];
     [innerA addObject:@(p.innerLit)];
     [coverA addObject:@(p.coverLit)];
-    [railsA addObject:@(p.f1 > 0.985 ? 1.0 : 0.0)];
+    for (NSUInteger k = 0; k < nw; k++) {
+      NSPoint wn = wallNormal[k].pointValue;
+      double dark, glint;
+      foldLight(foldYaw(foldTurn((FoldVec){wn.x, wn.y, 0}, hinge, wallPanel[k].intValue, a1, a2), p.yaw), &dark, &glint);
+      // Bare metal: it goes darker away from the light, and shines brighter towards it, than glass.
+      [wallDark[k] addObject:@(fmin(0.9, dark * 1.05))];
+      [wallGlint[k] addObject:@(fmin(0.7, glint * 1.5))];
+    }
     [shutA addObject:@(p.f1 > 0.98 ? 0.0 : 1.0)];  // the settle after the snap stays above 0.98
     [shut2A addObject:@(p.f2 > 0.98 ? 0.0 : 1.0)];
     // Each face's normal, turned by the closed device's turn.
@@ -631,9 +693,11 @@ static CALayer *foldScene(const FoldSpec *f, CGPoint origin, CFTimeInterval t0) 
     [inner[k] addAnimation:foldKeys(@"opacity", a, t0, seconds) forKey:@"shut"];
     inner[k].opacity = [a.firstObject floatValue];
   }
-  for (CALayer *l in rails) {
-    [l addAnimation:foldKeys(@"opacity", railsA, t0, seconds) forKey:@"shown"];
-    l.opacity = [railsA.firstObject floatValue];
+  for (NSUInteger k = 0; k < nw; k++) {
+    [wallShade[k] addAnimation:foldKeys(@"opacity", wallDark[k], t0, seconds) forKey:@"light"];
+    wallShade[k].opacity = [wallDark[k].firstObject floatValue];
+    [wallShine[k] addAnimation:foldKeys(@"opacity", wallGlint[k], t0, seconds) forKey:@"light"];
+    wallShine[k].opacity = [wallGlint[k].firstObject floatValue];
   }
   for (NSUInteger k = 0; k < nf; k++) {
     CALayer *dark = faces[2 * k], *glint = faces[2 * k + 1];

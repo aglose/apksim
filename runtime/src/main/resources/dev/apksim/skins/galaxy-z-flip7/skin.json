@@ -10,5 +10,6 @@
     "frame": "cover.png",
     "screen": { "x": 46, "y": 43, "width": 948, "height": 1048, "cornerRadius": 81 }
   },
+  "fold": { "back": "back.png", "edge": "#4a6a9e", "body": { "x": 10, "y": 10, "width": 1176, "height": 2608, "radius": 138 }, "keys": [[532, 714], [766, 949]] },
   "source": { "author": "apksim (drawn by scripts/gen-samsung-skins.java)", "license": "Apache-2.0" }
 }

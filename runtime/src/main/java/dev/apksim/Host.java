@@ -161,6 +161,12 @@ public class Host {
     h = app.getResources().getDisplayMetrics().heightPixels;
     hw = new HwRenderer(app, w, h);
     controls = new DeviceControls(app, stack, w, h, this::resizeDisplay);
+    // A folding device starts in its natural orientation, as a `device` switch to it leaves the display: Robolectric
+    // counts a display wider than tall (the Galaxy Z TriFold's inner one) as ROTATION_90, which turned its skin's cutout
+    // half a turn (SkinShape reads the framework's rotation).
+    if (Fold.spec(Device.current()) != null) {
+      org.robolectric.Shadows.shadowOf(app.getSystemService(android.view.WindowManager.class).getDefaultDisplay()).setRotation(0);
+    }
     recorder = new FlightRecorder(app, stack, controls);
     controls.showTitle();
     Timing.detail("controls");

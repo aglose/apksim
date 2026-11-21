@@ -191,12 +191,6 @@ public final class Fold {
     return out;
   }
 
-  /** The device's way of folding, or null when it does not fold. */
-  static Hinge hinge() {
-    Spec s = spec(Device.peek());
-    return s == null ? null : s.hinge;
-  }
-
   public static boolean halfOpened() {
     return state() == State.HALF;
   }

@@ -61,7 +61,8 @@ Usage: apksim [options] APP.apk
        apksim --version | --train | --stop-standbys
 
 Common options (each is listed with its values in the README, "Devices and launch options"):
-  --device NAME|WxH[@density]   phone, foldable, tablet, desktop, tv, pixel-10-pro-fold, or a size in dp (density 0.75-4)
+  --device NAME|WxH[@density]   phone, foldable, tablet, desktop, tv, pixel-10-pro-fold, galaxy-s25|-plus|-ultra,
+                                galaxy-a56, galaxy-z-fold7|flip7|trifold, or a size in dp (density 0.75-4)
   --fold open|half|closed       a folding device's posture at launch (closed: its cover display)
   --skin NAME                   a stored device skin drawn around the screen, and its device (docs/skins.md)
   --activity PKG/.Act           start this activity instead of the launcher one

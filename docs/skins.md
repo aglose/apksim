@@ -45,6 +45,13 @@ mask.png          optional: the screen's shape (alpha), for round or notched scr
   around the cover display, with the same fields as the skin's own. It is drawn, and its corners and cutout told to
   the app, while the device is closed (`fold closed`, `--fold closed`); the skin stays on through a fold. `skin add`
   has no option for it: write it into skin.json by hand.
+- `fold` is optional, for a folding device's fold animation in the Mac window: `{"back": "back.png", "edge":
+  "#rrggbb", "body": {"x", "y", "width", "height", "radius"}, "keys": [[top, bottom], ...]}`. `back` is the open
+  device seen from behind, upright (the front's left edge on its right), `frame.png`'s size: a panel's back that has
+  no display (the Flip's bottom half, the TriFold's left panel) is drawn from it. `edge` is the frame's metal, the
+  colour of the sides drawn between front and back; `body` is the body's rectangle and corner radius in `frame.png`'s
+  pixels, the outline the sides follow; `keys` are the side keys on the body's right edge, as pixel rows. Without
+  it a fold draws plain glass and grey sides around the picture's edge.
 - The aspect of `screen` must match the device's pixels within 1%, or the skin is refused with both sizes.
 
 ## Commands

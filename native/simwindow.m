@@ -1160,6 +1160,12 @@ static CGRect foldOldScreen;  // its screen in its picture, as fractions, top do
 static long foldToken;      // a newer fold supersedes one still waiting or playing
 static int foldHinge;       // Fold.Hinge's ordinal (FOLD_BOOK, FOLD_CLAMSHELL, FOLD_TRIFOLD)
 static CGFloat foldThickness;
+// The skin's fold look (Skinning.foldLook): its back picture, metal, body and keys; none without a skin.
+static CGImageRef foldBack;
+static int foldEdge = -1;
+static CGRect foldBody;
+static CGFloat foldBodyRadius, foldKeyAt[8];
+static int foldKeyCount;
 
 static CGImageRef surfaceImage(IOSurfaceRef s) {
   if (!s) return NULL;
@@ -1258,6 +1264,8 @@ static void foldEnd(void) {
   if (foldOldImage) CGImageRelease(foldOldImage);
   if (foldOldDark) CGImageRelease(foldOldDark);
   foldOldImage = foldOldDark = NULL;
+  if (foldBack) CGImageRelease(foldBack);
+  foldBack = NULL;
 }
 
 static void foldPlay(BOOL closing, double seconds) {
@@ -1270,7 +1278,13 @@ static void foldPlay(BOOL closing, double seconds) {
   }
   NSRect newRect = foldDeviceRect();
   if (getenv("APKSIM_FOLD_DEBUG")) NSLog(@"fold play: %s, hinge %d, over %.2f s, new device %@, picture %zux%zu", closing ? "closing" : "opening", foldHinge, seconds, NSStringFromRect(newRect), CGImageGetWidth(newImage), CGImageGetHeight(newImage));
-  FoldSpec f;
+  FoldSpec f = {0};
+  f.back = foldBack;
+  f.edge = foldEdge;
+  f.body = foldBody;
+  f.bodyRadius = foldBodyRadius;
+  f.keys = foldKeyCount;
+  memcpy(f.key, foldKeyAt, sizeof foldKeyAt);
   f.hinge = foldHinge;
   f.thickness = foldThickness;
   f.openLit = closing ? foldOldImage : newImage;
@@ -1300,8 +1314,26 @@ static void foldPlay(BOOL closing, double seconds) {
 }
 
 // Before the display changes: 1 when an animation will play (a visible window with a frame on it).
-JNIEXPORT jboolean JNICALL Java_dev_apksim_SimWindow_nativeFoldBegin(JNIEnv *env, jclass c, jint hinge, jfloat thickness) {
+JNIEXPORT jboolean JNICALL Java_dev_apksim_SimWindow_nativeFoldBegin(JNIEnv *env, jclass c, jint hinge, jfloat thickness,
+                                                                       jbyteArray backPng, jint edge, jfloatArray geom) {
   __block BOOL ok = NO;
+  // The skin's back picture, decoded here (any thread), and its geometry: body x, y, w, h, radius, then key pairs.
+  __block CGImageRef back = NULL;
+  if (backPng) {
+    jsize n = (*env)->GetArrayLength(env, backPng);
+    jbyte *bytes = (*env)->GetByteArrayElements(env, backPng, NULL);
+    CFDataRef data = CFDataCreate(NULL, (const UInt8 *)bytes, n);
+    (*env)->ReleaseByteArrayElements(env, backPng, bytes, JNI_ABORT);
+    CGDataProviderRef provider = CGDataProviderCreateWithCFData(data);
+    back = CGImageCreateWithPNGDataProvider(provider, NULL, false, kCGRenderingIntentDefault);
+    CGDataProviderRelease(provider);
+    CFRelease(data);
+  }
+  struct { float v[13]; int n; } g = {{0}, 0};  // a struct: a block copies it, as it cannot a bare array
+  if (geom) {
+    g.n = MIN(13, (*env)->GetArrayLength(env, geom));
+    (*env)->GetFloatArrayRegion(env, geom, 0, g.n, g.v);
+  }
   dispatch_semaphore_t done = dispatch_semaphore_create(0);
   onMain(^{
     foldToken++;
@@ -1310,6 +1342,13 @@ JNIEXPORT jboolean JNICALL Java_dev_apksim_SimWindow_nativeFoldBegin(JNIEnv *env
     if (win && win.visible && !win.miniaturized && !(win.styleMask & NSWindowStyleMaskFullScreen) && win.screen) {
       foldHinge = hinge;
       foldThickness = thickness;
+      foldBack = back;
+      back = NULL;
+      foldEdge = edge;
+      foldBody = g.n >= 5 ? CGRectMake(g.v[0], g.v[1], g.v[2], g.v[3]) : CGRectZero;
+      foldBodyRadius = g.n >= 5 ? g.v[4] : 0;
+      foldKeyCount = g.n > 5 ? MIN(4, (g.n - 5) / 2) : 0;
+      for (int i = 0; i < 2 * foldKeyCount; i++) foldKeyAt[i] = g.v[5 + i];
       foldOldImage = deviceImage(YES);
       foldOldDark = deviceImage(NO);
       foldOldScreen = deviceScreen();
@@ -1345,6 +1384,7 @@ JNIEXPORT jboolean JNICALL Java_dev_apksim_SimWindow_nativeFoldBegin(JNIEnv *env
     dispatch_semaphore_signal(done);
   });
   dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+  if (back) CGImageRelease(back);  // no fold to draw it in
   return ok;
 }
 

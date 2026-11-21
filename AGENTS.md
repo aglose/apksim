@@ -170,8 +170,11 @@ Read README.md for results and limits; this file covers how to work on the code.
     detent's last ~12 degrees), each face is darkened and given a glint by its normal against a light above and to
     the left (`foldLight`), faces near a closing hinge darken as they close in, the inner screens go dark under ~11
     degrees and light past ~25, the cover lights once shut and goes dark as it opens, panel edges are rails of the
-    panel's real thickness (and the closed Flip's sides two thick for its turn), backs without a screen are drawn
-    glass in the panel's mirrored outline, and the inner screens are hidden once pressed together. Openings are their
+    panel's real thickness: walls along the skin's body outline (skin.json's `fold`: `body`, `edge` colour, `keys`),
+    straight runs and each corner in eight steps, cut at the hinges, on the panel they belong to, each lit by its
+    own normal, with machined chamfers and the keys standing proud; a panel's back without a display is the skin's
+    `back.png` (the open device seen from behind) through its own mirrored slice, else plain glass; the inner screens
+    are hidden once pressed together. `Skinning.foldLook` hands the back's PNG, colour and geometry to `foldBegin`. Openings are their
     own runs, not closings reversed (1.0 s book, 1.5 s clamshell, 1.7 s tri-fold, `-Dapksim.foldAnimationMs` for all).
     The window is resized about its centre meanwhile (`sizeWindow` while `foldWindow` is set) at the other panel's
     pixel density (`SimWindow.foldZoom`, the ratio of `Fold.Spec.ppi`s, held until the switch and its skin re-layout
@@ -588,6 +591,8 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `FastNativeLoader`: loads Robolectric's native runtime from pre-extracted `work/runtime`, not a fresh temp dir per launch.
 - `native/`
   - `simwindow.m`: Cocoa window and IOSurface present, input queue, Cmd+V paste, `wshot` self-capture, thread QoS.
+  - `foldanim.m`: the fold animation's Core Animation scene (book, clamshell, tri-fold; see `Fold`), `#include`d by
+    `simwindow.m` and by `scripts/fold-frames.m`, which renders it without an app.
   - `elfloader.c`, `bionic.c`, `jnibridge.c`: the Android ELF loader, bionic→libSystem shim, and a JNI table wrapper
     for the AAPCS-vs-Apple varargs difference (chosen by caller address).
   - `bionic.c` also has `timerfd_create`/`timerfd_settime` (Mac only, Linux has glibc's: a pipe fed by a thread per
