@@ -1277,6 +1277,99 @@ static void foldEnd(void) {
   foldBack = NULL;
 }
 
+// The fold played to its end: the window comes back under the overlay first, and once it is on the screen (two display
+// frames) the overlay fades out over it. Removing both at once showed the desktop for a frame (the window was not yet
+// composited), and the last frame of the 3D scene (lit, with reflections) jumped to the window's flat picture.
+static void foldFinish(long token) {
+  if (token != foldToken || !foldWindow) return;
+  simWindow.alphaValue = 1;
+  NSWindow *overlay = foldWindow;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.034 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    if (token != foldToken || foldWindow != overlay) return;
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
+      ctx.duration = 0.2;
+      ctx.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+      overlay.animator.alphaValue = 0;
+    } completionHandler:^{
+      if (token == foldToken && foldWindow == overlay) foldEnd();
+    }];
+  });
+}
+
+// Shader warm-up: the first fold of a process waited ~0.3 s while SceneKit built its pipelines. Once a folding device's
+// window is up, a tiny fold plays in a tiny, nearly transparent window of its own for a moment: the same view, lighting,
+// shadows, materials and antialiasing as a real fold, so a real one finds its pipelines built.
+static BOOL foldWarmed;
+static NSWindow *foldWarmWindow;
+static FoldStage *foldWarmStage;
+
+static CGImageRef foldWarmPicture(void) {
+  CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGContextRef ctx = CGBitmapContextCreate(NULL, 64, 64, 8, 0, cs, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+  CGColorSpaceRelease(cs);
+  CGContextSetRGBFillColor(ctx, 0.3, 0.4, 0.6, 1);
+  CGContextFillRect(ctx, CGRectMake(4, 4, 56, 56));
+  CGImageRef img = CGBitmapContextCreateImage(ctx);
+  CGContextRelease(ctx);
+  return img;
+}
+
+static void foldWarmUp(void) {
+  if (foldWarmed || !simWindow || !simWindow.screen) return;
+  foldWarmed = YES;
+  CGImageRef pic = foldWarmPicture();
+  FoldSpec f = {0};
+  f.hinge = FOLD_BOOK;
+  f.thickness = 0.04;
+  f.openLit = f.openDark = f.closedLit = f.closedDark = f.back = pic;
+  f.edge = 0x6e7075;
+  f.body = CGRectMake(0.06, 0.06, 0.88, 0.88);
+  f.bodyRadius = 0.08;
+  f.keys = 1;
+  f.key[0] = 0.3;
+  f.key[1] = 0.4;
+  f.openRect = CGRectMake(4, 4, 24, 24);
+  f.closedRect = CGRectMake(10, 4, 12, 24);
+  f.openScreen = CGRectMake(0.1, 0.1, 0.8, 0.8);
+  f.closing = YES;
+  f.seconds = 0.25;
+  NSRect at = NSMakeRect(NSMinX(simWindow.screen.visibleFrame), NSMinY(simWindow.screen.visibleFrame), 32, 32);
+  NSWindow *w = [[NSWindow alloc] initWithContentRect:at styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+  w.releasedWhenClosed = NO;
+  w.opaque = NO;
+  w.backgroundColor = NSColor.clearColor;
+  w.hasShadow = NO;
+  w.ignoresMouseEvents = YES;
+  w.alphaValue = 0.01;  // drawn (a window at 0 may be skipped), not seen
+  FoldStage *stage = [[FoldStage alloc] initWithSpec:&f view:CGRectMake(0, 0, 32, 32)];
+  CGImageRelease(pic);
+  SCNView *view = [[SCNView alloc] initWithFrame:NSMakeRect(0, 0, 32, 32) options:@{SCNPreferredRenderingAPIKey : @(SCNRenderingAPIMetal)}];
+  view.scene = stage.scene;
+  view.pointOfView = stage.cameraNode;
+  view.backgroundColor = NSColor.clearColor;
+  view.antialiasingMode = SCNAntialiasingModeMultisampling4X;
+  view.rendersContinuously = YES;
+  view.delegate = stage;
+  w.contentView = view;
+  stage.finished = ^{
+    view.playing = NO;
+    view.delegate = nil;
+    [foldWarmWindow orderOut:nil];
+    foldWarmWindow = nil;
+    foldWarmStage = nil;
+    if (getenv("APKSIM_FOLD_DEBUG")) NSLog(@"fold warm-up: done");
+  };
+  foldWarmWindow = w;
+  foldWarmStage = stage;
+  [w orderFrontRegardless];
+  view.playing = YES;
+}
+
+JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeFoldWarm(JNIEnv *env, jclass c) {
+  // A second after asking: not in the way of the app's first frames.
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ foldWarmUp(); });
+}
+
 static void foldPlay(BOOL closing, double seconds) {
   CGImageRef newImage = deviceImage(YES), newDark = deviceImage(NO);
   if (!newImage || !newDark || !foldOldImage || !foldOldDark || !foldWindow) {
@@ -1322,10 +1415,11 @@ static void foldPlay(BOOL closing, double seconds) {
   long token = foldToken;
   CALayer *still = content.layer.sublayers.firstObject;
   stage.firstFrame = ^{
+    if (getenv("APKSIM_FOLD_DEBUG")) NSLog(@"fold first frame drawn");
     if (token == foldToken) still.hidden = YES;
   };
   stage.finished = ^{
-    if (token == foldToken) foldEnd();
+    foldFinish(token);
   };
   foldStage = stage;
   foldView = view;

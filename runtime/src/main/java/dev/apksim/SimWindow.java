@@ -376,6 +376,16 @@ final class SimWindow {
   }
 
   /**
+   * A folding device's window is up: build the fold animation's shaders now (a tiny fold in a window nobody sees, a
+   * second later, once a process), so the first fold does not wait ~0.3 s for them.
+   */
+  static void foldWarm() {
+    if (!headless && Boolean.parseBoolean(System.getProperty("apksim.foldAnimation", "true"))) nativeFoldWarm();
+  }
+
+  private static native void nativeFoldWarm();
+
+  /**
    * hinge: Fold.Hinge's ordinal; thickness: one panel's thickness against the open device's height; back, edge, geom:
    * Skinning.foldLook's (null, -1, null without them).
    */

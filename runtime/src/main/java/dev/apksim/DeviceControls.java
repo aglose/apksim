@@ -1143,6 +1143,7 @@ final class DeviceControls {
         + " " + d.widthDp() + "\u00d7" + d.heightDp() + " dp");
     for (int i = 0; i < DEVICE_MENU.length; i++) SimWindow.setMenuState(TAG_DEVICE_FIRST + i, DEVICE_MENU[i].equals(d.name()));
     SimWindow.setMenuState(TAG_DEVICE_PIXEL_FOLD, d.name().equals("pixel-10-pro-fold"));
+    if (Fold.spec(d) != null) SimWindow.foldWarm();  // the fold animation's shaders, once a process
     for (int t = TAG_DEVICE_NAMED_FIRST; t < MENU.length; t++) SimWindow.setMenuState(t, MENU[t].equals("device " + d.name()));
     SimWindow.setMenuState(TAG_STATUS_BAR, SystemBars.statusBar(d));
     SimWindow.setMenuState(TAG_NAV_BAR, SystemBars.navBar(d));
