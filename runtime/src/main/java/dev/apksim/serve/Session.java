@@ -443,6 +443,8 @@ final class Session {
     // it cannot write; what it makes goes to its own out folder, moved into that cache once it has exited (beamCaches).
     String build = serve.beam ? serve.catalog.buildHash(app.path()) : null;
     if (build != null) cmd.addAll(List.of("--jvm", "-Dapksim.beamBuildCache=" + serve.beamCache(build)));
+    // And may read the translated classes of earlier builds of this app from this site, signed by the same key (issue 578).
+    if (build != null) cmd.addAll(serve.beamSiblingArgs(build, site, app.path()));
     // A beam session records by default (`apksim beam config rec`; input alone costs little), so the person who finds a
     // bug has something to save (`rec save`) and replay (scripts/replay-adb.py). The app's own options may choose.
     List<String> own = app.launch();
@@ -3177,7 +3179,7 @@ final class Session {
             try (var files = Files.newDirectoryStream(rt)) {
               for (Path f : files) {
                 String n = f.getFileName().toString();
-                if (!Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS) || !n.matches("[0-9a-zA-Z_.-]{1,200}\\.(pack|classes)")) continue;
+                if (!Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS) || !n.matches("[0-9a-zA-Z_.-]{1,200}\\.(pack|classes|index)")) continue;
                 Files.move(f, dest.resolve(n), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                 moved++;
               }

@@ -832,6 +832,71 @@ public final class Serve {
     return state.resolve("beam/cache").resolve(sha256);
   }
 
+  /**
+   * Issue 578: the caches of earlier builds of the same app a beamed build's instance may read (never write) for the
+   * translated classes it has in common with them: another build of this package, from this site, signed by the same
+   * key (the checks that also let saved data move to a newer build), newest first, at most {@link #SIBLINGS}. The
+   * build's identity is recorded in its cache folder (`identity`, written here, which an instance cannot write), so
+   * a later build of the app finds it. Empty when the site, package or signers are not known (an unsigned build is
+   * its own kind: nothing is shared).
+   */
+  List<Path> beamSiblings(String build, String site, Path apk) {
+    if (build == null || site == null || site.isEmpty() || apk == null) return List.of();
+    String id;
+    try {
+      List<String> certs = ApkSigners.of(apk).certs();
+      if (certs.isEmpty()) return List.of();
+      id = "apksim-build-identity 1\n" + dev.apksim.ApkCache.manifestPackage(apk) + "\n" + site + "\n" + String.join(",", certs) + "\n";
+    } catch (IOException | RuntimeException e) {
+      return List.of();
+    }
+    try {
+      Path mine = beamCache(build);
+      Files.createDirectories(mine);
+      Path f = mine.resolve("identity");
+      if (Files.isRegularFile(f, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+        // Another site ran these same bytes first: the folder is that site's, and it shares nothing with this one.
+        if (!id.equals(Files.readString(f))) return List.of();
+      } else {
+        Path tmp = mine.resolve("identity.tmp-" + Long.toHexString(System.nanoTime()));
+        Files.writeString(tmp, id);
+        Files.move(tmp, f, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+      }
+      record Cand(Path dir, long time) {}
+      List<Cand> found = new ArrayList<>();
+      try (var d = Files.newDirectoryStream(state.resolve("beam/cache"))) {
+        for (Path p : d) {
+          String n = p.getFileName().toString();
+          if (n.equals(build) || !n.matches("[0-9a-f]{64}")) continue;
+          Path other = p.resolve("identity");
+          Path classes = p.resolve("classes");
+          if (!Files.isRegularFile(other, java.nio.file.LinkOption.NOFOLLOW_LINKS) || !Files.isDirectory(classes, java.nio.file.LinkOption.NOFOLLOW_LINKS)) continue;
+          if (!id.equals(Files.readString(other))) continue;
+          found.add(new Cand(p, Files.getLastModifiedTime(classes).toMillis()));
+        }
+      }
+      found.sort((a, b) -> Long.compare(b.time(), a.time()));
+      List<Path> out = new ArrayList<>();
+      for (Cand c : found) {
+        if (out.size() >= SIBLINGS) break;
+        out.add(c.dir());
+      }
+      return out;
+    } catch (IOException | RuntimeException e) {
+      return List.of();
+    }
+  }
+
+  /** How many earlier builds' caches a beamed instance reads from ({@link #beamSiblings}). */
+  static final int SIBLINGS = 3;
+
+  /** `-Dapksim.beamSiblingCaches=...` for a beamed launch of this build, or nothing. */
+  List<String> beamSiblingArgs(String build, String site, Path apk) {
+    List<Path> s = beamSiblings(build, site, apk);
+    if (s.isEmpty()) return List.of();
+    return List.of("--jvm", "-Dapksim.beamSiblingCaches=" + s.stream().map(Path::toString).collect(java.util.stream.Collectors.joining(java.io.File.pathSeparator)));
+  }
+
   /** Issue 187: what a download needs once its session has ended, until its recordings age out (a week). */
   private final Map<String, Object[]> keptRecs = new ConcurrentHashMap<>();
 

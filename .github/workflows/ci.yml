@@ -119,6 +119,8 @@ jobs:
         run: scripts/check-call-sites.sh
       - name: Compat-table check (changes by the app's targetSdk, no allocation)
         run: scripts/check-compat-table.sh
+      - name: Class-cache siblings check (a beamed build reads earlier builds' translated classes by content, read only)
+        run: scripts/check-class-cache-siblings.sh
       - name: Stub census check (docs/stub-census.tsv current against the framework and shadow jars)
         run: scripts/stub-census.sh
       - name: Media probe check (MediaPlayer durations by container; the app's descriptor left open)
