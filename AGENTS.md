@@ -178,6 +178,9 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `TimeTick`: ACTION_TIME_TICK (registered receivers only) from Host's loop at each minute of `SimClock`'s clock; not under `--snapshot` (issue 109).
   - `AudioFx`: `android.media.audiofx.Visualizer` (issue 514): Robolectric leaves its natives unshadowed, so `getCaptureSizeRange()` answered null and `getMaxCaptureRate()` 0, and an app sizing its capture from them died on the first play. They answer as AOSP's (128..1024, 20000 mHz, 44.1 kHz); a visualizer's setters return SUCCESS and only the capture size reads back (enabled and the modes read as defaults); it gets no data, and a size change while enabled is not refused. `VisualizerTest`.
   - `Gaps`, `gaps-baseline.txt`: the gap tripwire, framework natives no shadow covers that were called (described under `InvokeDynamicSupport` below; `gaps` command, exit line).
+  - `HotSwap`, `native/hotswap.c` (spike S2, opt-in, Mac only): `hotswap NEW.apk [none|redraw|compose|compose-reset|recreate]`
+    redefines a rebuilt APK's body-only changed classes in place (JVMTI RedefineClasses, frames computed by ASM since
+    redefinition verifies), `hotswap selftest [PREFIX]`; docs/spike-s2-hot-swap.md has the results and what is missing.
   - `Crashes`: uncaught exceptions in running instances, as RuntimeInit's KillApplicationHandler (issue 104). The JVM
     had no default handler, so ThreadGroup printed "Exception in thread" and the app ran on: kotlinx.coroutines hands a
     coroutine's exception to the thread's handler itself (traced: `propagateExceptionFinalResort`, ThreadGroup, no

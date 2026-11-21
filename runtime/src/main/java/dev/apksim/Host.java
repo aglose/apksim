@@ -2285,6 +2285,20 @@ public class Host {
             (rt.totalMemory() - rt.freeMemory()) >> 20, fp < 0 ? -1 : fp >> 20, Footprint.cpuMs(),
             ProcessHandle.current().pid(), dataDir, ahead, lastDown, inputMerged);
       }
+      case "hotswap" -> {
+        // Spike S2 (docs/spike-s2-hot-swap.md): hotswap NEW.apk [none|redraw|compose|compose-reset|recreate] [force].
+        return HotSwap.command(a, mode -> switch (mode) {
+          case "none" -> "ok";
+          case "redraw" -> {
+            for (View r : rootViews()) r.invalidate();
+            yield "redrawn";
+          }
+          case "compose" -> HotSwap.composeInvalidate();
+          case "compose-reset" -> HotSwap.composeReset(new Object());
+          case "recreate" -> controls.run(new String[] {"recreate"});
+          default -> "unknown refresh " + mode;
+        });
+      }
       case "redraw" -> {
         // Draws a frame now even if nothing changed (a frame stream that just started needs the current screen).
         for (View r : rootViews()) r.invalidate();

@@ -60,6 +60,13 @@ final class AppClasses {
   public long translateNanos;
   private volatile int translatedAhead;
   private boolean aheadStarted;
+  /** The app's classes (not a test APK's), for {@link HotSwap}. */
+  static volatile AppClasses app;
+  /**
+   * Hot swap (spike S2): classes a newer build changed or added that were not loaded when it was swapped in, served
+   * from that build when the class loader first asks. Empty unless a hot swap ran.
+   */
+  final Map<String, java.util.function.Supplier<byte[]>> swapped = new ConcurrentHashMap<>();
 
   private AppClasses(Path apk, String root, AppClasses target, String hintName) throws IOException {
     this.root = root;
@@ -416,6 +423,11 @@ final class AppClasses {
       // Classes the app does not have are refused before translate()'s lock: translateAhead's threads look them up
       // while holding the class loader's lock for that name, and the main thread may be waiting for that lock.
       String name = path.substring(0, path.length() - 6);
+      var newer = swapped.isEmpty() ? null : swapped.get(name);
+      if (newer != null) {
+        byte[] nb = newer.get();
+        if (nb != null) return new ByteArrayInputStream(nb);
+      }
       byte[] b = find(name) != null ? translate(name) : null;
       if (b != null) return new ByteArrayInputStream(b);
     } else {
@@ -437,7 +449,45 @@ final class AppClasses {
   };
 
   static AppClasses install(Path apk) throws Exception {
-    return install(apk, "/app/", null, System.getProperty("apksim.package"));
+    return app = install(apk, "/app/", null, System.getProperty("apksim.package"));
+  }
+
+  /** Hot swap: how many DEX files, and each one's identity (its header's Adler-32 checksum and its size). */
+  int dexCount() {
+    return dexes.size();
+  }
+
+  String dexKey(int i) {
+    DexFile d = dexes.get(i);
+    return Integer.toHexString(d.i32(8)) + "-" + d.i32(32);
+  }
+
+  /** Hot swap: the classes DEX file i defines, by internal name. */
+  List<String> namesIn(int i) {
+    DexFile d = dexes.get(i);
+    List<String> out = new ArrayList<>(d.classDefsSize);
+    for (int c = 0; c < d.classDefsSize; c++) {
+      String t = d.className(c);
+      out.add(t.substring(1, t.length() - 1));
+    }
+    return out;
+  }
+
+  /**
+   * Hot swap: the class's content hash ({@link dev.apksim.dex.ClassHash}: index-independent, so two builds compare),
+   * null if this APK does not define it, an empty array when it cannot be hashed (call sites, method handles).
+   */
+  byte[] contentHash(String internalName) {
+    int[] at = find(internalName);
+    if (at == null) return null;
+    byte[] h = dev.apksim.dex.ClassHash.of(dexes.get(at[0]).view(), at[1]);
+    return h == null ? new byte[0] : h;
+  }
+
+  /** Hot swap: a class translated afresh from this APK, with no class cache (null if this APK lacks it). */
+  synchronized byte[] translateFresh(String internalName) {
+    int[] at = find(internalName);
+    return at == null ? null : translate(dexes.get(at[0]), at, internalName);
   }
 
   /**

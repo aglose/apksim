@@ -153,6 +153,7 @@ nav:
       - 'Conformance': conformance.md
       - 'iOS Simulator Parity': ios-simulator-parity.md
       - 'API Levels': api-levels.md
+      - 'Hot Swap Spike': spike-s2-hot-swap.md
       - 'App Corpus': corpus.md
   - 'Changelog': changelog.md
   - 'Project':

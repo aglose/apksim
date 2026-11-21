@@ -26,8 +26,10 @@ clang -O2 -dynamiclib -I"$JDK/include" -I"$JDK/include/darwin" -o "$ROOT/work/ru
 clang -O2 -o "$ROOT/work/runtime/apksim-client.new" "$ROOT/native/apksim-client.c"
 # Unused heap pages given back while idle (HeapTrim.java).
 clang -O2 -dynamiclib -I"$JDK/include" -I"$JDK/include/darwin" -o "$ROOT/work/runtime/libheaptrim.dylib.new" "$ROOT/native/heaptrim.c"
+# Hot swap (HotSwap.java, spike S2): JVMTI RedefineClasses.
+clang -O2 -dynamiclib -I"$JDK/include" -I"$JDK/include/darwin" -o "$ROOT/work/runtime/libhotswap.dylib.new" "$ROOT/native/hotswap.c"
 # --no-network: Java's IPv4 loopback connects over IPv4 sockets, which the sandbox allows (loopback.c).
 clang -O2 -dynamiclib -o "$ROOT/work/runtime/libloopback.dylib.new" "$ROOT/native/loopback.c"
 mv -f "$ROOT/work/runtime/apksim-client.new" "$ROOT/work/runtime/apksim-client"
 # Rename into place, so running instances keep the libraries they mapped.
-for l in libsimwindow libelfloader libgpushader libvtdecoder libh264enc libsimaudio libstandby libheaptrim libloopback; do mv -f "$ROOT/work/runtime/$l.dylib.new" "$ROOT/work/runtime/$l.dylib"; done
+for l in libsimwindow libelfloader libgpushader libvtdecoder libh264enc libsimaudio libstandby libheaptrim libhotswap libloopback; do mv -f "$ROOT/work/runtime/$l.dylib.new" "$ROOT/work/runtime/$l.dylib"; done
