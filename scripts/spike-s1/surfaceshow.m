@@ -65,6 +65,36 @@ static void offer(CFTypeRef owner, IOSurfaceRef s, int64_t presentUs) {
   [lock unlock];
 }
 
+// LAYER=1: no Metal. The IOSurface becomes the contents of a plain CALayer, as apksim's own window shows its frames.
+// Core Animation gives no presented time for that, so a frame's time on the glass is taken as the display link's
+// target time for the refresh in which it was committed, plus the compositor's own delay, which is not seen here.
+static int layerMode;
+static CALayer *plainLayer;
+static CFTypeRef shownOwner;
+static NSMutableArray<NSNumber *> *toTarget;
+
+static void showOnLayer(CFTimeInterval target) {
+  [lock lock];
+  CFTypeRef owner = pendingOwner;
+  IOSurfaceRef s = pendingSurface;
+  int64_t presentUs = pendingPresentUs, hostUs = pendingHostUs;
+  pendingOwner = NULL;
+  [lock unlock];
+  if (!owner) return;
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  plainLayer.contents = (__bridge id)s;
+  [CATransaction commit];
+  [CATransaction flush];
+  if (shownOwner) CFRelease(shownOwner);
+  shownOwner = owner;  // kept while the layer shows it
+  [lock lock];
+  shown++;
+  [toHost addObject:@(hostUs - presentUs)];
+  [toTarget addObject:@((int64_t)((target + epochMinusMedia) * 1e6) - presentUs)];
+  [lock unlock];
+}
+
 static void drawPending(void) {
   [lock lock];
   CFTypeRef owner = pendingOwner;
@@ -117,7 +147,8 @@ static void drawPending(void) {
 @implementation Ticker
 - (void)tick:(CADisplayLink *)link {
   ticks++;
-  drawPending();
+  if (layerMode) showOnLayer(link.targetTimestamp);
+  else drawPending();
 }
 @end
 
@@ -251,6 +282,19 @@ static int h264Path(double seconds) {
 
 static void report(const char *mode, double seconds, double cpu) {
   [lock lock];
+  if (layerMode) {
+    NSArray *g = [toTarget sortedArrayUsingSelector:@selector(compare:)];
+    NSArray *h = [toHost sortedArrayUsingSelector:@selector(compare:)];
+    [lock unlock];
+    if (!g.count) return (void)printf("%s layer: none shown\n", mode);
+#define R(a, q) ([a[(long)(((long)a.count - 1) * (q))] longLongValue] / 1000.0)
+    printf("%s layer: received %ld (%.1f/s), committed %ld (%.1f/s), superseded %ld; present->host ms p50 %.2f p90 %.2f; "
+           "present->target refresh ms p50 %.2f p90 %.2f p99 %.2f; instance copy/encode %.2f ms a frame; host CPU %.1f%%; "
+           "display link %.1f ticks/s\n",
+           mode, received, received / seconds, shown, shown / seconds, superseded, R(h, 0.5), R(h, 0.9), R(g, 0.5),
+           R(g, 0.9), R(g, 0.99), copyUsSum / 1000.0 / MAX(received, 1), 100 * cpu / seconds, ticks / seconds);
+    return;
+  }
   NSArray *g = [toGlass sortedArrayUsingSelector:@selector(compare:)];
   NSArray *h = [toHost sortedArrayUsingSelector:@selector(compare:)];
   NSArray *c = [commitToGlass sortedArrayUsingSelector:@selector(compare:)];
@@ -274,6 +318,8 @@ int main(int argc, char **argv) {
     toGlass = [NSMutableArray array];
     toHost = [NSMutableArray array];
     commitToGlass = [NSMutableArray array];
+    toTarget = [NSMutableArray array];
+    layerMode = getenv("LAYER") != NULL;
     lock = [NSLock new];
     fd = socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons(atoi(argv[1])), .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
@@ -298,8 +344,19 @@ int main(int argc, char **argv) {
     layer.displaySyncEnabled = YES;
     layer.contentsScale = win.backingScaleFactor;
     win.contentView.wantsLayer = YES;
-    win.contentView.layer = layer;
+    if (layerMode) {
+      plainLayer = [CALayer layer];
+      plainLayer.contentsGravity = kCAGravityResize;
+      plainLayer.opaque = YES;
+      win.contentView.layer = plainLayer;
+    } else {
+      win.contentView.layer = layer;
+    }
     [win orderFrontRegardless];
+    if (getenv("ACTIVATE")) {  // make the window key and the app active, as a host the developer is using would be
+      [win makeKeyAndOrderFront:nil];
+      [app activateIgnoringOtherApps:YES];
+    }
     Ticker *ticker = [Ticker new];
     CADisplayLink *link = [win.contentView displayLinkWithTarget:ticker selector:@selector(tick:)];
     link.preferredFrameRateRange = CAFrameRateRangeMake(120, 120, 120);

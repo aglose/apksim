@@ -8,9 +8,11 @@ Answer: yes, and both hand-offs tried work under today's default and beam profil
 Present-to-host latency drops from ~6.8 ms (p50) to ~0.22 ms, the instance stops spending ~5 ms of encoder time
 per frame, and every frame arrives (no lossy quantisation, no keyframe waits). Recommended mechanism: Mach send
 rights (`IOSurfaceCreateMachPort`, or the same thing wrapped as `IOSurfaceCreateXPCObject`) sent to a Mach service
-the host owns, not global IOSurface IDs. On the host's screen (a window that shows the frames, below) the shared
-path is 0.5-1 display refresh sooner than H.264 (p50 59.8 against 68-77 ms at the 60 Hz the display ran at), and the
-rest of the time, ~40 ms, is the window's own path to the glass, the same for both.
+the host owns, not global IOSurface IDs. On the host's screen (a window that shows the frames, below), shown the way
+apksim's own window shows its frames (the IOSurface as a plain `CALayer`'s contents, no copy), every frame is committed
+at 120 Hz and lands in the refresh 4.3-4.4 ms after the instance presents it, against 13-20 ms (one to two refreshes
+later) for H.264, with 1.7% host CPU against 3.8-4.9%. Shown through a `CAMetalLayer` instead, the window ran at 60 Hz
+with ~40 ms of its own to the glass: do not use Metal for the host's view.
 
 ## What was built (opt-in, nothing changes unless a host asks)
 
@@ -84,6 +86,30 @@ instances at once, and larger displays (a 2560x1600 tablet is ~16 MB a copy, ~0.
 
 ### On the host's screen
 
+Two ways of showing the frame were tried. The plain layer is the one to build on.
+
+**Plain layer (`LAYER=1 surfaceshow PORT mach|h264 SECONDS`).** At each tick of the window's display link the newest
+frame's IOSurface becomes the contents of the window's `CALayer` (one transaction, no copy, no GPU work in the host),
+as `simwindow.m` shows apksim's own frames; the surface is held until the next one replaces it. Core Animation gives
+no presented time for layer contents, so the figure is the instance's present to the display link's
+`targetTimestamp` for the refresh the frame was committed in: what the compositor still adds after that is the same
+for both paths and not in it. Same Mac, 2026-11-20 22:13, on battery, load average ~4-5, test app headless on the
+Shader tab (119.9 fps), three interleaved rounds of 8 s:
+
+| Path | received | committed | display link | present→host p50 | present→target refresh p50 | p90 | p99 | host CPU |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Mach surfaces | 120.1/s | 119.9-120.1/s | 124.8-124.9 ticks/s | 0.31-0.46 ms | 4.28-4.41 ms | 4.77-5.35 | 5.85-12.9 | 1.7% |
+| H.264 | 116.9-119.9/s | 112.5-117.2/s | 124.6-125.1 ticks/s | 7.97-9.51 ms | 13.0-20.3 ms | 21.2-21.5 | 22.4-22.6 | 3.8-4.9% |
+
+- The window ran at 120 Hz, and every shared frame went out in its own refresh (0-2 superseded in 8 s). With H.264
+  a frame decoded late misses its refresh: 20-35 were superseded per run, and the median frame is one to two
+  refreshes later (8.3 ms each).
+- The ~4.3 ms of the shared path is mostly waiting for the next refresh (the instance's frames and the host's display
+  link are not in phase, half a refresh on average); feeding the host's vsync back to the instance (`vsync
+  PERIOD_US SHIFT_US`, as serve's page does) would bring the instance's present just before the host's tick.
+- apksim's own window (`--window nofocus`, `frames`) got 120 Hz at the same time: 99% of vsyncs with a new frame.
+
+**Metal layer (the default `surfaceshow` mode).**
 `scripts/spike-s1/surfaceshow.m` is the stand-in host with a window: frames arrive on a reader thread (Mach
 surfaces, or the H.264 stream decoded by VideoToolbox into IOSurface-backed buffers), the newest one waits for the
 window's display link (`NSView.displayLinkWithTarget`, asking for 120 Hz), which makes the IOSurface a Metal
@@ -99,15 +125,16 @@ Same Mac, 2026-11-20 evening (load average ~2.5, memory pressure level 1), the t
 | Mach surfaces | 120.1-120.2/s | 59.9-60.2/s | 0.30-0.36 ms | 59.7-59.9 ms | 60.4-60.5 | 61.1-61.3 | 40.0-40.7 ms | 4.1-4.4% |
 | H.264 | 93-119/s | 59.2/s | 9.3-17.9 ms | 68.4-77.1 ms | 76.8-85.1 | 77.8-86.1 | 40.0-40.6 ms | 5.8-6.2% |
 
-- **The display ran at 60 Hz, not 120.** The display link ticked 65-71 times a second although the window asked for
-  120 and `NSScreen.maximumFramesPerSecond` says 120; ProMotion chose the lower rate (likely because nobody was using the Mac
-  at the time; the window was not made key). So half the frames were superseded before a refresh took them, on both
-  paths. At 120 Hz every refresh-bound figure here halves; the measurement should be repeated with someone at the
-  Mac.
+- **The display ran at 60 Hz, not 120,** for this window only. Its display link ticked 65-74 times a second although
+  it asked for 120 and `NSScreen.maximumFramesPerSecond` says 120, and it stayed so at 22:11 with someone at the Mac
+  and with the window key and the app active (`ACTIVATE=1`), while apksim's own window and the plain-layer host got
+  120 Hz at the same time. So a `CAMetalLayer` window here is held at 60 (the Mac was on battery in Low Power Mode,
+  `pmset` powermode 1, which may be why); half the frames were superseded on both paths.
 - **The window's own path dominates.** From the host's `commit` to the glass is ~40 ms on both paths, ~2.4 refreshes:
   the drawable queue (3 drawables: 57 ms, 2: 40 ms) and WindowServer's compositing. A product host should use 2
   drawables, present right after the display link fires, and look at `CAMetalDisplayLink` or a
-  `presentsWithTransaction` layer; that is the host's work and the same whatever carries the frames.
+  `presentsWithTransaction` layer; that is the host's work and the same whatever carries the frames. The plain layer
+  above avoids all of it.
 - **What the shared path saves on the glass** is its arrival time: 0.3 ms against 9-18 ms here (H.264's encode was
   7-10 ms a frame tonight against 5-6 ms in the earlier run, and a frame decoded late misses the refresh it would have
   made), so the shared frame lands 0.5-1 refresh sooner (8-17 ms at 60 Hz). With H.264 the instance also gave up on
@@ -117,7 +144,8 @@ Same Mac, 2026-11-20 evening (load average ~2.5, memory pressure level 1), the t
 
 ## Recommendation
 
-Use Mach rights to a host-owned service for the surfaces and keep the control connection (or that same Mach
+Use Mach rights to a host-owned service for the surfaces, show each one as a plain `CALayer`'s contents at the host's
+display link (not through Metal), and keep the control connection (or that same Mach
 channel) for the per-frame `f` message. It is the lowest latency and cost measured, needs no profile change today,
 and needs one explicit `mach-lookup` allow if the profile is ever made default-deny. Keep H.264 for remote viewers
 (serve, beam's browser tabs), where a surface cannot go.
