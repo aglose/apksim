@@ -83,8 +83,10 @@ static double foldOpenCurve(double v) {
   return 1 - 0.010 * sin(M_PI * x) * (1 - x);
 }
 
-// The inner screen is lit while the hinge is open past ~12 degrees, and goes dark under ~5.
-static double foldInnerLit(double open) { return foldSmoother(foldRamp(open, 0.03, 0.07)); }
+// A display fading in or out over u in [a, b], as a phone's does (~0.2-0.25 s): eased, and even to the eye, which sees
+// brightness roughly as its 2.2nd root, so it does not hang lit and then drop to black (a straight ramp in light did).
+static double foldFadeIn(double u, double a, double b) { return pow(foldSmoother(foldRamp(u, a, b)), 2.2); }
+static double foldFadeOut(double u, double a, double b) { return pow(1 - foldSmoother(foldRamp(u, a, b)), 2.2); }
 
 static FoldPose foldPoseAt(int hinge, BOOL closing, double u) {
   FoldPose p = {0};
@@ -95,8 +97,8 @@ static FoldPose foldPoseAt(int hinge, BOOL closing, double u) {
       p.yaw = M_PI * turn;
       p.move = turn;
       p.lift = 0.10 * sin(M_PI * turn);
-      p.innerLit = foldInnerLit(1 - p.f1);
-      p.coverLit = foldSmoother(foldRamp(u, 0.56, 0.66));
+      p.innerLit = foldFadeOut(u, 0.34, 0.52);  // as the halves close on it
+      p.coverLit = foldFadeIn(u, 0.60, 0.80);   // awake by the time the turn shows it
     } else {
       double turn = 1 - foldSmoother(foldRamp(u, 0, 0.40));
       p.yaw = M_PI * turn;
@@ -104,36 +106,36 @@ static FoldPose foldPoseAt(int hinge, BOOL closing, double u) {
       p.lift = 0.10 * sin(M_PI * turn);
       double open = u < 0.43 ? 0 : foldOpenCurve((u - 0.43) / 0.57);
       p.f1 = 1 - open;
-      p.coverLit = 1 - foldRamp(u, 0.43, 0.48);
-      p.innerLit = foldSmoother(foldRamp(open, 0.05, 0.10));
+      p.coverLit = foldFadeOut(u, 0.30, 0.46);  // as it turns away
+      p.innerLit = foldFadeIn(u, 0.48, 0.66);   // as the halves part
     }
   } else if (hinge == FOLD_TRIFOLD) {
     if (closing) {
       p.f1 = foldCloseCurve(u / 0.46);
       p.f2 = u < 0.44 ? 0 : foldCloseCurve((u - 0.44) / 0.56);
       p.move = foldSmoother(foldRamp(u, 0.30, 0.95));
-      p.innerLit = foldInnerLit(1 - p.f2);
-      p.coverLit = foldSmoother(foldRamp(u, 0.86, 0.95));  // the cover wakes as the magnets take it shut
+      p.innerLit = foldFadeOut(u, 0.74, 0.89);  // as the right panel comes over it
+      p.coverLit = foldFadeIn(u, 0.73, 0.88);
     } else {
       double openR = foldOpenCurve(u / 0.52);
       p.f2 = 1 - openR;
       p.f1 = u < 0.50 ? 1 : 1 - foldOpenCurve((u - 0.50) / 0.50);
       p.move = 1 - foldSmoother(foldRamp(u, 0, 0.70));
-      p.coverLit = 1 - foldRamp(u, 0, 0.05);
-      p.innerLit = foldSmoother(foldRamp(openR, 0.05, 0.10));
+      p.coverLit = foldFadeOut(u, 0.02, 0.17);
+      p.innerLit = foldFadeIn(u, 0.16, 0.32);
     }
   } else {
     if (closing) {
       p.f1 = foldCloseCurve(u);
       p.move = foldSmoother(foldRamp(u, 0.05, 0.90));
-      p.innerLit = foldInnerLit(1 - p.f1);
-      p.coverLit = foldSmoother(foldRamp(u, 0.80, 0.90));  // the cover wakes as the magnets take it shut
+      p.innerLit = foldFadeOut(u, 0.60, 0.84);  // as the left half comes over it
+      p.coverLit = foldFadeIn(u, 0.62, 0.86);   // the cover wakes as it comes round
     } else {
       double open = foldOpenCurve(u);
       p.f1 = 1 - open;
       p.move = 1 - foldSmoother(foldRamp(u, 0, 0.85));
-      p.coverLit = 1 - foldRamp(u, 0, 0.06);
-      p.innerLit = foldSmoother(foldRamp(open, 0.05, 0.10));
+      p.coverLit = foldFadeOut(u, 0.02, 0.26);
+      p.innerLit = foldFadeIn(u, 0.22, 0.48);
     }
   }
   return p;

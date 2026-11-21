@@ -174,7 +174,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     top half's back (upright, the hinge at its bottom); a TRIFOLD's left panel folds onto the middle one, then the right
     panel over both (about an axis half a panel's thickness up). The hinge angle follows a hand (an even swing, the
     magnets' snap over the last ~25 degrees and a settle under a degree; opening, the magnets' pop, the swing and the
-    flat detent), the inner screens go dark under ~5 degrees and light past ~12, the cover wakes as it snaps shut. The
+    flat detent), each screen turns off and on as a timed fade of ~0.2-0.25 s, eased and even to the eye (brightness to the 2.2nd
+    power: `foldFadeIn`/`foldFadeOut`), placed where that screen is in view (closing, the inner one dims as the panel
+    comes over it and the cover wakes as it comes round; opening, the reverse), done before the run's flat ends; tied to
+    the hinge's angle, they had dropped to black within the snap's ~40 ms. The
     SceneKit render loop (`FoldStage`, the view's delegate) poses each frame from its own clock and ends the fold; the
     shaders are built ahead (`SimWindow.foldWarm`, from `showTitle` for a folding device, once a process, a second
     later: a tiny fold plays in a 32 pt window at 1% opacity, so a real one finds the same pipelines; before, the first
