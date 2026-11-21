@@ -352,16 +352,30 @@ final class SimWindow {
    * window is hidden until the fold has played. True when
    * a fold animation will play ({@link #foldRun} after the switch); false without a visible window.
    */
-  static boolean foldBegin() {
-    return !headless && Boolean.parseBoolean(System.getProperty("apksim.foldAnimation", "true")) && nativeFoldBegin();
+  static boolean foldBegin(int hinge, float thickness) {
+    return !headless && Boolean.parseBoolean(System.getProperty("apksim.foldAnimation", "true")) && nativeFoldBegin(hinge, thickness);
   }
 
-  /** The displays switched: once the new one has drawn, the overlay folds the device shut or open, as a book, over ms. */
+  /**
+   * The displays switched: once the new one has drawn, the overlay folds the device shut or open over ms, as the
+   * device's hinge (Fold.Hinge's ordinal, given to foldBegin) folds it.
+   */
   static void foldRun(boolean closing, int ms) {
     if (!headless) nativeFoldRun(closing, ms);
   }
 
-  private static native boolean nativeFoldBegin();
+  /**
+   * A fold switches displays: until foldZoom(0), resizes to actual size put the window at its device pixels per point
+   * times ratio (the other panel's pixel density against this one's), so the device keeps its size on the Mac's screen.
+   */
+  static void foldZoom(double ratio) {
+    if (!headless) nativeFoldZoom((float) ratio);
+  }
+
+  /** hinge: Fold.Hinge's ordinal; thickness: one panel's thickness against the open device's height. */
+  private static native boolean nativeFoldBegin(int hinge, float thickness);
+
+  private static native void nativeFoldZoom(float ratio);
 
   private static native void nativeFoldRun(boolean closing, int ms);
 

@@ -229,23 +229,40 @@ In a release, the scripts live in the install folder's `scripts/` (Homebrew:
 | `phone` (default) | 411 × 891 | System bars and gesture navigation |
 | `foldable` | 841 × 701 | System bars and gesture navigation |
 | `pixel-10-pro-fold` | 852 × 883 open, 443 × 970 closed | A folding phone at 390 dpi, with an inner and a cover display (below) |
+| `galaxy-s25`, `galaxy-s25-plus`, `galaxy-s25-ultra` | 384 × 832 | 1080 × 2340 px at 450 dpi, the resolution Samsung ships them at |
+| `galaxy-a56` | 411 × 891 | 1080 × 2340 px at 420 dpi |
+| `galaxy-z-fold7` | 750 × 832 open, 411 × 960 closed | Samsung's book fold (below) |
+| `galaxy-z-flip7` | 411 × 960 open, 361 × 399 closed | Samsung's clamshell: the fold runs across the screen, and the cover display is the 4.1" FlexWindow |
+| `galaxy-z-trifold` | 1080 × 792 open, 411 × 960 closed | Samsung's tri-fold: two folds, at a third and two thirds of the inner display |
 | `tablet` | 1280 × 800 | 2560 × 1600 px, the Nexus 10 profile |
 | `desktop` | 1440 × 900 | No system bars |
 | `tv` | 960 × 540 | 1080p; television UI mode, D-pad, no touchscreen |
 | `watch`, `watch-small`, `watch-large` | 227 × 227, 192 × 192, 240 × 240 | Wear OS: a round screen, watch UI mode, no system bars (below) |
 | `WxH[@density]` | custom | For example `1024x768@1.5` |
 
-**The folding phone** (`pixel-10-pro-fold`):
-- **Displays:** the inner display is 2076 × 2152 px with a fold down its middle, and the cover display 1079 × 2364
-  px. The density is the Pixel 9 Pro Fold emulator's, not measured on the device.
+**Folding phones** (`pixel-10-pro-fold`, `galaxy-z-fold7`, `galaxy-z-flip7`, `galaxy-z-trifold`):
+- **Displays:** each has an inner display and a cover display, at the panels' published pixels. The Pixel's inner
+  display is 2076 × 2152 px with a fold down its middle, its cover display 1079 × 2364 px. The Z Fold7 folds as a
+  book too (1968 × 2184 inside, 1078 × 2520 cover). The Z Flip7 folds top to bottom (1078 × 2520 inside, a 947 ×
+  1047 FlexWindow). The Z TriFold's 10" inner display (2160 × 1584, wider than tall) has two folds and a tablet's
+  320 dpi; its cover display is a phone's. The densities are assumed, not measured on the devices.
 - **Folding:** `--fold open|half|closed` at launch; `fold open|half|closed|toggle|angle DEGREES` or Device > Fold /
   Unfold while it runs. The app gets the display change as on a device.
-- **What the app sees:** Jetpack WindowManager (`WindowInfoTracker`, Compose's adaptive posture) reports the fold,
-  flat or half-opened, through a stand-in `androidx.window.extensions` library. Half-open and rotated is tabletop. A
-  hinge-angle sensor (`TYPE_HINGE_ANGLE`) reports the angle.
-- **Skin:** `--skin pixel-10-pro-fold` (built in) draws the device around the screen, open and closed. The Mac
-  window plays the fold as the device closing like a book: the left half swings over about the hinge, with the cover
-  display on its back.
+- **What the app sees:** Jetpack WindowManager (`WindowInfoTracker`, Compose's adaptive posture) reports the folds,
+  flat or half-opened, through a stand-in `androidx.window.extensions` library: one vertical fold on a book, one
+  horizontal fold on a clamshell, two on the tri-fold. Half-open and rotated is tabletop (on the Flip, half-open
+  upright is). A hinge-angle sensor (`TYPE_HINGE_ANGLE`) reports the angle.
+- **Skins:** `--skin NAME` with the device's name (built in) draws the device around the screen, open and closed.
+- **The fold animation:** the Mac window plays each fold the way the device moves. A book's left half swings over
+  onto the right one, with the cover display on its back. The Flip's bottom half folds up, and the closed phone then
+  turns over to show its FlexWindow. The TriFold folds its left panel in and then its right panel over both. The
+  hinge moves as a hand moves it: an even swing, a magnetic snap shut and a small settle, or the pop of the magnets
+  letting go and the flat detent. The faces are lit by their angle, and the panel edges are drawn at their real
+  thickness. The screens go dark and light up when a real device's do. The window keeps the device's physical size
+  on the Mac's screen through the fold.
+
+**Samsung phones** (`galaxy-s25`, `galaxy-s25-plus`, `galaxy-s25-ultra`, `galaxy-a56`) have built-in skins of the
+same names, with each phone's punch-hole camera reported to the app as its display cutout.
 
 **Watches** (`watch`, `watch-small`, `watch-large`):
 - **What the app sees:** `isScreenRound`, watch UI mode and `android.hardware.type.watch`.
@@ -254,7 +271,7 @@ In a release, the scripts live in the install folder's `scripts/` (Homebrew:
 - **Ambient mode:** `ambient on|off` enters it through a stand-in `com.google.android.wearable` library.
 - **Shape:** `serve` streams the frame with the corners cleared; the Mac window shows a square.
 
-Density is 2 (xhdpi) unless given (the Pixel fold has its own). You can also switch devices while the app runs, from the Device menu or with the
+Density is 2 (xhdpi) unless given (the named phones and folds have their own). You can also switch devices while the app runs, from the Device menu or with the
 `device` command.
 
 ### Launch options

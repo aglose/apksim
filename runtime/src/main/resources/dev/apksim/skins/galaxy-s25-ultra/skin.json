@@ -1,0 +1,10 @@
+{
+  "name": "galaxy-s25-ultra",
+  "title": "Galaxy S25 Ultra",
+  "frame": "frame.png",
+  "screen": { "x": 41, "y": 37, "width": 1080, "height": 2340, "cornerRadius": 71 },
+  "device": "galaxy-s25-ultra",
+  "kind": "phone",
+  "cutout": { "type": "hole", "x": 581, "y": 96, "radius": 31 },
+  "source": { "author": "apksim (drawn by scripts/gen-samsung-skins.java)", "license": "Apache-2.0" }
+}

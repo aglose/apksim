@@ -1,0 +1,14 @@
+{
+  "name": "galaxy-z-flip7",
+  "title": "Galaxy Z Flip7",
+  "frame": "frame.png",
+  "screen": { "x": 58, "y": 54, "width": 1080, "height": 2520, "cornerRadius": 100 },
+  "device": "galaxy-z-flip7",
+  "kind": "foldable",
+  "cutout": { "type": "hole", "x": 598, "y": 117, "radius": 31 },
+  "cover": {
+    "frame": "cover.png",
+    "screen": { "x": 46, "y": 43, "width": 948, "height": 1048, "cornerRadius": 81 }
+  },
+  "source": { "author": "apksim (drawn by scripts/gen-samsung-skins.java)", "license": "Apache-2.0" }
+}

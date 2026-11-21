@@ -115,10 +115,12 @@ public final class FoldExtensions implements WindowExtensions, WindowLayoutCompo
     try {
       WindowManager wm = context.getSystemService(WindowManager.class);
       Rect window = wm.getCurrentWindowMetrics().getBounds();
-      int[] b = Fold.bounds(window.width(), window.height(), wm.getDefaultDisplay().getRotation());
-      if (b != null) {
-        features.add(new FoldingFeature(new Rect(b[0], b[1], b[2], b[3]), FoldingFeature.TYPE_FOLD,
-            Fold.halfOpened() ? FoldingFeature.STATE_HALF_OPENED : FoldingFeature.STATE_FLAT));
+      int[][] folds = Fold.bounds(window.width(), window.height(), wm.getDefaultDisplay().getRotation());
+      if (folds != null) {
+        for (int[] b : folds) {
+          features.add(new FoldingFeature(new Rect(b[0], b[1], b[2], b[3]), FoldingFeature.TYPE_FOLD,
+              Fold.halfOpened() ? FoldingFeature.STATE_HALF_OPENED : FoldingFeature.STATE_FLAT));
+        }
       }
     } catch (RuntimeException e) {
       // Not a window's context (or its window is gone): no features, as the platform answers.

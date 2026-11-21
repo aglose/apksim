@@ -1,0 +1,15 @@
+{
+  "name": "galaxy-z-fold7",
+  "title": "Galaxy Z Fold7",
+  "frame": "frame.png",
+  "screen": { "x": 62, "y": 64, "width": 1968, "height": 2184, "cornerRadius": 56 },
+  "device": "galaxy-z-fold7",
+  "kind": "foldable",
+  "cutout": { "type": "hole", "x": 1617, "y": 120, "radius": 27 },
+  "cover": {
+    "frame": "cover.png",
+    "screen": { "x": 91, "y": 65, "width": 1080, "height": 2520, "cornerRadius": 86 },
+    "cutout": { "type": "hole", "x": 631, "y": 131, "radius": 34 }
+  },
+  "source": { "author": "apksim (drawn by scripts/gen-samsung-skins.java)", "license": "Apache-2.0" }
+}

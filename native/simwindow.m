@@ -116,7 +116,9 @@ enum {
   TAG_BIOMETRICS_NOMATCH, TAG_LAYOUT_BOUNDS, TAG_A11Y_AUDIT, TAG_SOFT_KEYBOARD, TAG_DEVICE_PHONE, TAG_DEVICE_FOLDABLE,
   TAG_DEVICE_TABLET, TAG_DEVICE_DESKTOP, TAG_DEVICE_TV, TAG_NETWORK_ONLINE, TAG_NETWORK_OFFLINE, TAG_NETWORK_3G,
   TAG_NETWORK_LOSSY, TAG_STATUS_BAR, TAG_NAV_BAR, TAG_SAVE_REPLAY, TAG_CAMERA_OFF, TAG_CAMERA_PATTERN, TAG_CAMERA_IMAGE,
-  TAG_SCREENSHOT_SKIN, TAG_DEVICE_PIXEL_FOLD, TAG_FOLD, TAG_WIFI, TAG_CELLULAR,
+  TAG_SCREENSHOT_SKIN, TAG_DEVICE_PIXEL_FOLD, TAG_FOLD, TAG_WIFI, TAG_CELLULAR, TAG_DEVICE_GALAXY_S25,
+  TAG_DEVICE_GALAXY_S25_PLUS, TAG_DEVICE_GALAXY_S25_ULTRA, TAG_DEVICE_GALAXY_A56, TAG_DEVICE_GALAXY_Z_FOLD7,
+  TAG_DEVICE_GALAXY_Z_FLIP7, TAG_DEVICE_GALAXY_Z_TRIFOLD,
   // Device > Skin: None, then one item per stored skin (SimWindow.TAG_SKIN_FIRST).
   TAG_SKIN_FIRST = 200,
 };
@@ -132,6 +134,7 @@ static BOOL selfResizing;  // a resize this file asked for (zoom, nativeResize),
 static float openScale;  // device pixels per point at actual size: the display's density
 static NSWindow *simWindow;
 static NSWindow *foldWindow;  // the fold animation's overlay while one runs (below)
+static float foldScale;        // while a fold switches displays: the other display's zoom (device px per point; 0: none)
 static int launchMode;  // --window, applied once NSApp has finished launching
 static NSRunningApplication *launchedOver;  // the app that was frontmost when this one started
 
@@ -271,6 +274,15 @@ static void buildMenus(NSMenu *bar) {
   addItem(type, @"Desktop", TAG_DEVICE_DESKTOP, @"4", cmd | shift);
   addItem(type, @"TV", TAG_DEVICE_TV, @"5", cmd | shift);
   addItem(type, @"Pixel 10 Pro Fold", TAG_DEVICE_PIXEL_FOLD, @"6", cmd | shift);
+  // Samsung's phones and its three ways of folding (a book, a clamshell, a tri-fold).
+  [type addItem:[NSMenuItem separatorItem]];
+  addItem(type, @"Galaxy S25", TAG_DEVICE_GALAXY_S25, nil, 0);
+  addItem(type, @"Galaxy S25+", TAG_DEVICE_GALAXY_S25_PLUS, nil, 0);
+  addItem(type, @"Galaxy S25 Ultra", TAG_DEVICE_GALAXY_S25_ULTRA, nil, 0);
+  addItem(type, @"Galaxy A56", TAG_DEVICE_GALAXY_A56, nil, 0);
+  addItem(type, @"Galaxy Z Fold7", TAG_DEVICE_GALAXY_Z_FOLD7, @"7", cmd | shift);
+  addItem(type, @"Galaxy Z Flip7", TAG_DEVICE_GALAXY_Z_FLIP7, @"8", cmd | shift);
+  addItem(type, @"Galaxy Z TriFold", TAG_DEVICE_GALAXY_Z_TRIFOLD, @"9", cmd | shift);
   typeItem.submenu = type;
   [device addItem:typeItem];
   // Stored skins (apksim skin list), filled in by the Java side (nativeSetSkinMenu).
@@ -984,8 +996,10 @@ static void sizeWindow(BOOL actualSize) {
   NSRect visible = win.screen.visibleFrame;
   NSRect frame = win.frame;
   CGFloat titleBar = frame.size.height - [win contentRectForFrameRect:frame].size.height;
-  // Another device opens at actual size, and a display too big for the Mac's screen (a TV, say) zoomed out to fit.
-  if (actualSize) deviceScale = openScale;
+  // Another device opens at actual size, and a display too big for the Mac's screen (a TV, say) zoomed out to fit. A
+  // fold's other display keeps the device's size on the Mac's screen: the zoom times its panel's density against the
+  // other's (the Galaxy Z TriFold's cover panel has 1.57 times the pixels per inch of its inner one).
+  if (actualSize) deviceScale = foldScale > 0 ? foldScale : openScale;
   float fit = MAX(h / (visible.size.height - titleBar), w / visible.size.width);
   if (visible.size.width > 0 && fit > deviceScale) deviceScale = fit;
   NSSize size = NSMakeSize(w / deviceScale, h / deviceScale);
@@ -1133,16 +1147,19 @@ static void layoutAfterZoom(void) {
 
 // A folding device closing or opening (`fold`): the display changes size at once underneath, as on a device, and
 // meanwhile the window is hidden and a transparent overlay plays the fold with the device as it is drawn (its skin's
-// frame around the screen, or the bare screen without one). The device is a book: the right half stays face up and
-// slides to where the closed device will be; the left half swings about the hinge towards the viewer and comes down
-// on it, the inner display's left half on its front and the closed device (the cover display in its frame) on its
-// back, with the rail's thickness at its outer edge. Opening is the same run backwards. nativeFoldBegin takes the
-// device's picture before the switch; nativeFoldRun waits for the new display's first frames, takes its picture and
-// plays. The window is resized about its centre meanwhile (sizeWindow), so the device folds in place. Nothing here
-// runs without a visible window.
-static CGImageRef foldOldImage;
+// frame around the screen, or the bare screen without one): native/foldanim.m builds the layers, for a book, a
+// clamshell or a tri-fold. nativeFoldBegin takes the device's pictures (lit, and with its screen off) before the
+// switch; nativeFoldRun waits for the new display's first frames, takes its pictures and plays. The window is resized
+// about its centre meanwhile (sizeWindow), at the other panel's pixel density (nativeFoldZoom), so the device folds in
+// place at its own size. Nothing here runs without a visible window.
+#include "foldanim.m"
+
+static CGImageRef foldOldImage, foldOldDark;  // the device before the switch, lit and with its screen off
 static NSRect foldOldRect;  // the old device on the Mac's screen, in the overlay's coordinates
+static CGRect foldOldScreen;  // its screen in its picture, as fractions, top down
 static long foldToken;      // a newer fold supersedes one still waiting or playing
+static int foldHinge;       // Fold.Hinge's ordinal (FOLD_BOOK, FOLD_CLAMSHELL, FOLD_TRIFOLD)
+static CGFloat foldThickness;
 
 static CGImageRef surfaceImage(IOSurfaceRef s) {
   if (!s) return NULL;
@@ -1168,10 +1185,23 @@ static void addRoundedRect(CGContextRef ctx, CGRect r, CGFloat radius) {
   CGPathRelease(p);
 }
 
-// The device as the window shows it now, in device pixels: the screen's picture, inside the skin's frame when one is
-// on (black glass behind it, the screen clipped to its corners), transparent outside the device.
-static CGImageRef deviceImage(void) {
-  CGImageRef screen = surfaceImage((__bridge IOSurfaceRef)frameLayer.contents);
+// A picture of devW x devH black glass: the screen switched off.
+static CGImageRef blackImage(size_t w, size_t h) {
+  CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGContextRef ctx = CGBitmapContextCreate(NULL, w, h, 8, 0, cs, kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
+  CGColorSpaceRelease(cs);
+  if (!ctx) return NULL;
+  CGContextSetRGBFillColor(ctx, 0.01, 0.01, 0.015, 1);
+  CGContextFillRect(ctx, CGRectMake(0, 0, w, h));
+  CGImageRef img = CGBitmapContextCreateImage(ctx);
+  CGContextRelease(ctx);
+  return img;
+}
+
+// The device as the window shows it now, in device pixels: the screen's picture (or, !lit, the screen off), inside the
+// skin's frame when one is on (black glass behind it, the screen clipped to its corners), transparent outside the device.
+static CGImageRef deviceImage(BOOL lit) {
+  CGImageRef screen = lit ? surfaceImage((__bridge IOSurfaceRef)frameLayer.contents) : blackImage(devW, devH);
   if (!screen || !skinOn || !skinFrame) return screen;
   size_t W = skinOuterW, H = skinOuterH;
   CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
@@ -1188,7 +1218,7 @@ static CGImageRef deviceImage(void) {
   CGContextClip(ctx);
   CGContextDrawImage(ctx, sr, screen);
   // The status bar and gesture handle, which are layers over the screen (laid out top down, in points).
-  if (barsLayer) {
+  if (barsLayer && lit) {
     CGContextTranslateCTM(ctx, sr.origin.x, sr.origin.y + sr.size.height);
     CGContextScaleCTM(ctx, deviceScale, -deviceScale);
     [barsLayer renderInContext:ctx];
@@ -1212,6 +1242,12 @@ static NSRect foldDeviceRect(void) {
   return r;
 }
 
+// Where the screen is in deviceImage's picture, as fractions of it, top down.
+static CGRect deviceScreen(void) {
+  if (!skinOn || !skinFrame || skinOuterW <= 0 || skinOuterH <= 0) return CGRectMake(0, 0, 1, 1);
+  return CGRectMake((CGFloat)skinScreenX / skinOuterW, (CGFloat)skinScreenY / skinOuterH, (CGFloat)devW / skinOuterW, (CGFloat)devH / skinOuterH);
+}
+
 static void foldEnd(void) {
   if (foldWindow && getenv("APKSIM_FOLD_DEBUG")) NSLog(@"fold end: window shown again");
   if (foldWindow) {
@@ -1220,229 +1256,34 @@ static void foldEnd(void) {
     foldWindow = nil;
   }
   if (foldOldImage) CGImageRelease(foldOldImage);
-  foldOldImage = NULL;
-}
-
-// One property's run from its value with the device open to its value closed, over a part of the fold (start and
-// length as fractions of a closing); an opening plays the same part backwards.
-static CABasicAnimation *foldAnim(NSString *key, id open, id closed, double start, double length, BOOL closing, double total, CFTimeInterval t0) {
-  CABasicAnimation *a = [CABasicAnimation animationWithKeyPath:key];
-  a.fromValue = closing ? open : closed;
-  a.toValue = closing ? closed : open;
-  a.beginTime = t0 + (closing ? start : 1 - start - length) * total;
-  a.duration = length * total;
-  a.fillMode = kCAFillModeBoth;
-  a.removedOnCompletion = NO;
-  a.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-  return a;
-}
-
-static CALayer *foldShade(CGRect frame) {
-  CALayer *shade = [CALayer layer];
-  shade.frame = frame;
-  shade.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
-  shade.opacity = 0;
-  return shade;
-}
-
-// How far in from the picture's left edge the device starts, half way up, as a fraction of its width (a skin's frame
-// leaves a margin for its buttons); *rounded: the picture's corner is empty (a device's shape, not a bare screen).
-static CGFloat foldLeftInset(CGImageRef img, BOOL *rounded) {
-  size_t w = CGImageGetWidth(img), h = CGImageGetHeight(img);
-  *rounded = NO;
-  if (w == 0 || h == 0 || w > 8192) return 0;
-  CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-  CGContextRef ctx = CGBitmapContextCreate(NULL, w, 1, 8, w * 4, cs, (CGBitmapInfo)kCGImageAlphaPremultipliedLast);
-  CGColorSpaceRelease(cs);
-  if (!ctx) return 0;
-  uint8_t *px = CGBitmapContextGetData(ctx);
-  CGContextDrawImage(ctx, CGRectMake(0, -(CGFloat)(h / 2), w, h), img);  // the middle row
-  size_t x = 0;
-  while (x < w / 8 && px[x * 4 + 3] < 128) x++;
-  memset(px, 0, w * 4);
-  CGContextDrawImage(ctx, CGRectMake(0, 1 - (CGFloat)h, w, h), img);  // the top row
-  *rounded = px[3] < 128;
-  CGContextRelease(ctx);
-  return (CGFloat)x / w;
-}
-
-// The fold's layers, for a parent in the overlay's coordinates moved by -origin: the open device's picture at
-// openRect, the closed one's at closedRect, animated from t0 over `seconds`.
-static CALayer *foldScene(CGImageRef openImage, CGImageRef closedImage, CGRect openRect, CGRect closedRect, CGPoint origin,
-                          BOOL closing, double seconds, CFTimeInterval t0) {
-  CGFloat Wh = openRect.size.width / 2, H = openRect.size.height;
-  CGFloat thick = H * 0.034;  // one half's thickness: 5.2 of 155 mm
-  // Perspective about the middle of where the device is, open and closed.
-  CALayer *stage = [CALayer layer];
-  CGRect all = CGRectUnion(openRect, closedRect);
-  stage.frame = CGRectOffset(all, -origin.x, -origin.y);
-  CATransform3D perspective = CATransform3DIdentity;
-  perspective.m34 = -1.0 / (2.4 * openRect.size.width);
-  stage.sublayerTransform = perspective;
-  CGPoint so = all.origin;  // the stage's own origin in the overlay
-
-  // The device: its origin is the hinge's middle. Closed, the right half is the closed device's rectangle, pushed
-  // back by a half's thickness so the cover display on top of it is in the screen's plane (no perspective left).
-  CATransformLayer *device = [CATransformLayer layer];
-  device.bounds = CGRectMake(-Wh, -H / 2, 2 * Wh, H);
-  CGPoint openAt = CGPointMake(CGRectGetMidX(openRect) - so.x, CGRectGetMidY(openRect) - so.y);
-  CGPoint closedAt = CGPointMake(CGRectGetMinX(closedRect) - so.x, CGRectGetMidY(closedRect) - so.y);
-  CATransform3D closedShape = CATransform3DMakeScale(closedRect.size.width / Wh, closedRect.size.height / H, 1);
-  closedShape.m43 = -thick;
-  device.position = closing ? openAt : closedAt;
-  [stage addSublayer:device];
-  [device addAnimation:foldAnim(@"position", [NSValue valueWithPoint:openAt], [NSValue valueWithPoint:closedAt], 0, 1, closing, seconds, t0) forKey:@"move"];
-  [device addAnimation:foldAnim(@"transform", [NSValue valueWithCATransform3D:CATransform3DIdentity],
-                                [NSValue valueWithCATransform3D:closedShape], 0, 1, closing, seconds, t0) forKey:@"shape"];
-
-  // The right half: face up throughout, in the left half's shadow as that comes over.
-  CALayer *right = [CALayer layer];
-  right.frame = CGRectMake(0, -H / 2, Wh, H);
-  right.contents = (__bridge id)openImage;
-  right.contentsRect = CGRectMake(0.5, 0, 0.5, 1);
-  right.contentsGravity = kCAGravityResize;
-  right.edgeAntialiasingMask = kCALayerRightEdge | kCALayerBottomEdge | kCALayerTopEdge;  // not the hinge: no seam
-  [device addSublayer:right];
-  CAGradientLayer *shadow = [CAGradientLayer layer];
-  shadow.frame = right.bounds;
-  shadow.startPoint = CGPointMake(0, 0.5);
-  shadow.endPoint = CGPointMake(1, 0.5);
-  shadow.colors = @[(id)[NSColor colorWithWhite:0 alpha:0.85].CGColor, (id)[NSColor colorWithWhite:0 alpha:0.25].CGColor];
-  shadow.mask = [CALayer layer];  // the half's own shape: no shadow on the transparent corners
-  shadow.mask.frame = shadow.bounds;
-  shadow.mask.contents = (__bridge id)openImage;
-  shadow.mask.contentsRect = right.contentsRect;
-  shadow.mask.contentsGravity = kCAGravityResize;
-  shadow.opacity = 0;
-  [right addSublayer:shadow];
-  // Covered at the end but for its square corners at the hinge, which the closed device's round ones would show.
-  [right addAnimation:foldAnim(@"opacity", @1, @0, 0.86, 0.14, closing, seconds, t0) forKey:@"cover"];
-  [shadow addAnimation:foldAnim(@"opacity", @0, @1, 0.1, 0.6, closing, seconds, t0) forKey:@"shade"];
-
-  // The left half: turns half a turn about the hinge, its outer edge towards the viewer.
-  CATransformLayer *left = [CATransformLayer layer];
-  left.bounds = CGRectMake(-Wh, -H / 2, Wh, H);
-  left.anchorPoint = CGPointMake(1, 0.5);
-  left.position = CGPointZero;
-  [device addSublayer:left];
-  [left addAnimation:foldAnim(@"transform.rotation.y", @0, @(M_PI), 0, 1, closing, seconds, t0) forKey:@"fold"];
-  CALayer *front = [CALayer layer];
-  front.frame = left.bounds;
-  front.contents = (__bridge id)openImage;
-  front.contentsRect = CGRectMake(0, 0, 0.5, 1);
-  front.contentsGravity = kCAGravityResize;
-  front.doubleSided = NO;
-  front.edgeAntialiasingMask = kCALayerLeftEdge | kCALayerBottomEdge | kCALayerTopEdge;
-  [left addSublayer:front];
-  CALayer *frontShade = foldShade(front.bounds);
-  frontShade.mask = [CALayer layer];
-  frontShade.mask.frame = front.bounds;
-  frontShade.mask.contents = (__bridge id)openImage;
-  frontShade.mask.contentsRect = front.contentsRect;
-  frontShade.mask.contentsGravity = kCAGravityResize;
-  [front addSublayer:frontShade];
-  [frontShade addAnimation:foldAnim(@"opacity", @0, @0.7, 0, 0.5, closing, seconds, t0) forKey:@"shade"];
-  // Its back: the closed device, a half's thickness behind the front and facing the other way.
-  CALayer *back = [CALayer layer];
-  back.frame = left.bounds;
-  back.contents = (__bridge id)closedImage;
-  back.contentsGravity = kCAGravityResize;
-  back.doubleSided = NO;
-  back.zPosition = -thick;
-  back.transform = CATransform3DMakeRotation(M_PI, 0, 1, 0);
-  [left addSublayer:back];
-  CALayer *backShade = foldShade(back.bounds);
-  backShade.mask = [CALayer layer];
-  backShade.mask.frame = back.bounds;
-  backShade.mask.contents = (__bridge id)closedImage;
-  backShade.mask.contentsGravity = kCAGravityResize;
-  [back addSublayer:backShade];
-  [backShade addAnimation:foldAnim(@"opacity", @0, @0.8, 0.5, 0.5, !closing, seconds, t0) forKey:@"shade"];
-  // The rail at its outer edge, between the two faces: seen while the half is on its way over.
-  BOOL rounded;
-  CGFloat inset = foldLeftInset(openImage, &rounded) * 2 * Wh, corner = rounded ? H * 0.07 : 0;
-  CAGradientLayer *rail = [CAGradientLayer layer];
-  rail.bounds = CGRectMake(0, 0, thick, H - 2 * corner);
-  rail.position = CGPointMake(-Wh + inset, 0);
-  rail.zPosition = -thick / 2;
-  rail.startPoint = CGPointMake(0, 0.5);
-  rail.endPoint = CGPointMake(1, 0.5);
-  rail.colors = @[(id)[NSColor colorWithSRGBRed:0.55 green:0.54 blue:0.52 alpha:1].CGColor,
-                  (id)[NSColor colorWithSRGBRed:0.86 green:0.85 blue:0.82 alpha:1].CGColor,
-                  (id)[NSColor colorWithSRGBRed:0.48 green:0.47 blue:0.45 alpha:1].CGColor];
-  rail.cornerRadius = rounded ? thick / 2 : 0;
-  rail.doubleSided = NO;
-  rail.transform = CATransform3DMakeRotation(-M_PI_2, 0, 1, 0);
-  [left addSublayer:rail];
-  return stage;
-}
-
-// APKSIM_FOLD_FRAMES=DIR: the animation's frames rendered off screen into DIR as PNGs (fold-closing-00.png ...), on
-// grey, since scripts cannot see the overlay window.
-static void foldDump(CGImageRef openImage, CGImageRef closedImage, CGRect openRect, CGRect closedRect, BOOL closing, const char *dir) {
-  CGRect crop = CGRectIntegral(CGRectInset(CGRectUnion(openRect, closedRect), -openRect.size.width * 0.35, -openRect.size.height * 0.2));
-  size_t w = crop.size.width, h = crop.size.height;
-  id<MTLDevice> gpu = MTLCreateSystemDefaultDevice();
-  if (!gpu || w == 0 || h == 0) return;
-  MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
-  d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-  d.storageMode = MTLStorageModeShared;
-  id<MTLTexture> tex = [gpu newTextureWithDescriptor:d];
-  id<MTLCommandQueue> queue = [gpu newCommandQueue];
-  CARenderer *r = [CARenderer rendererWithMTLTexture:tex options:@{kCARendererMetalCommandQueue : queue}];
-  CALayer *root = [CALayer layer];
-  root.frame = CGRectMake(0, 0, w, h);
-  root.backgroundColor = [NSColor colorWithWhite:0.88 alpha:1].CGColor;
-  CFTimeInterval t0 = CACurrentMediaTime() + 1;
-  [CATransaction begin];
-  [root addSublayer:foldScene(openImage, closedImage, openRect, closedRect, crop.origin, closing, 1.0, t0)];
-  [CATransaction commit];
-  r.layer = root;
-  r.bounds = root.bounds;
-  [CATransaction flush];
-  int frames = 13;
-  NSMutableData *pixels = [NSMutableData dataWithLength:w * h * 4];
-  for (int i = 0; i < frames; i++) {
-    [r beginFrameAtTime:t0 + (double)i / (frames - 1) timeStamp:NULL];
-    [r addUpdateRect:r.bounds];
-    [r render];
-    [r endFrame];
-    id<MTLCommandBuffer> sync = [queue commandBuffer];
-    [sync commit];
-    [sync waitUntilCompleted];
-    [tex getBytes:pixels.mutableBytes bytesPerRow:w * 4 fromRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0];
-    uint8_t *px = pixels.mutableBytes, tmp[w * 4];  // the texture's rows are bottom up
-    for (size_t y = 0; y < h / 2; y++) {
-      memcpy(tmp, px + y * w * 4, w * 4);
-      memcpy(px + y * w * 4, px + (h - 1 - y) * w * 4, w * 4);
-      memcpy(px + (h - 1 - y) * w * 4, tmp, w * 4);
-    }
-    CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-    CGContextRef ctx = CGBitmapContextCreate(pixels.mutableBytes, w, h, 8, w * 4, cs, kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
-    CGColorSpaceRelease(cs);
-    CGImageRef img = CGBitmapContextCreateImage(ctx);
-    CGContextRelease(ctx);
-    NSString *path = [NSString stringWithFormat:@"%s/fold-%s-%02d.png", dir, closing ? "closing" : "opening", i];
-    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithCGImage:img];
-    [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES];
-    CGImageRelease(img);
-  }
-  r.layer = nil;
+  if (foldOldDark) CGImageRelease(foldOldDark);
+  foldOldImage = foldOldDark = NULL;
 }
 
 static void foldPlay(BOOL closing, double seconds) {
-  CGImageRef newImage = deviceImage();
-  if (!newImage || !foldOldImage || !foldWindow) {
+  CGImageRef newImage = deviceImage(YES), newDark = deviceImage(NO);
+  if (!newImage || !newDark || !foldOldImage || !foldOldDark || !foldWindow) {
     if (newImage) CGImageRelease(newImage);
+    if (newDark) CGImageRelease(newDark);
     foldEnd();
     return;
   }
   NSRect newRect = foldDeviceRect();
-  if (getenv("APKSIM_FOLD_DEBUG")) NSLog(@"fold play: %s over %.2f s, new device %@, picture %zux%zu", closing ? "closing" : "opening", seconds, NSStringFromRect(newRect), CGImageGetWidth(newImage), CGImageGetHeight(newImage));
-  CGImageRef openImage = closing ? foldOldImage : newImage, closedImage = closing ? newImage : foldOldImage;
-  NSRect openRect = closing ? foldOldRect : newRect, closedRect = closing ? newRect : foldOldRect;
+  if (getenv("APKSIM_FOLD_DEBUG")) NSLog(@"fold play: %s, hinge %d, over %.2f s, new device %@, picture %zux%zu", closing ? "closing" : "opening", foldHinge, seconds, NSStringFromRect(newRect), CGImageGetWidth(newImage), CGImageGetHeight(newImage));
+  FoldSpec f;
+  f.hinge = foldHinge;
+  f.thickness = foldThickness;
+  f.openLit = closing ? foldOldImage : newImage;
+  f.openDark = closing ? foldOldDark : newDark;
+  f.closedLit = closing ? newImage : foldOldImage;
+  f.closedDark = closing ? newDark : foldOldDark;
+  f.openRect = closing ? foldOldRect : newRect;
+  f.closedRect = closing ? newRect : foldOldRect;
+  f.openScreen = closing ? foldOldScreen : deviceScreen();
+  f.closing = closing;
+  f.seconds = seconds;
   const char *dump = getenv("APKSIM_FOLD_FRAMES");
-  if (dump) foldDump(openImage, closedImage, openRect, closedRect, closing, dump);
+  if (dump) foldDump(&f, dump, 13);
   CALayer *root = foldWindow.contentView.layer;
   [CATransaction begin];
   [CATransaction setDisableActions:YES];
@@ -1450,15 +1291,16 @@ static void foldPlay(BOOL closing, double seconds) {
   [CATransaction setCompletionBlock:^{
     if (token == foldToken) foldEnd();
   }];
-  CALayer *scene = foldScene(openImage, closedImage, openRect, closedRect, CGPointZero, closing, seconds, CACurrentMediaTime());
+  CALayer *scene = foldScene(&f, CGPointZero, CACurrentMediaTime());
   root.sublayers = nil;
   [root addSublayer:scene];
   [CATransaction commit];
   CGImageRelease(newImage);
+  CGImageRelease(newDark);
 }
 
 // Before the display changes: 1 when an animation will play (a visible window with a frame on it).
-JNIEXPORT jboolean JNICALL Java_dev_apksim_SimWindow_nativeFoldBegin(JNIEnv *env, jclass c) {
+JNIEXPORT jboolean JNICALL Java_dev_apksim_SimWindow_nativeFoldBegin(JNIEnv *env, jclass c, jint hinge, jfloat thickness) {
   __block BOOL ok = NO;
   dispatch_semaphore_t done = dispatch_semaphore_create(0);
   onMain(^{
@@ -1466,8 +1308,12 @@ JNIEXPORT jboolean JNICALL Java_dev_apksim_SimWindow_nativeFoldBegin(JNIEnv *env
     foldEnd();
     NSWindow *win = simWindow;
     if (win && win.visible && !win.miniaturized && !(win.styleMask & NSWindowStyleMaskFullScreen) && win.screen) {
-      foldOldImage = deviceImage();
-      if (foldOldImage) {
+      foldHinge = hinge;
+      foldThickness = thickness;
+      foldOldImage = deviceImage(YES);
+      foldOldDark = deviceImage(NO);
+      foldOldScreen = deviceScreen();
+      if (foldOldImage && foldOldDark) {
         foldWindow = [[NSWindow alloc] initWithContentRect:win.screen.frame styleMask:NSWindowStyleMaskBorderless
                                                    backing:NSBackingStoreBuffered defer:NO];
         foldWindow.releasedWhenClosed = NO;
@@ -1500,6 +1346,13 @@ JNIEXPORT jboolean JNICALL Java_dev_apksim_SimWindow_nativeFoldBegin(JNIEnv *env
   });
   dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
   return ok;
+}
+
+// A fold is switching displays: until it is done (ratio 0), the window's actual size is this zoom times ratio, the
+// other panel's pixel density against this one's (DeviceControls' fold): the display's resize and the skin's frame
+// for it both size the window.
+JNIEXPORT void JNICALL Java_dev_apksim_SimWindow_nativeFoldZoom(JNIEnv *env, jclass c, jfloat ratio) {
+  onMain(^{ foldScale = ratio > 0 ? MIN(MAX(deviceScale * ratio, openScale / 2.5f), openScale * 4) : 0; });
 }
 
 // After the display changed: plays once the new display has drawn two frames (the first after a recreate may be

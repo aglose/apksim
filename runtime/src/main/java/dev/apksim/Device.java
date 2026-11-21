@@ -14,7 +14,7 @@ record Device(String name, String kind, int widthDp, int heightDp, float density
     this(name, kind, widthDp, heightDp, density, 0, 0);
   }
 
-  private static final Device[] ALL = {
+  private static final Device[] PRESETS = {
     new Device("phone", "phone", 411, 891, 2f),
     new Device("foldable", "foldable", 841, 701, 2f),
     new Device("tablet", "tablet", 1280, 800, 2f),
@@ -23,8 +23,21 @@ record Device(String name, String kind, int widthDp, int heightDp, float density
     new Device("watch", "watch", 227, 227, 2f),  // 454 px round, a Wear OS watch
     new Device("watch-small", "watch", 192, 192, 2f),
     new Device("watch-large", "watch", 240, 240, 2f),
-    Fold.devices().get(0),  // pixel-10-pro-fold, open: `fold` and --fold switch to its cover display
+    // Samsung's phones at the resolution they ship with (FHD+: the S25+ and Ultra panels are 1440x3120, scaled to
+    // 1080x2340 unless the user picks WQHD+, which keeps the same dp), as Samsung sets them; not read from devices.
+    new Device("galaxy-s25", "phone", 384, 832, 450 / 160f, 1080, 2340),
+    new Device("galaxy-s25-plus", "phone", 384, 832, 450 / 160f, 1080, 2340),
+    new Device("galaxy-s25-ultra", "phone", 384, 832, 450 / 160f, 1080, 2340),
+    new Device("galaxy-a56", "phone", 411, 891, 420 / 160f, 1080, 2340),
   };
+
+  private static final Device[] ALL = all();
+
+  private static Device[] all() {
+    List<Device> l = new ArrayList<>(List.of(PRESETS));
+    l.addAll(Fold.devices());  // pixel-10-pro-fold and the Galaxy Z devices, open: `fold` and --fold switch to the cover display
+    return l.toArray(new Device[0]);
+  }
 
   /** The device the app runs on now: --device at launch, then the `device` command or the Device Type menu. */
   private static volatile Device current;

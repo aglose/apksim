@@ -18,7 +18,7 @@ import kotlinx.coroutines.launch
 /**
  * apksim://fold: the fold as apps read it, through Jetpack WindowManager's WindowInfoTracker: "fold: none" on a
  * device without one or a closed one, else its state, orientation and bounds in the window ("fold: flat vertical
- * 1038,0-1038,2152"), with the window's size in dp, how many layouts were heard, and the hinge-angle sensor's last
+ * 1038,0-1038,2152"; a tri-fold's two joined by " | "), with the window's size in dp, how many layouts were heard, and the hinge-angle sensor's last
  * value ("hinge: 180", or "hinge: no sensor"). Not declared to handle size
  * changes, so folding recreates it, as most apps (apksim: `--device pixel-10-pro-fold`, `fold open|half|closed`).
  */
@@ -58,12 +58,13 @@ class FoldActivity : Activity() {
     window.text = "window: ${c.screenWidthDp}x${c.screenHeightDp} dp"
     scope.launch {
       WindowInfoTracker.getOrCreate(this@FoldActivity).windowLayoutInfo(this@FoldActivity).collect { info ->
-        val f = info.displayFeatures.filterIsInstance<FoldingFeature>().firstOrNull()
-        fold.text = if (f == null) "fold: none" else {
+        // A tri-fold has two: each after the first follows " | ".
+        val folds = info.displayFeatures.filterIsInstance<FoldingFeature>()
+        fold.text = if (folds.isEmpty()) "fold: none" else "fold: " + folds.joinToString(" | ") { f ->
           val state = if (f.state == FoldingFeature.State.HALF_OPENED) "half-opened" else "flat"
           val orientation = if (f.orientation == FoldingFeature.Orientation.VERTICAL) "vertical" else "horizontal"
           val b = f.bounds
-          "fold: $state $orientation ${b.left},${b.top}-${b.right},${b.bottom}"
+          "$state $orientation ${b.left},${b.top}-${b.right},${b.bottom}"
         }
         heard.text = "layouts: ${++updates}"
       }

@@ -50,7 +50,8 @@ final class Session {
   private static final int MIN_IN_FLIGHT = 2;
   /** Bytes sent and not yet acknowledged, past the first {@link #MIN_IN_FLIGHT} frames: a slow link sees current frames. */
   private static final long IN_FLIGHT_BYTES = 1 << 20;
-  static final List<String> DEVICES = List.of("phone", "foldable", "tablet", "desktop", "tv", "watch", "watch-small", "watch-large", "pixel-10-pro-fold");
+  static final List<String> DEVICES = List.of("phone", "foldable", "tablet", "desktop", "tv", "watch", "watch-small", "watch-large", "pixel-10-pro-fold",
+      "galaxy-s25", "galaxy-s25-plus", "galaxy-s25-ultra", "galaxy-a56", "galaxy-z-fold7", "galaxy-z-flip7", "galaxy-z-trifold");
 
   final String id;
   final Catalog.App app;
