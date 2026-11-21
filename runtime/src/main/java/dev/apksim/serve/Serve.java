@@ -842,6 +842,9 @@ public final class Serve {
    */
   List<Path> beamSiblings(String build, String site, Path apk) {
     if (build == null || site == null || site.isEmpty() || apk == null) return List.of();
+    // Issue 583: a build that already has its own translated classes (and its identity) needs no sibling's, and
+    // reading its signers means reading the whole APK, ~1.5 s of every start of a build run before.
+    if (hasOwnClasses(beamCache(build))) return List.of();
     String id;
     try {
       List<String> certs = ApkSigners.of(apk).certs();
@@ -884,6 +887,20 @@ public final class Serve {
       return out;
     } catch (IOException | RuntimeException e) {
       return List.of();
+    }
+  }
+
+  /** Whether a build's cache holds its identity and at least one saved pack of translated classes. */
+  private static boolean hasOwnClasses(Path dir) {
+    try {
+      if (!Files.isRegularFile(dir.resolve("identity"), java.nio.file.LinkOption.NOFOLLOW_LINKS)) return false;
+      Path classes = dir.resolve("classes");
+      if (!Files.isDirectory(classes, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return false;
+      try (var w = Files.walk(classes, 3)) {
+        return w.anyMatch(f -> f.getFileName().toString().endsWith(".pack"));
+      }
+    } catch (IOException | RuntimeException e) {
+      return false;
     }
   }
 
