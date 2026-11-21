@@ -257,8 +257,10 @@ In a release, the scripts live in the install folder's `scripts/` (Homebrew:
   onto the right one, with the cover display on its back. The Flip's bottom half folds up, and the closed phone then
   turns over to show its FlexWindow. The TriFold folds its left panel in and then its right panel over both. The
   hinge moves as a hand moves it: an even swing, a magnetic snap shut and a small settle, or the pop of the magnets
-  letting go and the flat detent. The faces are lit by their angle, and the panel edges are drawn at their real
-  thickness. The screens go dark and light up when a real device's do. The window keeps the device's physical size
+  letting go and the flat detent. It is rendered in 3D: each panel is a solid slab of the device's outline and real
+  thickness, with machined metal sides in the device's colour, its glass back and a hinge barrel, lit by a studio
+  light so that metal and glass reflect and the swinging half casts its shadow. The screens glow, going dark and
+  lighting up when a real device's do. The window keeps the device's physical size
   on the Mac's screen through the fold.
 
 **Samsung phones** (`galaxy-s25`, `galaxy-s25-plus`, `galaxy-s25-ultra`, `galaxy-a56`) have built-in skins of the

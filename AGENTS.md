@@ -158,23 +158,25 @@ Read README.md for results and limits; this file covers how to work on the code.
     the TriFold). The Mac window plays the fold (`native/foldanim.m`, included by `simwindow.m`'s "fold animation";
     `SimWindow.foldBegin`/`foldRun` around the fold's reshape, given the hinge and thickness): the device's picture,
     lit and with its screen off (its skin's frame around the screen, status bar included; `deviceImage`), goes on a
-    transparent overlay window and the window itself is hidden (alpha 0); once the new display has drawn two frames,
-    Core Animation layers play it by the hinge: a BOOK's left half turns half a turn about the hinge towards the
-    viewer, the cover display on its back, onto the right half; a CLAMSHELL's bottom half folds up onto the top one
-    and the closed phone then turns over about its vertical axis, lifted towards the viewer on the way, to show the
-    cover display on the top half's back (upright, the hinge at its bottom, as the Flip's FlexWindow is); a TRIFOLD's
-    left panel folds onto the middle one, then the right panel, the cover display on its back, over both (about an
-    axis half a panel's thickness up, so it lands on the left one's back). Every property is a keyframe track sampled
-    from one pose per frame (`foldPoseAt`): the hinge angle follows a hand (an even swing from rest, then the magnets'
-    snap shut over the last ~25 degrees and a settle under a degree; opening, the magnets' pop, the swing and the flat
-    detent's last ~12 degrees), each face is darkened and given a glint by its normal against a light above and to
-    the left (`foldLight`), faces near a closing hinge darken as they close in, the inner screens go dark under ~11
-    degrees and light past ~25, the cover lights once shut and goes dark as it opens, panel edges are rails of the
-    panel's real thickness: walls along the skin's body outline (skin.json's `fold`: `body`, `edge` colour, `keys`),
-    straight runs and each corner in eight steps, cut at the hinges, on the panel they belong to, each lit by its
-    own normal, with machined chamfers and the keys standing proud; a panel's back without a display is the skin's
-    `back.png` (the open device seen from behind) through its own mirrored slice, else plain glass; the inner screens
-    are hidden once pressed together. `Skinning.foldLook` hands the back's PNG, colour and geometry to `foldBegin`. Openings are their
+    transparent overlay window (above the menu bar: the device nears the viewer as it turns) and the window itself is
+    hidden (alpha 0); once the new display has drawn two frames, an `SCNView` over the whole overlay plays it in
+    SceneKit, with a depth buffer (Core Animation's layer sorting let panels pop through each other and sliced them where
+    they met; the first version was layers): each panel is an `SCNShape` extruded from the skin's body outline
+    (skin.json's `fold.body`: rounded outer corners, square at a hinge) by its real thickness, chamfered with a rounded
+    profile, the screen's picture on a flush flat face over its front (two panels meet at a hinge with no seam), its back
+    the cover display or `back.png`'s slice, its sides physically based metal in `fold.edge`'s colour; keys are chamfered
+    boxes; each hinge is a barrel (`foldBarrel`, rebuilt per pose) filling the wedge between the panels' ends to the
+    hinge's angle. A studio environment and a shadow-casting key light light it; screens are their dark picture plus an
+    emission (the lit picture less the dark one) scaled by how lit they are. The camera sits at the open device's centre
+    with an off-centre frustum that draws the plane z 0 1:1 onto the overlay. Choreography (`foldPoseAt`): a BOOK's left
+    half turns half a turn about the hinge towards the viewer onto the right half; a CLAMSHELL's bottom half folds up and
+    the closed phone then turns over about its vertical axis, lifted towards the viewer, to show the cover display on the
+    top half's back (upright, the hinge at its bottom); a TRIFOLD's left panel folds onto the middle one, then the right
+    panel over both (about an axis half a panel's thickness up). The hinge angle follows a hand (an even swing, the
+    magnets' snap over the last ~25 degrees and a settle under a degree; opening, the magnets' pop, the swing and the
+    flat detent), the inner screens go dark under ~5 degrees and light past ~12, the cover wakes as it snaps shut. The
+    SceneKit render loop (`FoldStage`, the view's delegate) poses each frame from its own clock and ends the fold; the
+    first fold of a process waits ~0.3 s for its shaders, showing the still picture. Openings are their
     own runs, not closings reversed (1.0 s book, 1.5 s clamshell, 1.7 s tri-fold, `-Dapksim.foldAnimationMs` for all).
     The window is resized about its centre meanwhile (`sizeWindow` while `foldWindow` is set) at the other panel's
     pixel density (`SimWindow.foldZoom`, the ratio of `Fold.Spec.ppi`s, held until the switch and its skin re-layout
@@ -591,7 +593,7 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `FastNativeLoader`: loads Robolectric's native runtime from pre-extracted `work/runtime`, not a fresh temp dir per launch.
 - `native/`
   - `simwindow.m`: Cocoa window and IOSurface present, input queue, Cmd+V paste, `wshot` self-capture, thread QoS.
-  - `foldanim.m`: the fold animation's Core Animation scene (book, clamshell, tri-fold; see `Fold`), `#include`d by
+  - `foldanim.m`: the fold animation's SceneKit scene (book, clamshell, tri-fold; see `Fold`), `#include`d by
     `simwindow.m` and by `scripts/fold-frames.m`, which renders it without an app.
   - `elfloader.c`, `bionic.c`, `jnibridge.c`: the Android ELF loader, bionic→libSystem shim, and a JNI table wrapper
     for the AAPCS-vs-Apple varargs difference (chosen by caller address).

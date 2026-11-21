@@ -1,6 +1,6 @@
 // Renders the Mac window's fold animation (native/foldanim.m) for a folding skin without running an app: a test
 // picture in each screen, the skin's frames around them, frames of a closing and an opening written as PNGs.
-//   clang -fobjc-arc -framework Cocoa -framework QuartzCore -framework Metal -o work/fold-frames scripts/fold-frames.m
+//   clang -fobjc-arc -framework Cocoa -framework QuartzCore -framework Metal -framework SceneKit -o work/fold-frames scripts/fold-frames.m
 //   work/fold-frames SKIN_DIR OUT_DIR book|clamshell|trifold THICKNESS COVER_ZOOM [FRAMES] [SECONDS]
 // THICKNESS: one panel's thickness against the open device's height (Fold.java: panelMm / openHeightMm). COVER_ZOOM:
 // the cover panel's pixels per inch against the inner one's (Fold.Spec.ppi), as the window shows each display. Each

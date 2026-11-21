@@ -1166,6 +1166,8 @@ static int foldEdge = -1;
 static CGRect foldBody;
 static CGFloat foldBodyRadius, foldKeyAt[8];
 static int foldKeyCount;
+static FoldStage *foldStage;  // the running fold's scene, while its view draws it
+static SCNView *foldView;
 
 static CGImageRef surfaceImage(IOSurfaceRef s) {
   if (!s) return NULL;
@@ -1261,6 +1263,13 @@ static void foldEnd(void) {
     [foldWindow orderOut:nil];
     foldWindow = nil;
   }
+  if (foldView) {
+    foldView.playing = NO;
+    foldView.delegate = nil;
+    [foldView removeFromSuperview];
+    foldView = nil;
+  }
+  foldStage = nil;
   if (foldOldImage) CGImageRelease(foldOldImage);
   if (foldOldDark) CGImageRelease(foldOldDark);
   foldOldImage = foldOldDark = NULL;
@@ -1298,17 +1307,30 @@ static void foldPlay(BOOL closing, double seconds) {
   f.seconds = seconds;
   const char *dump = getenv("APKSIM_FOLD_FRAMES");
   if (dump) foldDump(&f, dump, 13);
-  CALayer *root = foldWindow.contentView.layer;
-  [CATransaction begin];
-  [CATransaction setDisableActions:YES];
+  // The scene in 3D over the whole overlay (the Mac's screen), in its coordinates; the still picture of the device
+  // stays under it until the scene's first frame is drawn.
+  NSView *content = foldWindow.contentView;
+  FoldStage *stage = [[FoldStage alloc] initWithSpec:&f view:content.bounds];
+  SCNView *view = [[SCNView alloc] initWithFrame:content.bounds options:@{SCNPreferredRenderingAPIKey : @(SCNRenderingAPIMetal)}];
+  view.scene = stage.scene;
+  view.pointOfView = stage.cameraNode;
+  view.backgroundColor = NSColor.clearColor;
+  view.antialiasingMode = SCNAntialiasingModeMultisampling4X;
+  view.preferredFramesPerSecond = 120;
+  view.rendersContinuously = YES;
+  view.delegate = stage;
   long token = foldToken;
-  [CATransaction setCompletionBlock:^{
+  CALayer *still = content.layer.sublayers.firstObject;
+  stage.firstFrame = ^{
+    if (token == foldToken) still.hidden = YES;
+  };
+  stage.finished = ^{
     if (token == foldToken) foldEnd();
-  }];
-  CALayer *scene = foldScene(&f, CGPointZero, CACurrentMediaTime());
-  root.sublayers = nil;
-  [root addSublayer:scene];
-  [CATransaction commit];
+  };
+  foldStage = stage;
+  foldView = view;
+  [content addSubview:view];
+  view.playing = YES;
   CGImageRelease(newImage);
   CGImageRelease(newDark);
 }
@@ -1372,7 +1394,8 @@ JNIEXPORT jboolean JNICALL Java_dev_apksim_SimWindow_nativeFoldBegin(JNIEnv *env
         [CATransaction commit];
         // Above the window, but not its child: a child window moves with its parent, and the window is about to be
         // resized about its centre under an overlay whose rectangles must stay put.
-        foldWindow.level = win.level;
+        // Over the menu bar and the Dock: the device may swing past them for a moment (it nears the viewer as it turns).
+        foldWindow.level = NSMainMenuWindowLevel + 1;
         [foldWindow orderWindow:NSWindowAbove relativeTo:win.windowNumber];
         [CATransaction flush];
         win.alphaValue = 0;  // the device alone until the fold is over: no title bar, no window changing shape
