@@ -153,7 +153,11 @@ final class HotSwap {
 
   static int redefine(Class<?>[] classes, byte[][] bytes) {
     if (!libLoaded) {
-      System.load(HostOs.runtimeLib("libhotswap").toString());
+      try {
+        System.load(HostOs.runtimeLib("libhotswap").toString());
+      } catch (UnsatisfiedLinkError e) {
+        throw new IllegalStateException("libhotswap is not built (scripts/build-native.sh)", e);
+      }
       libLoaded = true;
     }
     return nativeRedefine(classes, bytes);
@@ -192,6 +196,9 @@ final class HotSwap {
   /** {@code hotswap NEW.apk [none|redraw|compose|compose-reset|recreate] [force]}: see the class comment. One line. */
   static String command(String[] a, Refresh refresh) throws Exception {
     if (a.length < 2) return "usage: hotswap NEW.apk [none|redraw|compose|compose-reset|recreate] [force]";
+    // It runs another APK's code in this instance: only when the launch asked for it (`--jvm -Dapksim.hotswap=true`).
+    if (!Boolean.getBoolean("apksim.hotswap")) return "error: hotswap is off (launch with --jvm -Dapksim.hotswap=true)";
+    if (!HostOs.MAC) return "error: hotswap is Mac only for now";
     AppClasses app = AppClasses.app;
     if (app == null) return "error: no app classes";
     if (a[1].equals("selftest")) return selftest(app, a.length > 2 ? a[2] : "");
@@ -261,7 +268,13 @@ final class HotSwap {
       out.append("RELAUNCH NEEDED, nothing swapped: ");
       refused.forEach((k, v) -> out.append(k).append(" (").append(v).append("); "));
     } else {
+      // Classes not loaded yet (changed or added) are served from the new build before any redefined body can ask
+      // for them; taken back if the redefinition fails.
+      List<String> served = new ArrayList<>(notLoaded);
+      served.addAll(d.added());
+      for (String n : served) app.swapped.put(n, () -> neu.translateFresh(n));
       if (!classes.isEmpty()) err = redefine(classes.toArray(new Class<?>[0]), bytes.toArray(new byte[0][]));
+      if (err != 0) for (String n : served) app.swapped.remove(n);
       if (err != 0) {
         out.append("RedefineClasses failed: ").append(jvmtiError(err)).append("; ");
         // Which one: each alone (a spike's diagnosis, not what a product would do).
@@ -274,9 +287,6 @@ final class HotSwap {
         for (Class<?> c : classes) out.append(c.getName()).append(' ');
         out.append("; ");
         if (!refused.isEmpty()) out.append("forced past ").append(refused.size()).append(" refused: ").append(refused.keySet()).append("; ");
-        // Not loaded yet (changed or added): the class loader serves them from the new build from now on.
-        for (String n : notLoaded) app.swapped.put(n, () -> neu.translateFresh(n));
-        for (String n : d.added()) app.swapped.put(n, () -> neu.translateFresh(n));
         current = neu;
       }
     }
@@ -298,6 +308,8 @@ final class HotSwap {
    * the verifier would accept if they were edited. The code does not change, so the app runs on as before.
    */
   static String selftest(AppClasses app, String prefix) {
+    // It redefines from the launched build: after a swap that would put the old code back.
+    if (current != null) return "error: selftest runs only before the first swap (it would undo it)";
     long t0 = System.nanoTime();
     int tried = 0;
     int fromJar = 0;
