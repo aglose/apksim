@@ -1416,7 +1416,11 @@ static void foldPlay(BOOL closing, double seconds) {
   CALayer *still = content.layer.sublayers.firstObject;
   stage.firstFrame = ^{
     if (getenv("APKSIM_FOLD_DEBUG")) NSLog(@"fold first frame drawn");
-    if (token == foldToken) still.hidden = YES;
+    // The 3D scene's first frame is the still picture to the pixel (its screens flat); the still goes once that frame
+    // has surely reached the screen, a few display frames on, never before.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+      if (token == foldToken) still.hidden = YES;
+    });
   };
   stage.finished = ^{
     foldFinish(token);
@@ -1492,13 +1496,24 @@ JNIEXPORT jboolean JNICALL Java_dev_apksim_SimWindow_nativeFoldBegin(JNIEnv *env
         foldWindow.level = NSMainMenuWindowLevel + 1;
         [foldWindow orderWindow:NSWindowAbove relativeTo:win.windowNumber];
         [CATransaction flush];
-        win.alphaValue = 0;  // the device alone until the fold is over: no title bar, no window changing shape
+        [foldWindow displayIfNeeded];
         ok = YES;
         // APKSIM_FOLD_DEBUG=1 logs the animation's steps (scripts cannot see the overlay).
         if (getenv("APKSIM_FOLD_DEBUG")) NSLog(@"fold begin: old device %@ on overlay %@, picture %zux%zu", NSStringFromRect(foldOldRect), NSStringFromRect(foldWindow.frame), CGImageGetWidth(foldOldImage), CGImageGetHeight(foldOldImage));
       }
     }
-    dispatch_semaphore_signal(done);
+    if (!ok) {
+      dispatch_semaphore_signal(done);
+      return;
+    }
+    // The window goes (the device alone until the fold is over: no title bar, no window changing shape) only once the
+    // overlay with the device's picture is on the screen, two display frames on: hidden at once, a frame could show
+    // neither.
+    long token = foldToken;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.034 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+      if (token == foldToken && foldWindow) simWindow.alphaValue = 0;
+      dispatch_semaphore_signal(done);
+    });
   });
   dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
   if (back) CGImageRelease(back);  // no fold to draw it in

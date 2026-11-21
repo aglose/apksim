@@ -282,6 +282,26 @@ static SCNMaterial *foldPictureMaterial(CGImageRef picture, CGImageRef glow, SCN
   return m;
 }
 
+// A screen face's blend with its exact picture: at `flatness` 1 the face shows `flatTexture` as it is, unlit, so the 3D
+// scene's first and last frames are the very pictures the window shows (the fold hands the screen over without a
+// change of a pixel); at 0 it is lit as the room lights it.
+static NSString *const FOLD_FLAT_MODIFIER =
+    @"#pragma arguments\n"
+     "float flatness;\n"
+     "texture2d<float> flatTexture;\n"
+     "#pragma body\n"
+     "constexpr sampler flatSampler(filter::linear, address::clamp_to_edge);\n"
+     "float4 flat = flatTexture.sample(flatSampler, _surface.diffuseTexcoord);\n"
+     "_output.color.rgb = mix(_output.color.rgb, flat.rgb, flatness);\n";
+
+static void foldFlat(SCNMaterial *m, CGImageRef picture) {
+  m.shaderModifiers = @{SCNShaderModifierEntryPointFragment : FOLD_FLAT_MODIFIER};
+  SCNMaterialProperty *t = [SCNMaterialProperty materialPropertyWithContents:(__bridge id)picture];
+  t.wrapS = t.wrapT = SCNWrapModeClamp;
+  [m setValue:t forKey:@"flatTexture"];
+  [m setValue:@0.0 forKey:@"flatness"];
+}
+
 // A panel: the outline extruded by its thickness, front at z 0 and back at -t, chamfered with a rounded profile; its
 // front is a flat face of the same outline laid flush on it, so two panels' screens meet at a hinge with no seam.
 static SCNNode *foldSlab(NSBezierPath *outline, CGFloat t, SCNMaterial *front, SCNMaterial *back, SCNMaterial *metal) {
@@ -479,6 +499,7 @@ static CATransform3D foldAbout(CATransform3D r, CGFloat x, CGFloat y, CGFloat z)
   CGImageRef openGlow = foldGlow(f->openLit, f->openDark);
   CGRect coverBox = foldOpaqueRect(f->closedLit);
   CGImageRef coverDark = foldOpaque(f->closedDark, metal), coverGlow = foldGlow(f->closedLit, f->closedDark);
+  CGImageRef coverLit = foldOpaque(f->closedLit, metal);
   CGImageRef backPic = f->back ? foldOpaque(f->back, metal) : NULL;
   _closedBody = CGRectMake(CGRectGetMinX(f->closedRect) + coverBox.origin.x * f->closedRect.size.width,
                            CGRectGetMaxY(f->closedRect) - (coverBox.origin.y + coverBox.size.height) * f->closedRect.size.height,
@@ -491,11 +512,13 @@ static CATransform3D foldAbout(CATransform3D r, CGFloat x, CGFloat y, CGFloat z)
   };
   SCNMaterial * (^front)(CGRect) = ^SCNMaterial *(CGRect rr) {
     SCNMaterial *m = foldPictureMaterial(f->openDark, openGlow, foldPlace(frac(rr)), 0.16);
+    foldFlat(m, f->openLit);
     [self->_inner addObject:m];
     return m;
   };
   SCNMaterial * (^coverBack)(void) = ^SCNMaterial *(void) {
     SCNMaterial *m = foldPictureMaterial(coverDark, coverGlow, foldPlace(coverBox), 0.16);
+    foldFlat(m, coverLit);
     [self->_cover addObject:m];
     return m;
   };
@@ -563,6 +586,7 @@ static CATransform3D foldAbout(CATransform3D r, CGFloat x, CGFloat y, CGFloat z)
   CGImageRelease(openGlow);
   CGImageRelease(coverDark);
   CGImageRelease(coverGlow);
+  CGImageRelease(coverLit);
   if (backPic) CGImageRelease(backPic);
   [self poseAt:0];
   return self;
@@ -591,6 +615,12 @@ static CATransform3D foldAbout(CATransform3D r, CGFloat x, CGFloat y, CGFloat z)
   if (_moving2) _moving2.transform = foldAbout(CATransform3DMakeRotation(-a2, 0, 1, 0), _hx2, 0, t / 2);
   for (SCNMaterial *mt in _inner) mt.emission.intensity = p.innerLit;
   for (SCNMaterial *mt in _cover) mt.emission.intensity = p.coverLit;
+  // The screens start and end as the window's pictures exactly (flat), and are lit by the room in between: the open
+  // device's at the start of a closing (the end of an opening), the cover display's at its end (an opening's start).
+  double lead = foldSmoother(1 - foldRamp(u, 0, 0.12)), land = foldSmoother(foldRamp(u, 0.86, 0.985));
+  double innerFlat = f->closing ? lead : land, coverFlat = f->closing ? land : lead;
+  for (SCNMaterial *mt in _inner) [mt setValue:@(innerFlat) forKey:@"flatness"];
+  for (SCNMaterial *mt in _cover) [mt setValue:@(coverFlat) forKey:@"flatness"];
   // The barrels: hidden while flat (no angle), filled to the hinge's angle as it turns.
   if (hinge == FOLD_CLAMSHELL) {
     _barrel1.geometry = a1 > 0.01 ? foldBarrel(NO, _hy, 0, _bx0 + t * 0.2, _bx1 - t * 0.2, 0, t, -1, a1, _metal) : nil;

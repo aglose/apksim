@@ -180,7 +180,11 @@ Read README.md for results and limits; this file covers how to work on the code.
     later: a tiny fold plays in a 32 pt window at 1% opacity, so a real one finds the same pipelines; before, the first
     fold waited ~0.3 s), and building the scene leaves ~0.1-0.16 s of the still picture. At the end the window comes
     back under the overlay, which fades out over 0.2 s two display frames later (`foldFinish`): removing both at once
-    showed the desktop for a frame, and the lit 3D frame jumped to the window's flat picture. Openings are their
+    showed the desktop for a frame, and the lit 3D frame jumped to the window's flat picture. No handoff changes a pixel:
+    the window hides only 34 ms after the overlay (the same picture) is up; each screen face blends with its exact
+    flat picture (`FOLD_FLAT_MODIFIER`, a fragment shader modifier, `flatness` 1 at the run's ends, lit in between), so
+    the scene's first frame is the still and its last the window's picture (`fold-frames.m`: a closing's first frame
+    and an opening's last differ in no pixel); the still goes 50 ms after the scene's first frame. Openings are their
     own runs, not closings reversed (1.0 s book, 1.5 s clamshell, 1.7 s tri-fold, `-Dapksim.foldAnimationMs` for all).
     The window is resized about its centre meanwhile (`sizeWindow` while `foldWindow` is set) at the other panel's
     pixel density (`SimWindow.foldZoom`, the ratio of `Fold.Spec.ppi`s, held until the switch and its skin re-layout
