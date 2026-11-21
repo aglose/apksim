@@ -1403,8 +1403,12 @@ static void foldPlay(BOOL closing, double seconds) {
   // The scene in 3D over the whole overlay (the Mac's screen), in its coordinates; the still picture of the device
   // stays under it until the scene's first frame is drawn.
   NSView *content = foldWindow.contentView;
-  FoldStage *stage = [[FoldStage alloc] initWithSpec:&f view:content.bounds];
-  SCNView *view = [[SCNView alloc] initWithFrame:content.bounds options:@{SCNPreferredRenderingAPIKey : @(SCNRenderingAPIMetal)}];
+  // Only where the device can be (open, closed, and as it nears the viewer), not the whole screen: the view's Metal
+  // layer is opaque, with nothing drawn, until SceneKit's first frame, and a full-screen one flashed the whole screen.
+  CGRect reach = CGRectIntersection(CGRectIntegral(CGRectInset(CGRectUnion(f.openRect, f.closedRect), -f.openRect.size.width * 0.45,
+                                                               -f.openRect.size.height * 0.35)), content.bounds);
+  FoldStage *stage = [[FoldStage alloc] initWithSpec:&f view:reach];  // in the overlay's coordinates, as the device's
+  SCNView *view = [[SCNView alloc] initWithFrame:reach options:@{SCNPreferredRenderingAPIKey : @(SCNRenderingAPIMetal)}];
   view.scene = stage.scene;
   view.pointOfView = stage.cameraNode;
   view.backgroundColor = NSColor.clearColor;
@@ -1412,6 +1416,9 @@ static void foldPlay(BOOL closing, double seconds) {
   view.preferredFramesPerSecond = 120;
   view.rendersContinuously = YES;
   view.delegate = stage;
+  view.wantsLayer = YES;
+  view.layer.opaque = NO;
+  view.alphaValue = 0;  // shown once its first frame is drawn (the still is under it until then)
   long token = foldToken;
   CALayer *still = content.layer.sublayers.firstObject;
   // The landing: in the run's last ~13% the window's own picture of the new device (what it will show) fades in over
@@ -1438,6 +1445,7 @@ static void foldPlay(BOOL closing, double seconds) {
       [endPicture addAnimation:in forKey:@"land"];
     }
     if (getenv("APKSIM_FOLD_DEBUG")) NSLog(@"fold first frame drawn");
+    if (token == foldToken) view.alphaValue = 1;
     // The 3D scene's first frame is the still picture to the pixel (its screens flat); the still goes once that frame
     // has surely reached the screen, a few display frames on, never before.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{

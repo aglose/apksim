@@ -159,8 +159,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     `SimWindow.foldBegin`/`foldRun` around the fold's reshape, given the hinge and thickness): the device's picture,
     lit and with its screen off (its skin's frame around the screen, status bar included; `deviceImage`), goes on a
     transparent overlay window (above the menu bar: the device nears the viewer as it turns) and the window itself is
-    hidden (alpha 0); once the new display has drawn two frames, an `SCNView` over the whole overlay plays it in
-    SceneKit, with a depth buffer (Core Animation's layer sorting let panels pop through each other and sliced them where
+    hidden (alpha 0); once the new display has drawn two frames, an `SCNView` plays it in
+    SceneKit (the view covers only where the device can be, open, closed and nearing the viewer, and is shown only once
+    its first frame is drawn: its Metal layer starts opaque with nothing drawn, and full-screen it flashed the whole
+    screen), with a depth buffer (Core Animation's layer sorting let panels pop through each other and sliced them where
     they met; the first version was layers): each panel is an `SCNShape` extruded from the skin's body outline
     (skin.json's `fold.body`: rounded outer corners, square at a hinge) by its real thickness, chamfered with a rounded
     profile, the screen's picture on a flush flat face over its front (two panels meet at a hinge with no seam), its back
