@@ -8,7 +8,9 @@ Answer: yes, and both hand-offs tried work under today's default and beam profil
 Present-to-host latency drops from ~6.8 ms (p50) to ~0.22 ms, the instance stops spending ~5 ms of encoder time
 per frame, and every frame arrives (no lossy quantisation, no keyframe waits). Recommended mechanism: Mach send
 rights (`IOSurfaceCreateMachPort`, or the same thing wrapped as `IOSurfaceCreateXPCObject`) sent to a Mach service
-the host owns, not global IOSurface IDs.
+the host owns, not global IOSurface IDs. On the host's screen (a window that shows the frames, below) the shared
+path is 0.5-1 display refresh sooner than H.264 (p50 59.8 against 68-77 ms at the 60 Hz the display ran at), and the
+rest of the time, ~40 ms, is the window's own path to the glass, the same for both.
 
 ## What was built (opt-in, nothing changes unless a host asks)
 
@@ -77,10 +79,41 @@ its header with). Same machine, same clock.
 Maxima: ~5-6 ms on the surface paths (scheduling hiccups), 90-115 ms for H.264 (the first keyframe and the
 encoder opening). The surface paths' 0.2 ms is the control-line write plus the host's wake-up; the ring copy itself
 is 0.16 ms for 822x1782 (5.9 MB) and runs on the raster thread before the line is sent. What was *not* measured:
-present to the photons on the host's screen (both paths would add the same Core Animation commit and display
-latency; with the surface path the host sets `layer.contents` to the IOSurface, so no further copy), a host display
-link sending `vsync` back, the beam sandbox with the real JVM (only the probe), a windowed instance, several
+a host display link sending `vsync` back, the beam sandbox with the real JVM (only the probe), a windowed instance, several
 instances at once, and larger displays (a 2560x1600 tablet is ~16 MB a copy, ~0.45 ms by bandwidth, not run).
+
+### On the host's screen
+
+`scripts/spike-s1/surfaceshow.m` is the stand-in host with a window: frames arrive on a reader thread (Mach
+surfaces, or the H.264 stream decoded by VideoToolbox into IOSurface-backed buffers), the newest one waits for the
+window's display link (`NSView.displayLinkWithTarget`, asking for 120 Hz), which makes the IOSurface a Metal
+texture, blits it into a `CAMetalLayer` drawable (2 drawables) and presents it. Present-to-glass is the instance's
+present time to the drawable's `presentedTime` (when the display showed it), on the same clock. Both paths share
+everything after the frame reaches the host, so their difference is how the pixels arrive.
+
+Same Mac, 2026-11-20 evening (load average ~2.5, memory pressure level 1), the test app headless on the Shader tab
+(118.8 fps), `DRAWABLES=2 surfaceshow 7481 mach|h264 8`, three interleaved rounds:
+
+| Path | received | shown | present→host p50 | present→glass p50 | p90 | p99 | host commit→glass p50 | host CPU |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Mach surfaces | 120.1-120.2/s | 59.9-60.2/s | 0.30-0.36 ms | 59.7-59.9 ms | 60.4-60.5 | 61.1-61.3 | 40.0-40.7 ms | 4.1-4.4% |
+| H.264 | 93-119/s | 59.2/s | 9.3-17.9 ms | 68.4-77.1 ms | 76.8-85.1 | 77.8-86.1 | 40.0-40.6 ms | 5.8-6.2% |
+
+- **The display ran at 60 Hz, not 120.** The display link ticked 65-71 times a second although the window asked for
+  120 and `NSScreen.maximumFramesPerSecond` says 120; ProMotion chose the lower rate (likely because nobody was using the Mac
+  at the time; the window was not made key). So half the frames were superseded before a refresh took them, on both
+  paths. At 120 Hz every refresh-bound figure here halves; the measurement should be repeated with someone at the
+  Mac.
+- **The window's own path dominates.** From the host's `commit` to the glass is ~40 ms on both paths, ~2.4 refreshes:
+  the drawable queue (3 drawables: 57 ms, 2: 40 ms) and WindowServer's compositing. A product host should use 2
+  drawables, present right after the display link fires, and look at `CAMetalDisplayLink` or a
+  `presentsWithTransaction` layer; that is the host's work and the same whatever carries the frames.
+- **What the shared path saves on the glass** is its arrival time: 0.3 ms against 9-18 ms here (H.264's encode was
+  7-10 ms a frame tonight against 5-6 ms in the earlier run, and a frame decoded late misses the refresh it would have
+  made), so the shared frame lands 0.5-1 refresh sooner (8-17 ms at 60 Hz). With H.264 the instance also gave up on
+  a fifth of the frames in two rounds (93-98 received a second: the encoder fell behind).
+- Showing a frame through Metal from the surface costs the host 4% of a core at 120 frames received a second
+  (every frame wrapped, half blitted), against 6% with the decoder.
 
 ## Recommendation
 
@@ -118,4 +151,4 @@ and needs one explicit `mach-lookup` allow if the profile is ever made default-d
 
 `runtime/src/main/java/dev/apksim/SharedSurface.java`, `native/sharedsurface.m` (built by `build-native.sh`), the
 `surfacewatch` branch in `Control.java`, the one call in `HwRenderer.rasterLoop`; `scripts/spike-s1/` (host,
-measurement and profile probes; build lines are at the top of each `.m`).
+measurement and profile probes, `surfaceshow.m` the on-screen host; build lines are at the top of each `.m`).
