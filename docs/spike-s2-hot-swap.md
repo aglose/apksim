@@ -9,6 +9,12 @@ adds a lambda or a function falls back to a relaunch, and in Kotlin that is a co
 stack map frames: JDK 24 verifies redefined classes even though apksim loads its classes unverified. ASM computes the
 frames, and 99.6% of the loaded translated classes pass the verifier with them.
 
+Against a relaunch (measured with the AOT cache, below): a warm relaunch of a rebuilt APK reaches its first frame in
+~0.54 s, on the start screen with in-memory state gone; a swap shows the edit in 0.15-0.29 s on the screen the
+developer was on, state kept. Holding the redefine capability after a swap showed no lasting frame or CPU cost. A
+resource-only edit is not seen at all by the prototype: it swaps nothing and says so only as "0 changed", so a product
+must check resources itself and relaunch.
+
 Everything here is a prototype and opt-in: the `hotswap` control command does nothing unless it is sent, and no default
 changed.
 
@@ -16,8 +22,10 @@ changed.
 
 - `native/hotswap.c` (`libhotswap.dylib`, Mac only): JVMTI `RedefineClasses` from inside the JVM, with no agent and no
   `-javaagent`. It asks for `can_redefine_classes` in the live phase at the first swap, which HotSpot allows, so warm
-  launches (standbys) work too. A launch that never swaps never asks for the capability. Once HotSpot has it, the JIT
-  keeps the dependencies redefinition needs; that cost was not measured.
+  launches (standbys) could use it. But `--jvm -Dapksim.hotswap=true`, the switch that allows the command, is not in
+  the launcher's list of properties a standby takes after the hand-off, so today a hotswap launch is cold: a product
+  adds `-Dapksim.hotswap=*` there. A launch that never swaps never asks for the capability. Once HotSpot has it, the
+  JIT keeps the dependencies redefinition needs (measured below: no lasting cost seen).
 - `HotSwap.java`, which runs the control command `hotswap NEW.apk [none|redraw|compose|compose-reset|recreate] [force]`:
   1. Opens the new APK (`AppClasses.isolated`) and compares the two builds. A DEX file the old build has an identical
      copy of (same checksum and size) is skipped. In the other files, each class's `ClassHash` (index-independent) is
@@ -110,10 +118,15 @@ Where the time goes, from the command's own report for the Compose case:
 What's left of the ~150-240 ms is the client's round trips and Host's next frame. The first swap of an instance is
 ~40 ms slower (cold JIT in the swap path).
 
-For comparison, not measured here:
-- A relaunch: AGENTS.md has a warm launch's first frame at ~0.22 s for the test app and ~0.36 s for the owner's R8
-  app, with the AOT cache. This worktree had none, so its launch times would not be representative. A relaunch also
-  loses in-memory state (`remember`, scroll, navigation not in saved state) and needs the screen navigated again.
+Against a relaunch, measured later the same day (2026-11-20 evening, load average ~2.4) on a build of this branch
+with `train.sh` run (AOT cache), `bench.py --warm`, test app:
+- The same build launched again: first frame 313-324 ms (median 320, 6 runs).
+- A rebuilt build's first launch (C and E, each one edit from A, after A had run): 537 and 534 ms. The new APK's
+  classes come from the class cache by content (issue 558), but its index, manifest and libraries are new. Its
+  later launches are 314-321 ms.
+- So the realistic relaunch after a rebuild is ~0.54 s to the start screen, and then the developer navigates back
+  to where they were; in-memory state (`remember`, scroll, navigation not in saved state) is gone. A swap is
+  0.15-0.29 s, on the same screen, state kept.
 - The Gradle side: an incremental `:app:assembleDebug` for a one-string edit took 1.4-1.8 s here (warm daemon). A
   build cache hit, such as reverting an edit, took 0.7 s. So in the edit-to-screen loop the build dominates, and the
   swap adds ~0.2 s.
@@ -146,6 +159,12 @@ Kotlin 2 with D8 (no R8). What each edit changed in the DEX:
 6. **Not the APK's class**: 131 loaded classes come from a jar on apksim's class path before the APK's copy (Guava,
    for example). A change to them in the APK has no effect, in a running instance or a relaunch, so they are
    reported, not swapped.
+
+A resource-only edit (R: the colour `appcompat_check_mode` changed in `values/appcompat_check.xml`, shown by
+`apksim://appcompat`): the DEX files are identical, `hotswap R.apk recreate` answers `0 changed` in 50 ms
+(open+hash 16 ms, refresh 34 ms) and the screen keeps the old colour (`#ff0000ff`) after the recreation, as the
+instance's `AssetManager` still reads the old APK. A silent miss: the product must compare `resources.arsc` and `res/`
+entries (their CRCs are in the ZIP directory) and relaunch, or reload resources (point 8 below).
 
 Not tried: field or constant changes, which would be schema changes (except where Kotlin inlines a `const val` at its
 use sites, a body change there); a new class used from changed code (the loader would serve it, but no edit here
@@ -180,9 +199,19 @@ lambda is a frequent Compose edit, so expect a relaunch for a good share of edit
    launch, which is cold for the new APK anyway, translates them again. Nothing is stale, but a product could put the
    new translations in the cache for the next launch.
 6. **The JIT**: `RedefineClasses` deoptimizes dependent compiled code. Redefining 4,031 classes one by one took 48 s
-   (~12 ms each, mostly the safepoint), and one batch of 4 took 12-18 ms. Batch always. The JIT cost of holding
-   `can_redefine_classes` after the first swap was not measured: compare `frames`/`fps` before and after a swap.
+   (~12 ms each, mostly the safepoint), and one batch of 4 took 12-18 ms. Batch always. Holding
+   `can_redefine_classes` after the first swap, measured in 10 s windows before and after swapping C into an
+   instance (AOT cache, headless): on the Shader tab 120.0 fps before and after, interval p95 9.9 → 9.7 ms, instance
+   CPU 38-43% → 35-37%, main-thread record 0.44-0.51 → 0.43-0.48 ms; flinging the Home list (12 swipes per window,
+   the Compose code that was redefined) 118.8-119.5 → 119.0-119.1 fps, p95 10.3 → 10.7-10.8 ms, CPU 33-37% →
+   30-32%. Only the first window after the swap was slower (106.8 fps, p99 14.9 ms: the redefined code's callers
+   compiled again). So no lasting cost was seen at this resolution; a finer check would be a JFR comparison of
+   compile counts.
 7. **Linux**: add `hotswap.c` to `native/linux/` (the JVMTI code is portable) for the image.
 8. **What it cannot see**: resources (layouts, strings.xml, drawables) are not classes. A resource-only edit changes
    `resources.arsc`/`res/`, not DEX, and needs a resource reload (a new `AssetManager` and `recreate`) or a relaunch.
-   This spike did not look at it. Manifest changes always need a relaunch.
+   The prototype misses them silently (measured above: `0 changed`, old colour after `recreate`), so the first
+   product step is to compare resource entries and relaunch when any changed. Manifest changes always need a
+   relaunch.
+9. **Warm launches**: add `-Dapksim.hotswap=*` to the launcher's list of properties a standby takes, so a launch that
+   allows swaps is not cold.
