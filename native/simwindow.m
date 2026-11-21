@@ -1414,7 +1414,29 @@ static void foldPlay(BOOL closing, double seconds) {
   view.delegate = stage;
   long token = foldToken;
   CALayer *still = content.layer.sublayers.firstObject;
+  // The landing: in the run's last ~13% the window's own picture of the new device (what it will show) fades in over
+  // the 3D device, which by then lies under it to the pixel but for details (its keys, the rounding of a hinge's
+  // corners); the overlay then ends on exactly the window's image, and the window takes over with nothing to change.
+  NSView *landing = [[NSView alloc] initWithFrame:content.bounds];
+  landing.wantsLayer = YES;
+  CALayer *endPicture = [CALayer layer];
+  endPicture.frame = newRect;
+  endPicture.contents = (__bridge id)newImage;
+  endPicture.contentsGravity = kCAGravityResize;
+  endPicture.opacity = 0;
+  [landing.layer addSublayer:endPicture];
   stage.firstFrame = ^{
+    if (token == foldToken) {
+      CABasicAnimation *in = [CABasicAnimation animationWithKeyPath:@"opacity"];
+      in.fromValue = @0;
+      in.toValue = @1;
+      in.beginTime = CACurrentMediaTime() + seconds * 0.86;
+      in.duration = seconds * 0.13;
+      in.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+      in.fillMode = kCAFillModeForwards;
+      in.removedOnCompletion = NO;
+      [endPicture addAnimation:in forKey:@"land"];
+    }
     if (getenv("APKSIM_FOLD_DEBUG")) NSLog(@"fold first frame drawn");
     // The 3D scene's first frame is the still picture to the pixel (its screens flat); the still goes once that frame
     // has surely reached the screen, a few display frames on, never before.
@@ -1428,6 +1450,7 @@ static void foldPlay(BOOL closing, double seconds) {
   foldStage = stage;
   foldView = view;
   [content addSubview:view];
+  [content addSubview:landing positioned:NSWindowAbove relativeTo:view];
   view.playing = YES;
   CGImageRelease(newImage);
   CGImageRelease(newDark);

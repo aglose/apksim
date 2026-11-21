@@ -187,7 +187,13 @@ Read README.md for results and limits; this file covers how to work on the code.
     the window hides only 34 ms after the overlay (the same picture) is up; each screen face blends with its exact
     flat picture (`FOLD_FLAT_MODIFIER`, a fragment shader modifier, `flatness` 1 at the run's ends, lit in between), so
     the scene's first frame is the still and its last the window's picture (`fold-frames.m`: a closing's first frame
-    and an opening's last differ in no pixel); the still goes 50 ms after the scene's first frame. Openings are their
+    and an opening's last differ in no pixel); the still goes 50 ms after the scene's first frame. The closed device lands exactly where the window's picture
+    is: its footprint is the cover panel's face (counting the hinge barrel in it squeezed the cover and showed as a resize
+    as the window took over), every picture is on a flat, double-sided face of the full outline (a chamfered slab's own
+    caps are smaller), the barrels fade out on landing (the picture draws its hinge), and in the run's last ~13% the
+    window's own picture of the new device fades in over the 3D one (`landing` in `foldPlay`), so keys and corners that
+    the 3D model draws differently never jump. `fold-frames.m` also writes `window-open.png` and `window-closed.png` (the
+    pictures as the window shows them) to compare a run's first and last frames with. Openings are their
     own runs, not closings reversed (1.0 s book, 1.5 s clamshell, 1.7 s tri-fold, `-Dapksim.foldAnimationMs` for all).
     The window is resized about its centre meanwhile (`sizeWindow` while `foldWindow` is set) at the other panel's
     pixel density (`SimWindow.foldZoom`, the ratio of `Fold.Spec.ppi`s, held until the switch and its skin re-layout

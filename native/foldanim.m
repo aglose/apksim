@@ -258,6 +258,16 @@ static SCNMatrix4 foldPlace(CGRect r) {
   return SCNMatrix4Mult(SCNMatrix4MakeScale(r.size.width, r.size.height, 1), SCNMatrix4MakeTranslation(r.origin.x, r.origin.y, 0));
 }
 
+// The same for a picture on a back face: a flat face seen from behind shows its texture mirrored, so this mirrors it
+// back, and makes the material show on the face's far side.
+static void foldBackPlace(SCNMaterial *m, CGRect r) {
+  SCNMatrix4 place = SCNMatrix4Mult(SCNMatrix4MakeScale(-r.size.width, r.size.height, 1),
+                                    SCNMatrix4MakeTranslation(r.origin.x + r.size.width, r.origin.y, 0));
+  m.diffuse.contentsTransform = place;
+  m.emission.contentsTransform = place;
+  m.doubleSided = YES;
+}
+
 static SCNMaterial *foldMetalMaterial(int rgb) {
   SCNMaterial *m = [SCNMaterial material];
   m.lightingModelName = SCNLightingModelPhysicallyBased;
@@ -305,7 +315,9 @@ static void foldFlat(SCNMaterial *m, CGImageRef picture) {
 }
 
 // A panel: the outline extruded by its thickness, front at z 0 and back at -t, chamfered with a rounded profile; its
-// front is a flat face of the same outline laid flush on it, so two panels' screens meet at a hinge with no seam.
+// front and back pictures are flat faces of the same outline laid flush on it, so two panels' screens meet at a hinge
+// with no seam, and a picture covers the whole outline (a chamfered slab's own caps are smaller by the chamfer, which
+// squeezed the cover display it landed with).
 static SCNNode *foldSlab(NSBezierPath *outline, CGFloat t, SCNMaterial *front, SCNMaterial *back, SCNMaterial *metal) {
   SCNShape *s = [SCNShape shapeWithPath:outline extrusionDepth:t];
   s.chamferMode = SCNChamferModeBoth;
@@ -314,18 +326,24 @@ static SCNNode *foldSlab(NSBezierPath *outline, CGFloat t, SCNMaterial *front, S
   [profile moveToPoint:NSMakePoint(0, 1)];
   [profile appendBezierPathWithArcWithCenter:NSMakePoint(0, 0) radius:1 startAngle:90 endAngle:0 clockwise:YES];
   s.chamferProfile = profile;
-  SCNMaterial *glass = [SCNMaterial material];  // under the face: never seen but at a grazing edge
+  SCNMaterial *glass = [SCNMaterial material];  // under the faces: never seen but at a grazing edge
   glass.lightingModelName = SCNLightingModelPhysicallyBased;
   glass.diffuse.contents = [NSColor colorWithWhite:0.02 alpha:1];
   glass.roughness.contents = @0.2;
-  s.materials = @[glass, back, metal, metal, metal];
+  s.materials = @[glass, glass, metal, metal, metal];
   SCNNode *n = [SCNNode nodeWithGeometry:s];
   n.position = SCNVector3Make(0, 0, -t / 2);
-  SCNShape *flat = [SCNShape shapeWithPath:outline extrusionDepth:0];
-  flat.materials = @[front];
-  SCNNode *face = [SCNNode nodeWithGeometry:flat];
-  face.position = SCNVector3Make(0, 0, t / 2 + MAX(0.05, t * 0.01));
+  CGFloat eps = MAX(0.05, t * 0.01);
+  SCNShape *flatFront = [SCNShape shapeWithPath:outline extrusionDepth:0];
+  flatFront.materials = @[front];
+  SCNNode *face = [SCNNode nodeWithGeometry:flatFront];
+  face.position = SCNVector3Make(0, 0, t / 2 + eps);
   [n addChildNode:face];
+  SCNShape *flatBack = [SCNShape shapeWithPath:outline extrusionDepth:0];
+  flatBack.materials = @[back];  // one cap, seen from either side
+  SCNNode *backFace = [SCNNode nodeWithGeometry:flatBack];
+  backFace.position = SCNVector3Make(0, 0, -t / 2 - eps);
+  [n addChildNode:backFace];
   return n;
 }
 
@@ -520,6 +538,7 @@ static CATransform3D foldAbout(CATransform3D r, CGFloat x, CGFloat y, CGFloat z)
   };
   SCNMaterial * (^coverBack)(void) = ^SCNMaterial *(void) {
     SCNMaterial *m = foldPictureMaterial(coverDark, coverGlow, foldPlace(coverBox), 0.16);
+    foldBackPlace(m, coverBox);
     foldFlat(m, coverLit);
     [self->_cover addObject:m];
     return m;
@@ -530,11 +549,14 @@ static CATransform3D foldAbout(CATransform3D r, CGFloat x, CGFloat y, CGFloat z)
       m.lightingModelName = SCNLightingModelPhysicallyBased;
       m.diffuse.contents = [NSColor colorWithSRGBRed:0.13 green:0.14 blue:0.17 alpha:1];
       m.roughness.contents = @0.45;
+      m.doubleSided = YES;
       return m;
     }
     CGRect fr = frac(rr);
     fr.origin.x = 1 - fr.origin.x - fr.size.width;  // the back picture is seen from behind
-    return foldPictureMaterial(backPic, NULL, foldPlace(fr), 0.5);  // frosted glass
+    SCNMaterial *m = foldPictureMaterial(backPic, NULL, foldPlace(fr), 0.5);  // frosted glass
+    foldBackPlace(m, fr);
+    return m;
   };
 
   SCNNode *fixed = [SCNNode node];
@@ -545,13 +567,13 @@ static CATransform3D foldAbout(CATransform3D r, CGFloat x, CGFloat y, CGFloat z)
     CGRect left = CGRectMake(bx0, by0, hx1 - bx0, by1 - by0), right = CGRectMake(hx1, by0, bx1 - hx1, by1 - by0);
     [fixed addChildNode:foldSlab(foldOutline(right, radius, 2 | 4), t, front(right), plainBack(right), _metal)];
     [_moving1 addChildNode:foldSlab(foldOutline(left, radius, 1 | 8), t, front(left), coverBack(), _metal)];
-    _stack = CGRectMake(hx1 - t, by0, hx1 - bx0 + t, by1 - by0);  // the barrel rounds off the hinge's side
+    _stack = CGRectMake(hx1, by0, hx1 - bx0, by1 - by0);  // the cover's face, where the window's picture will be
     _stackTop = t;
   } else if (hinge == FOLD_CLAMSHELL) {
     CGRect top = CGRectMake(bx0, hy, bx1 - bx0, by1 - hy), bottom = CGRectMake(bx0, by0, bx1 - bx0, hy - by0);
     [fixed addChildNode:foldSlab(foldOutline(top, radius, 1 | 2), t, front(top), coverBack(), _metal)];
     [_moving1 addChildNode:foldSlab(foldOutline(bottom, radius, 4 | 8), t, front(bottom), plainBack(bottom), _metal)];
-    _stack = CGRectMake(bx0, hy - t, bx1 - bx0, by1 - hy + t);
+    _stack = top;
     _stackTop = t;
   } else {
     _moving2 = [SCNNode node];
@@ -561,9 +583,7 @@ static CATransform3D foldAbout(CATransform3D r, CGFloat x, CGFloat y, CGFloat z)
     [fixed addChildNode:foldSlab(foldOutline(mid, radius, 0), t, front(mid), plainBack(mid), _metal)];
     [_moving1 addChildNode:foldSlab(foldOutline(left, radius, 1 | 8), t, front(left), plainBack(left), _metal)];
     [_moving2 addChildNode:foldSlab(foldOutline(right, radius, 2 | 4), t, front(right), coverBack(), _metal)];
-    // Closed: the right panel over the left, between the two barrels.
-    CGFloat x0 = fmin(2 * hx2 - bx1, hx1 - t), x1 = hx2 + 1.5 * t;
-    _stack = CGRectMake(x0, by0, x1 - x0, by1 - by0);
+    _stack = CGRectMake(2 * hx2 - bx1, by0, bx1 - hx2, by1 - by0);  // the right panel's back, folded over
     _stackTop = 2 * t;
   }
   // Keys: small metal bars standing out of the body's right side.
@@ -615,12 +635,12 @@ static CATransform3D foldAbout(CATransform3D r, CGFloat x, CGFloat y, CGFloat z)
   if (hinge == FOLD_CLAMSHELL) _moving1.transform = foldAbout(CATransform3DMakeRotation(-a1, 1, 0, 0), 0, _hy, 0);
   else _moving1.transform = foldAbout(CATransform3DMakeRotation(a1, 0, 1, 0), _hx1, 0, 0);
   if (_moving2) _moving2.transform = foldAbout(CATransform3DMakeRotation(-a2, 0, 1, 0), _hx2, 0, t / 2);
-  for (SCNMaterial *mt in _inner) mt.emission.intensity = p.innerLit;
-  for (SCNMaterial *mt in _cover) mt.emission.intensity = p.coverLit;
   // The screens start and end as the window's pictures exactly (flat), and are lit by the room in between: the open
   // device's at the start of a closing (the end of an opening), the cover display's at its end (an opening's start).
   double lead = foldSmoother(1 - foldRamp(u, 0, 0.12)), land = foldSmoother(foldRamp(u, 0.86, 0.985));
   double innerFlat = f->closing ? lead : land, coverFlat = f->closing ? land : lead;
+  for (SCNMaterial *mt in _inner) mt.emission.intensity = p.innerLit;
+  for (SCNMaterial *mt in _cover) mt.emission.intensity = p.coverLit;
   for (SCNMaterial *mt in _inner) [mt setValue:@(innerFlat) forKey:@"flatness"];
   for (SCNMaterial *mt in _cover) [mt setValue:@(coverFlat) forKey:@"flatness"];
   // The barrels: hidden while flat (no angle), filled to the hinge's angle as it turns.
@@ -630,6 +650,10 @@ static CATransform3D foldAbout(CATransform3D r, CGFloat x, CGFloat y, CGFloat z)
     _barrel1.geometry = a1 > 0.01 ? foldBarrel(YES, _hx1, 0, _by0 + t * 0.2, _by1 - t * 0.2, 0, t, 1, a1, _metal) : nil;
   }
   if (_barrel2) _barrel2.geometry = a2 > 0.01 ? foldBarrel(YES, _hx2, t / 2, _by0 + t * 0.2, _by1 - t * 0.2, t * 0.5, t * 1.5, -1, a2, _metal) : nil;
+  // The closed device's picture draws its hinge: the barrels fade out as the device lands on it (and in as it leaves).
+  double shut = f->closing ? land : lead;
+  _barrel1.opacity = 1 - shut;
+  _barrel2.opacity = 1 - shut;
 }
 
 // SceneKit's render loop (a live SCNView): the pose for the time since the first frame, and the end.

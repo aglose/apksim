@@ -119,7 +119,27 @@ int main(int argc, char **argv) {
       f.closing = closing;
       foldDump(&f, argv[2], frames);
     }
-    printf("wrote %d frames of each to %s\n", frames, argv[2]);
+    // What the window shows once the fold is over (and before it begins): the closed and the open picture where they
+    // are, on the frames' grey, to compare with a run's last and first frames (scripts cannot see the window).
+    CGRect crop = CGRectIntegral(CGRectInset(CGRectUnion(f.openRect, f.closedRect), -f.openRect.size.width * 0.35, -f.openRect.size.height * 0.25));
+    for (int which = 0; which < 2; which++) {
+      CGImageRef pic = which ? f.closedLit : f.openLit;
+      CGRect at = which ? f.closedRect : f.openRect;
+      CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+      CGContextRef ctx = CGBitmapContextCreate(NULL, crop.size.width, crop.size.height, 8, 0, cs, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+      CGColorSpaceRelease(cs);
+      CGContextSetRGBFillColor(ctx, 0.88, 0.88, 0.88, 1);
+      CGContextFillRect(ctx, CGRectMake(0, 0, crop.size.width, crop.size.height));
+      CGContextSetInterpolationQuality(ctx, kCGInterpolationHigh);
+      CGContextDrawImage(ctx, CGRectOffset(at, -crop.origin.x, -crop.origin.y), pic);
+      CGImageRef img = CGBitmapContextCreateImage(ctx);
+      CGContextRelease(ctx);
+      NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithCGImage:img];
+      NSString *path = [NSString stringWithFormat:@"%s/window-%s.png", argv[2], which ? "closed" : "open"];
+      [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES];
+      CGImageRelease(img);
+    }
+    printf("wrote %d frames of each to %s, and window-open.png and window-closed.png\n", frames, argv[2]);
   }
   return 0;
 }
