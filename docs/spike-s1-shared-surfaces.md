@@ -91,6 +91,10 @@ and needs one explicit `mach-lookup` allow if the profile is ever made default-d
 
 ## What a real implementation needs
 
+- Nothing that can block on the raster thread: the prototype writes each `f` line and retries a failed Mach send
+  there, so a host that stops reading (or dies with its socket open) stalls or thrashes the instance's drawing. Lines
+  go through a queue on a thread of their own, as `FrameStream` does, and a failed send ends the watch.
+
 - Back-pressure: the host must tell the instance when it is done with a surface (or the instance must check
   `IOSurfaceIsInUse` / a use count) before reusing it. The prototype assumes the host reads within two frames;
   a host holding a frame on screen for a long time, or a 3-deep ring under load, will tear. A "released N" reply

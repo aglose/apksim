@@ -74,7 +74,12 @@ final class SharedSurface {
         return;
       }
       if (!loaded) {
-        System.load(HostOs.runtimeLib("libsharedsurface").toString());
+        try {
+          System.load(HostOs.runtimeLib("libsharedsurface").toString());
+        } catch (UnsatisfiedLinkError e) {
+          o.println("error: surfacewatch: libsharedsurface is not built (scripts/build-native.sh)");
+          return;
+        }
         loaded = true;
       }
       int rc = nativeStart(m, m == 2 ? args[2] : null);
