@@ -162,6 +162,7 @@ nav:
       - 'Startup Gate': startup-gate.md
       - 'Performance Plan': perf-plan.md
       - 'Plan': plan.md
+      - 'Spike: Shared Surfaces': spike-s1-shared-surfaces.md
       - 'Roadmap': roadmap.md
       - 'License': license.md
       - 'Releases ↗': https://github.com/aglose/apksim/releases
