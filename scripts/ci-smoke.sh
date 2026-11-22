@@ -45,6 +45,14 @@ if ! limit 300 docker run --rm --name "$OVERLAY_NAME" --platform "$PLATFORM" -e 
 fi
 grep -q "launch overlay added" "$OUT/overlay.log" || { echo "the test app added no launch overlay" >&2; exit 1; }
 grep first-frame "$OUT/overlay.log"
+# A main thread slow to name the APK (here held on the APK cache's lock) must not leave the app without its manifest:
+# the runner built ahead read it first in 0.58.0, and the app ran with no Application or resources of its own.
+LATE_NAME=apksim-late-manifest-$$
+if ! limit 300 docker run --rm --name "$LATE_NAME" --platform "$PLATFORM" -v "$OUT:/work" -v "$ROOT/scripts:/checks:ro" \
+    --entrypoint bash "$IMAGE" /checks/late-manifest-check.sh /opt/apksim/work app.apk; then
+  docker rm -f "$LATE_NAME" >/dev/null 2>&1 || true
+  exit 1
+fi
 
 docker run -d --name "$NAME" --platform "$PLATFORM" -p "127.0.0.1:$PORT:$PORT" -p "127.0.0.1:$ADB_PORT:$ADB_PORT" \
   -v "$OUT:/work" "$IMAGE" --control "$PORT" --adb "$ADB_PORT" --control-bind 0.0.0.0 \

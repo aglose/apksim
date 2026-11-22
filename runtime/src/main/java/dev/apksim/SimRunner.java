@@ -55,6 +55,13 @@ public class SimRunner extends RobolectricTestRunner {
    */
   static volatile java.util.function.Supplier<AndroidManifest> deferredApkSetup;
 
+  /**
+   * Set when the manifest factory answered with no APK known (a standby's warm-up, an overlapped URL launch before
+   * its download, or a runner built ahead that got there before {@link AppInfo#load}): Robolectric keeps that answer in
+   * the runner's children, so Main builds the runner again once the APK is known (see Main's prebuilt runner).
+   */
+  static volatile boolean manifestWithoutApk;
+
   static {
     // A window gets the size its view hierarchy measured (WRAP_CONTENT), placed by its gravity, as from a device's
     // window manager, in running instances as in test runs (Instrument sets it there). Without it Robolectric's
@@ -490,6 +497,7 @@ public class SimRunner extends RobolectricTestRunner {
       String apkProp = System.getProperty("apksim.apk");
       if (apkProp == null) {
         // A standby's warm-up (StandbyWarmup): no APK yet, so Robolectric's default application.
+        manifestWithoutApk = true;
         return new ManifestIdentifier(null, null, null, null, List.of(), null);
       }
       Path cache = Path.of(System.getProperty("apksim.cache"));

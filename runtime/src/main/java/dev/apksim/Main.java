@@ -176,6 +176,19 @@ public final class Main {
       } catch (Throwable ignored) {
         // Fall through to build on the main thread so any error reports normally.
       }
+      // Robolectric reads the app's manifest while it builds the runner (getChildren). Built ahead, it can get there
+      // before AppInfo.load has named the APK (a main thread slowed by load, or waiting on the APK cache's lock while
+      // another process sweeps a new state folder): it then keeps the standby warm-up's manifest, with no app at all,
+      // and the app ran with Robolectric's default Application, theme and data folder and none of its own resources
+      // ("No package ID 7f"). Such a runner is built again now that the APK is known. An overlapped URL launch is not
+      // one: its manifest comes later on purpose (deferredApkSetup), and apksim.apk is still unset here.
+      if (hostRunner != null && SimRunner.manifestWithoutApk && System.getProperty("apksim.apk") != null) {
+        if (!Boolean.getBoolean("apksim.quiet")) {
+          System.err.println("[apksim] the runner built ahead read the manifest before the APK was known: built again");
+        }
+        SimRunner.manifestWithoutApk = false;
+        hostRunner = null;
+      }
     }
     Result r = hostRunner != null ? new JUnitCore().run(hostRunner) : new JUnitCore().run(Request.aClass(Host.class));
     for (Failure f : r.getFailures()) {
@@ -309,6 +322,7 @@ public final class Main {
     if (System.getProperty("apksim.instrument") == null) {
       java.util.concurrent.CompletableFuture<org.junit.runner.Runner> rf = new java.util.concurrent.CompletableFuture<>();
       prebuiltHostRunner = rf;
+      SimRunner.manifestWithoutApk = false;
       Thread rt = new Thread(() -> {
         try {
           rf.complete(Request.aClass(Host.class).getRunner());
