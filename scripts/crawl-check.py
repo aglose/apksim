@@ -14,6 +14,11 @@ Usage: crawl-check.py [--apk APK] [--out DIR] [--quick] [--docker IMAGE] [-j N] 
    a spinner with no network, a layout that does not mirror, an unlabeled control, in Compose and in Views) reports each,
    none of the controls beside them that do it right, one failing JUnit case per finding with its path, and exits 0
    once `testapks/composeapp/crawl-allow-faults.txt` accepts them.
+8. A walk seeded with walk 1's result (`--seed`) and `--only` one screen gives walk 1's screens, transitions and paths,
+   walks that screen alone (`origin`), carries every other with its captures, prints `--events` lines beside the human
+   ones, and takes under a fifth of walk 1's time. `--seed` without `--only`, or with `--base`, is refused.
+9. A seed walked with a long Settings value that makes the slot screen's text wrap (another structure), walked again
+   seeded without it and `--only` that screen: the screen at its position replaces it (`replaces`), the rest is carried.
 
 --quick (CI, where the image is slow) walks to depth 2. --docker IMAGE runs crawl.py in the Linux image
 (`--entrypoint crawl.py`, OUT mounted at /work) as scripts/ci-smoke.sh does. Exit status 1 on any failed expectation.
@@ -61,6 +66,20 @@ def crawl(apk, out, *extra, expect=(0, 1)):
         sys.exit(1)
     with open(os.path.join(out, "crawl.json")) as f:
         return json.load(f), secs, p
+
+
+def wpath(p):
+    """A folder as crawl.py sees it (inside the container with --docker)."""
+    return "/work/" + os.path.relpath(p, DOCKER[2]) if DOCKER else p
+
+
+def shape(doc):
+    """What a walk found, without where it came from or how long it took: screens with their paths, and transitions."""
+    screens = {s["id"]: (json.dumps(s["path"], sort_keys=True), s.get("parent"), s["depth"], s["activity"],
+                         tuple(a["label"] for a in s.get("actions", []))) for s in doc["screens"]}
+    edges = sorted(json.dumps({k: e.get(k) for k in ("from", "action", "cmd", "kind", "to", "steps")}, sort_keys=True)
+                   for e in doc["edges"])
+    return screens, edges
 
 
 def graph(doc):
@@ -218,8 +237,59 @@ def main():
         crash_fix = ET.parse(os.path.join(args.out, "sweep-deadline", "junit.xml")).getroot()
         check(int(crash_fix.get("skipped")) >= 1, "its JUnit lists the cases that did not run as skipped")
 
+    # 8: a seeded walk that walks one screen again
+    seed_dir = os.path.join(args.out, "seeded")
+    max_depth = 2 if args.quick else None
+    pick = sorted((len(by_edge.get(s["id"], [])), s["id"]) for s in screens
+                  if s["depth"] > 0 and not s.get("flaky") and by_edge.get(s["id"])
+                  and all(e["to"] not in ("FAILED", "CRASH") for e in by_edge[s["id"]])
+                  and (max_depth is None or s["depth"] < max_depth))
+    only = pick[0][1] if pick else screens[0]["id"]
+    doc10, secs_g, p10 = crawl(args.apk, seed_dir, *matrix, *opts, "--seed", wpath(a_dir), "--only", only, "--events")
+    sa, sb = shape(doc), shape(doc10)
+    check(sa == sb, f"a walk seeded with walk 1 and --only {only} finds the same screens, transitions and paths",
+          f"screens only in 1st {sorted(set(sa[0]) - set(sb[0]))[:3]}, only in seeded {sorted(set(sb[0]) - set(sa[0]))[:3]}, "
+          f"differing {[k for k in sa[0] if k in sb[0] and sa[0][k] != sb[0][k]][:3]}; edges only in 1st "
+          f"{sorted(set(sa[1]) - set(sb[1]))[:2]}, only in seeded {sorted(set(sb[1]) - set(sa[1]))[:2]}")
+    origins = {s["id"]: s.get("origin") for s in doc10["screens"]}
+    check(origins.get(only) == "walked" and all(o == "carried" for k, o in origins.items() if k != only)
+          and all(s.get("origin") == "walked" for s in screens),
+          "the --only screen is walked, every other carried (and a plain walk says walked)",
+          str([(k, o) for k, o in origins.items() if (o == "walked") != (k == only)][:4]))
+    caps = [(s["id"], c) for s in doc10["screens"] for c in doc10["combos"]
+            if not os.path.isfile(os.path.join(seed_dir, s["captures"].get(c, "missing")))]
+    check(not caps, "every screen of the seeded walk has its captures, carried ones from the seed", str(caps[:3]))
+    lines = p10.stdout.splitlines()
+    evs = [json.loads(ln) for ln in lines if ln.startswith("{")]
+    check({e["id"] for e in evs if e.get("event") == "screen"} == set(origins) and any(e.get("event") == "level" for e in evs)
+          and any(e.get("event") == "done" for e in evs) and any(ln.startswith("[new] depth ") for ln in lines),
+          "--events prints a JSON line per screen and level, and the human lines stay", str(evs[:2]))
+    check(secs_g < secs_a / 5, "the seeded walk takes under a fifth of the full walk's time", f"{secs_g:.0f} s against {secs_a:.0f} s")
+    for extra, what in ((["--seed", wpath(a_dir)], "--seed without --only"),
+                        (["--seed", wpath(a_dir), "--only", only, "--base", args.apk], "--seed with --base")):
+        p = subprocess.run([sys.executable, CRAWL, args.apk, "--out", os.path.join(args.out, "unit"), *extra],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        check(p.returncode == 2 and "--seed" in p.stdout, f"{what} is refused", p.stdout[-200:])
+
+    # 9: an --only screen whose path now arrives at another structure
+    rs_dir, rw_dir = os.path.join(args.out, "replace-seed"), os.path.join(args.out, "replaced")
+    two = ["--start", "apksim://composeapp/home", "--start", "apksim://slot", "--max-depth", "1", "--matrix", "appearance=light",
+           "-j", str(args.j)]
+    doc11, _, _ = crawl(args.apk, rs_dir, *two, "--setting", "global:apksim_slot_seed=" + "long-" * 120)
+    old = [s["id"] for s in doc11["screens"] if s["activity"].endswith("SlotStateActivity") and not s["path"]["steps"]]
+    doc12, _, _ = crawl(args.apk, rw_dir, *two, "--seed", wpath(rs_dir), "--only", old[0] if old else "none")
+    now = [s for s in doc12["screens"] if s.get("replaces")]
+    check(len(old) == 1 and len(now) == 1 and now[0]["replaces"] == old[0] and now[0]["id"] != old[0]
+          and now[0]["origin"] == "walked" and now[0]["path"] == {"start": "apksim://slot", "steps": []}
+          and old[0] not in {s["id"] for s in doc12["screens"]} | {e["to"] for e in doc12["edges"]},
+          "an --only screen that arrives at another structure is replaced at its position", f"old {old}, now {[(s['id'], s['replaces']) for s in now]}")
+    check(all(s["origin"] == "carried" for s in doc12["screens"] if s is not (now[0] if now else None))
+          and len(doc12["screens"]) == len(doc11["screens"]), "the rest of that seed is carried",
+          str([(s["id"], s["origin"]) for s in doc12["screens"]]))
+
     print(f"timings: walk+captures {secs_a:.0f} s ({len(screens)} screens, {len(doc['edges'])} transitions), repeat walk {secs_b:.0f} s, "
-          f"compare {secs_c:.0f} s, prepared {secs_d:.0f} s, sweep {secs_e:.0f} s ({secs_f:.0f} s with an allow-list)")
+          f"compare {secs_c:.0f} s, prepared {secs_d:.0f} s, sweep {secs_e:.0f} s ({secs_f:.0f} s with an allow-list), "
+          f"seeded walk of one screen {secs_g:.0f} s")
     if failures:
         print(f"crawl-check: {len(failures)} check(s) failed", file=sys.stderr)
         sys.exit(1)

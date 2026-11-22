@@ -14,7 +14,8 @@ Status: item 1 of the roadmap, checked on the test app (`scripts/crawl-check.py`
 scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] [--max-seconds S] [--max-depth N]
                  [--skip-text REGEX]... [--tap-unlabeled] [--fill TEXT] [--matrix AXIS=V,V]... [--matrix-file SPEC.json]
                  [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--keep-data]
-                 [--base-option "APKSIM OPTIONS"] [-- APKSIM_OPTION...]
+                 [--base-option "APKSIM OPTIONS"] [--seed RUN (--only ID,ID... | --only-file PATH)] [--events]
+                 [-- APKSIM_OPTION...]
 ```
 
 - `--out DIR`: `report.html` (one file: the map as a graph you can click, a card per screen with its matrix, findings,
@@ -45,6 +46,10 @@ scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] 
 - Matrix: `--matrix device=phone,tablet --matrix appearance=light,dark` (axes of `snapshot.py`: device, appearance,
   locale, fontscale; missing axes take phone, light, en-US, 1.0), or `--matrix-file` naming a snapshot spec whose
   `matrix` and `exclude` are used. `--no-captures` walks only.
+- `--seed RUN --only ID,ID...` (or `--only-file PATH`, one id per line, `#` for a comment): start from an earlier walk's
+  result instead of from nothing, and walk again only the screens named (see "Seeded walks").
+- `--events`: besides the human lines, which stay as they are (`[new] depth N: ...`), one line of JSON on stdout per
+  finished screen, per level, and one at the end (see "Seeded walks").
 - `-j N` instances at once (default 3; others share this machine). Exit status: 0 when the walk finished, 1 when it
   found a crash (or with `--base` a difference), 2 for bad arguments or an instance that never started.
 
@@ -75,6 +80,56 @@ scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] 
    the same structure and a capture that differs from the base's by more than `--diff-delta` in more than `--diff-pixels` of
    its pixels in any combination; `crawl.json`'s `diffs` and `diff/` have the maps), `new` (the path does not reach a
    screen there) and `gone` (a screen of the base no path of the new build reaches).
+
+## Seeded walks
+
+For a history of screen maps (one per commit), a walk need not start from nothing: a tool that knows which screens a
+change can have touched names them, and the crawler walks those again and takes everything else from an earlier walk.
+The crawler does not decide what is affected; it is told.
+
+`--seed RUN` names an earlier walk's `--out` folder (its `crawl.json` and `screens/`), and `--only ID,ID,...` or
+`--only-file PATH` the screens (ids from that `crawl.json`) to walk again. Then:
+
+1. Every screen of the seed is in the new graph. Those not named are carried over unchanged: their entry (path, depth,
+   actions), their transitions and their capture files (hard-linked into OUT's `screens/`, copied where linking fails),
+   with no instance time spent on them. The seed's findings are kept, except those whose path passes through a screen
+   walked again (they are found again or not). The seed's `incomplete` lines are kept with `seed: ` in front.
+2. The named screens are done first, before anything else, so a walk cut short by `--max-seconds` has covered them;
+   one that was not reached is named in `incomplete` (`--only screen(s) not explored: ...`). Each is reached by its
+   stored `path`, read, and explored in full as a normal walk explores a screen: every control tried, its transitions
+   replaced by what they do now, its captures retaken in every combination.
+3. A control of such a screen that leads to a screen the seed does not know opens the normal breadth-first walk from
+   there, within the usual budgets (`--max-screens` counts the carried screens too; `--max-depth` the depth from the
+   starts). One that leads to a known screen is a transition to it; that screen is not walked again.
+4. When a named screen's path no longer replays (a step fails, after one retry) or arrives at another structure, what it
+   reaches is the screen at that position: it takes the old screen's place in the order, its path, parent and depth,
+   records `replaces: OLD_ID`, and is explored. The old id is gone: transitions into it and children's `parent` point to
+   the new one. A path that fails is also a `replay` finding; one that ends the app or crashes keeps the old entry with
+   `flaky` and no transitions. If the structure it reaches is already a screen of the seed, that screen is walked again
+   (and `replaces` the old id) and the old entry is dropped.
+5. `--start` is not used (every screen's path has its start). The matrix must be the seed's (`combos` in its
+   `crawl.json`, so the carried captures fit; a different one is refused). `--seed` without `--only` would walk nothing
+   and is refused (leave out `--seed` to walk everything again); `--seed` with `--base` or `--base-option`, and with
+   `--sweep`, are refused. The seed may be OUT itself: its captures are moved aside first.
+
+`crawl.json` is as before, with two keys per screen: `origin`, `"walked"` (explored or found in this run; every screen
+of a walk without `--seed`) or `"carried"` (taken from the seed), and `replaces: OLD_ID` on a screen that took a named
+screen's place. Readers that do not know them keep working.
+
+`--events` (with or without `--seed`) prints, beside the human lines:
+
+```
+{"event": "level", "build": "new", "depth": 1, "screens": 4, "known": 9}
+{"event": "screen", "build": "new", "id": "MainActivity-1a2b3c4d", "origin": "walked", "depth": 1, "title": "Trips"}
+{"event": "done", "exit": 0, "screens": 15, "edges": 99, "incomplete": [], "seconds": {...}}
+```
+
+A `screen` line comes when a screen's controls have all been tried (carried screens at the start, as they need
+nothing), with `replaces` when it has one; a screen found but not explored (a budget) gets one at the end of the walk
+with `"explored": false`. A `level` line comes with each `[BUILD] depth N:` line (`depth` the level's least: a seeded
+walk's first level is the named screens at their own depths). Captures follow the walk, so a screen's line comes before
+its captures are taken. `build` is `new`, or `base` for the other build of a `--base` walk. Every event is one line
+starting with `{`; the human lines never do.
 
 ## What a screen is
 
@@ -121,6 +176,12 @@ throughout (up to 60 earlier), so read these as upper bounds; `-j 3`. `scripts/c
 | the same walk again, no captures | the same 15 screens and 99 transitions | 76 s |
 | `--base` (same APK, base launched with a Settings value only the slot screen shows), depth 1 | 5 screens, exactly the slot screen `changed` (46,494 pixels differ), the animating Shader tab not compared | 33 s |
 | a prepared start (`--setting`), depth 0 | the seed is on the screen it reached | 6 s |
+
+Seeded walks (`crawl-check.py` steps 8 and 9, 2026-11-21, load average ~9): the full walk with captures found 19
+screens and 167 transitions in 247 s; seeded with that result and `--only` one dialog screen, the same screens,
+transitions and paths in 10 s (that screen walked and captured again, 18 carried). A seed of home and the slot screen
+walked with a long Settings value (the slot screen's text wraps: another structure), walked again without it and
+`--only` the slot screen: that screen `replaces` the old id and the rest is carried, 10 s against the seed's 23 s.
 
 In the Linux image (`crawl-check.py --docker IMAGE --quick`, depth 2, the same load; what `scripts/ci-smoke.sh` runs): all
 checks pass; 14 screens and 58 transitions with captures in 145 s, the repeat walk 75 s, the comparison 84 s, the prepared
