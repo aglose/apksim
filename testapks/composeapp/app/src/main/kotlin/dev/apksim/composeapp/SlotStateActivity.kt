@@ -90,8 +90,15 @@ class SlotStateActivity : ComponentActivity() {
     val ownState = own?.let {
       Environment.getExternalStorageState(it) + if (Environment.isExternalStorageEmulated(it)) " emulated" else ""
     }
+    // All-files access (API 30+): false for an app nobody granted it, as on a device; reading it threw
+    // ArrayIndexOutOfBoundsException while the framework's list of external storage folders was empty.
+    val manager = try {
+      if (android.os.Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager().toString() else "n/a"
+    } catch (e: RuntimeException) {
+      e.javaClass.simpleName
+    }
     return "${Environment.getExternalStorageState()}, Download ${if (inside) "inside" else "outside"} /sdcard, " +
-        "app folder $ownState"
+        "app folder $ownState, manager $manager"
   }
 
   companion object {

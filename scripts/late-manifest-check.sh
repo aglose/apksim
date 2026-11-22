@@ -19,7 +19,7 @@ import fcntl, sys, time
 f = open(sys.argv[1], "a+")
 fcntl.lockf(f, fcntl.LOCK_EX)  # the same POSIX record lock Java's FileChannel.lock takes
 open(sys.argv[2], "w").close()
-time.sleep(8)
+time.sleep(20)  # longer than building the runner takes, also in an emulated CI image
 EOF
 holder=$!
 until [[ -e "$READY" ]]; do kill -0 "$holder" 2>/dev/null || { echo "could not hold the APK cache's lock" >&2; exit 1; }; sleep 0.1; done
@@ -33,5 +33,6 @@ fail() { tail -30 "$LOG" >&2; echo "late-manifest-check: $1" >&2; exit 1; }
 grep -q first-frame "$LOG" || fail "no first frame"
 grep -q "launch overlay added" "$LOG" || fail "the app's own Application did not run: the runner kept a manifest with no APK"
 ! grep -q "No package ID 7f" "$LOG" || fail "the app's resources were missing"
-echo "late-manifest-check: the app's own Application and resources, with the main thread held back (runner built again: $(grep -c 'built again' "$LOG" || true))"
+grep -q "built again" "$LOG" || fail "the runner was not built before the APK was known: the check reproduced nothing"
+echo "late-manifest-check: the runner built ahead was built again, and the app ran with its own Application and resources"
 rm -f "$LOG"

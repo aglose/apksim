@@ -171,9 +171,10 @@ final class AppInfo {
       start = home;  // a home app with no launcher entry
     }
     if (start == null && !testRun) throw new LaunchError("no launcher activity in " + apk + " (choose one with --activity)");
-    System.setProperty("apksim.apk", apk.toString());
     System.setProperty("apksim.cache", cache.toString());
     System.setProperty("apksim.package", pkg);
+    // Last: SimRunner's manifest factory, which may run on the runner built ahead, takes it to mean all three are set.
+    System.setProperty("apksim.apk", apk.toString());
     // The target SDK compat changes follow (CompatTable): the manifest's, as a device reads it; a launch sets it anew.
     int target = targetSdk[0] > 0 ? targetSdk[0] : minSdk[0];
     CompatTable.configure(pkg, target > 0 ? target : 1);

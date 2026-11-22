@@ -569,7 +569,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     `SlotDevice`: what a device keeps outside the app's data, beside the slot in `<slot>.device/`, taken with the slot
     before Application.onCreate (warm or cold): `sdcard/` is external storage (`/sdcard`, its public folders such as
     Download inside it, mounted; Robolectric's was two temp folders per process, "removed"; the File overloads too:
-    `getExternalStorageState(File)` for anything under it, emulated for it and the app's external folder), and `settings.properties`
+    `getExternalStorageState(File)` for anything under it, emulated for it and the app's external folder; it is also the framework's first external folder, `UserEnvironment.getExternalDirs`, whose empty list made `Environment.isExternalStorageManager()` throw, and all-files access is its op's default, so that answers false as on a device: `apksim://slot`'s storage line), and `settings.properties`
     the Settings.Global/Secure/System values that differ from the defaults (by the app or `adb shell settings put`;
     Robolectric's static maps, read every 250 ms from Host's loop and on exit (Host.exit, the warm client hanging up,
     a JVM shutdown hook for SIGTERM and the app's System.exit), as no write hook exists, and written a
