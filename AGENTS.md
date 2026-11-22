@@ -57,6 +57,13 @@ Read README.md for results and limits; this file covers how to work on the code.
     Conscrypt's native library (OkHttp's start asks for it) loads on a thread of its own as the first test environment
     is set up (`SimRunner.conscryptAhead`; not earlier: it reads android.os.Build, which must initialize inside the
     sandbox). docs/perf-plan.md is the plan for memory, launch and run time, with what was done and measured.
+    Host's runner is built ahead on `apksim-init-runner`, and Robolectric reads the app's manifest while it builds it
+    (`getChildren`): one that got there before `AppInfo.load` named the APK kept the standby warm-up's empty manifest,
+    and the app ran with Robolectric's default Application, theme and data folder and none of its own resources ("No
+    package ID 7f found"; 0.58.0, first launches beside the startup cache's training, under load). `SimRunner`'s factory
+    notes such an answer (`manifestWithoutApk`) and Main builds the runner again once the APK is known (one stderr line);
+    an overlapped URL launch keeps its runner, its manifest coming later on purpose. `scripts/late-manifest-check.sh`
+    (CI, `ci-smoke.sh` app part; on the Mac with a new state folder) holds the APK cache's lock to make it happen.
   - `FrameworkFlattener` (B2, `scripts/build.sh` -> `work/runtime/android-all-flat.jar`): offline ASM rewriter that
     flattens unshadowed non-native `invokedynamic` trampolines (97%), reflective `<clinit>` trampolines, and unshadowed-
     hierarchy `$$robo$init()` sites (using `InvokeDynamicSupport.NO_SHADOW`), stamp-cached and toggleable with
@@ -562,7 +569,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     `SlotDevice`: what a device keeps outside the app's data, beside the slot in `<slot>.device/`, taken with the slot
     before Application.onCreate (warm or cold): `sdcard/` is external storage (`/sdcard`, its public folders such as
     Download inside it, mounted; Robolectric's was two temp folders per process, "removed"; the File overloads too:
-    `getExternalStorageState(File)` for anything under it, emulated for it and the app's external folder), and `settings.properties`
+    `getExternalStorageState(File)` for anything under it, emulated for it and the app's external folder; it is also the framework's first external folder, `UserEnvironment.getExternalDirs`, whose empty list made `Environment.isExternalStorageManager()` throw, and all-files access is its op's default, so that answers false as on a device: `apksim://slot`'s storage line), and `settings.properties`
     the Settings.Global/Secure/System values that differ from the defaults (by the app or `adb shell settings put`;
     Robolectric's static maps, read every 250 ms from Host's loop and on exit (Host.exit, the warm client hanging up,
     a JVM shutdown hook for SIGTERM and the app's System.exit), as no write hook exists, and written a

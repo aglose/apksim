@@ -77,6 +77,21 @@ final class SlotDevice {
     ShadowEnvironment.setExternalStoragePublicDirectory(sd);
     ShadowEnvironment.setExternalStorageState(Environment.MEDIA_MOUNTED);
     ShadowEnvironment.setIsExternalStorageEmulated(true);
+    // The framework's own list of external storage folders (Environment.UserEnvironment.getExternalDirs, Robolectric's
+    // a list only tests add to): /sdcard first, as on a device. Empty, Environment.isExternalStorageManager() threw
+    // ArrayIndexOutOfBoundsException reading its first entry (an app checking all-files access ended at its first
+    // screen), and getExternalMediaDirs/getObbDirs were empty.
+    java.util.List<java.io.File> dirs = org.robolectric.util.ReflectionHelpers.getStaticField(ShadowEnvironment.class, "externalDirs");
+    dirs.clear();
+    dirs.add(sd.toFile());
+    // All-files access is an app op that starts at its default, which isExternalStorageManager() then decides by the
+    // MANAGE_EXTERNAL_STORAGE permission (not granted at install): false, as on a device. Robolectric answers
+    // MODE_ALLOWED for an op nobody set, which made every app a storage manager.
+    if (app != null) {
+      org.robolectric.Shadows.shadowOf(app.getSystemService(android.app.AppOpsManager.class)).setMode(
+          android.app.AppOpsManager.OPSTR_MANAGE_EXTERNAL_STORAGE, app.getApplicationInfo().uid, app.getPackageName(),
+          android.app.AppOpsManager.MODE_DEFAULT);
+    }
     // The File overloads (getExternalStorageState(File) and the rest) read their own tables: a state covers a folder's
     // children, emulated and removable only the folder named, so the app's own external folder is named too.
     ShadowEnvironment.setExternalStorageState(sd.toFile(), Environment.MEDIA_MOUNTED);
