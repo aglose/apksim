@@ -76,6 +76,7 @@ Common options (each is listed with its values in the README, "Devices and launc
   --rec-window S, --rec-checkpoint S   seconds it keeps (120), between checkpoints (30; 0: when asked)
   rec view [FILE]               open a .apkrec or zipped failure bundle in the trace viewer (docs/trace-viewer.md)
   --no-network, --no-sandbox, --fresh, --debug PORT, --jvm OPTION
+  --header "NAME: VALUE", --netrc   HTTP headers or ~/.netrc credentials for URL launches (Artifactory, private releases)
   --skip-library NAME           the app's System.loadLibrary(NAME) throws UnsatisfiedLinkError (repeatable)
   --move-shared-data            macOS: load 4 KB-aligned libraries with data on a code page (experimental)
 
@@ -432,6 +433,11 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
       if [[ "$2" == inline:* ]]; then EXTRA+=("-Dapksim.networkTrust=$2"); shift 2; continue; fi
       [[ -f "$2" ]] || { echo "no certificate at $2" >&2; exit 2; }
       EXTRA+=("-Dapksim.networkTrust=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"); shift 2 ;;
+    --header)
+      [[ "$2" == ?*:* && "$2" != *$'\r'* && "$2" != *$'\n'* ]] || { echo "--header takes 'NAME: VALUE' with no line breaks" >&2; exit 2; }
+      ((${HEADER_N:-0} < 16)) || { echo "--header: at most 16 headers" >&2; exit 2; }
+      EXTRA+=("-Dapksim.downloadHeader.${HEADER_N:-0}=$2"); HEADER_N=$((${HEADER_N:-0} + 1)); shift 2 ;;
+    --netrc) EXTRA+=("-Dapksim.downloadNetrc=true"); shift ;;
     --no-sandbox) NO_SANDBOX=1; shift ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
@@ -508,7 +514,7 @@ if [[ -n "$STANDBY_ON" && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKS
       # Not java.net.preferIPv4Stack: the JDK reads it once at JVM start, so a standby would ignore it (a beamed
       # instance's own `=true` is its standby's, from the beam profile below, when that JVM starts).
       -Dapksim.beamSandbox=*|-Dapksim.beamBuildCache=*|-Dapksim.beamSiblingCaches=*) ;;
-      -Dapksim.classCache=*|-Dapksim.idleSleep=*|-Dapksim.apkCacheMB=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.compatTable=*|-Dapksim.vsync=*|-Dapksim.freshDownload=*|-Dapksim.downloadConnections=*|-Dapksim.overlapDownload=*) ;;
+      -Dapksim.classCache=*|-Dapksim.idleSleep=*|-Dapksim.apkCacheMB=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.compatTable=*|-Dapksim.vsync=*|-Dapksim.freshDownload=*|-Dapksim.downloadConnections=*|-Dapksim.overlapDownload=*|-Dapksim.downloadHeader.*|-Dapksim.downloadNetrc=*) ;;
       # Recording launches cold: its sandbox must let it write the recording's folder (a standby's is fixed).
       -Dapksim.network=replay:*|-Dapksim.networkProfile=*|-Dapksim.networkRedact=*|-Dapksim.networkMatch=*) ;;
       -Dapksim.networkIgnoreQuery=*|-Dapksim.networkIgnoreHeader=*|-Dapksim.networkUnmatched=*) ;;

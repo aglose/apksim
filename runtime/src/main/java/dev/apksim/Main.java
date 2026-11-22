@@ -20,6 +20,8 @@ public final class Main {
       initTestEnvironmentAhead();
     }
     if (Boolean.getBoolean("apksim.profile")) Sampler.start();
+    java.util.Map<String, String> downloadHeaders = takeDownloadHeaders();
+    boolean downloadNetrc = Boolean.parseBoolean(System.clearProperty("apksim.downloadNetrc"));
     String targetArg = args[0];
     boolean isUrl = ApkDownloader.isUrl(targetArg);
     java.util.concurrent.CompletableFuture<ApkDownloader.Result> downloadFuture = null;
@@ -30,7 +32,8 @@ public final class Main {
         return;
       }
       boolean freshDl = Boolean.getBoolean("apksim.freshDownload") || Boolean.getBoolean("apksim.fresh");
-      downloadFuture = ApkDownloader.downloadToCacheAsync(targetArg, Path.of(System.getProperty("apksim.cacheRoot")), freshDl);
+      downloadFuture = ApkDownloader.downloadToCacheAsync(targetArg, Path.of(System.getProperty("apksim.cacheRoot")),
+          freshDl, downloadHeaders, downloadNetrc);
     }
     if (Boolean.getBoolean("apksim.traceExit")) {
       Runtime.getRuntime().addShutdownHook(new Thread(() -> Thread.getAllStackTraces().forEach((t, st) -> {
@@ -198,6 +201,21 @@ public final class Main {
    * while the APK is indexed and the runner built; the main thread finds it done, or waits only for the rest. A standby
    * did it during its warm-up. -Dapksim.initAhead=false turns it off (A/B), and SimRunner's Conscrypt load with it.
    */
+  /** Reads and immediately clears CLI {@code --header} properties so app code cannot inspect download credentials. */
+  private static java.util.Map<String, String> takeDownloadHeaders() {
+    java.util.Map<String, String> out = new java.util.LinkedHashMap<>();
+    for (int i = 0; i < 16; i++) {
+      String raw = System.clearProperty("apksim.downloadHeader." + i);
+      if (raw == null) continue;
+      int colon = raw.indexOf(':');
+      if (colon <= 0) continue;
+      String name = raw.substring(0, colon).trim();
+      String val = raw.substring(colon + 1).trim();
+      if (!name.isEmpty()) out.put(name, val);
+    }
+    return out;
+  }
+
   private static Path awaitDownload(java.util.concurrent.CompletableFuture<ApkDownloader.Result> future, String displayName) {
     ApkDownloader.Result dl;
     try {

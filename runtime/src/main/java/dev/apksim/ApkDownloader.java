@@ -91,6 +91,11 @@ public final class ApkDownloader {
    * concurrently while bytes stream from the network. Reuses a cached file unless {@code fresh} is true.
    */
   public static CompletableFuture<Result> downloadToCacheAsync(String url, Path cacheRoot, boolean fresh) {
+    return downloadToCacheAsync(url, cacheRoot, fresh, Map.of(), false);
+  }
+
+  public static CompletableFuture<Result> downloadToCacheAsync(String url, Path cacheRoot, boolean fresh,
+      Map<String, String> headers, boolean netrc) {
     Path dest = cachePath(cacheRoot, url);
     if (!fresh && Files.isRegularFile(dest)) {
       try {
@@ -103,9 +108,10 @@ public final class ApkDownloader {
         }
       } catch (IOException ignored) {}
     }
+    Map<String, String> copy = headers == null || headers.isEmpty() ? Map.of() : new LinkedHashMap<>(headers);
     return CompletableFuture.supplyAsync(() -> {
       try {
-        Result res = download(url, dest, Map.of(), DEFAULT_MAX_BYTES, false, null, null);
+        Result res = download(url, dest, dest.getParent(), copy, netrc, DEFAULT_MAX_BYTES, false, null, null);
         sweepDownloadCache(dest.getParent(), dest);
         return res;
       } catch (IOException e) {
@@ -149,16 +155,21 @@ public final class ApkDownloader {
    */
   public static Result download(String url, Path dest, Map<String, String> headers, long maxBytes,
       boolean computeSha256, LongConsumer onTotal, LongConsumer onProgress) throws IOException {
-    return download(url, dest, dest.getParent(), headers, maxBytes, computeSha256, onTotal, onProgress);
+    return download(url, dest, dest.getParent(), headers, false, maxBytes, computeSha256, onTotal, onProgress);
+  }
+
+  public static Result download(String url, Path dest, Map<String, String> headers, boolean netrc, long maxBytes,
+      boolean computeSha256, LongConsumer onTotal, LongConsumer onProgress) throws IOException {
+    return download(url, dest, dest.getParent(), headers, netrc, maxBytes, computeSha256, onTotal, onProgress);
   }
 
   public static Result downloadStaged(String url, Path stageDir, Map<String, String> headers, long maxBytes,
       boolean computeSha256, LongConsumer onTotal, LongConsumer onProgress) throws IOException {
-    return download(url, null, stageDir, headers, maxBytes, computeSha256, onTotal, onProgress);
+    return download(url, null, stageDir, headers, false, maxBytes, computeSha256, onTotal, onProgress);
   }
 
-  private static Result download(String url, Path dest, Path stageDir, Map<String, String> headers, long maxBytes,
-      boolean computeSha256, LongConsumer onTotal, LongConsumer onProgress) throws IOException {
+  private static Result download(String url, Path dest, Path stageDir, Map<String, String> headers, boolean netrc,
+      long maxBytes, boolean computeSha256, LongConsumer onTotal, LongConsumer onProgress) throws IOException {
     long t0 = System.nanoTime();
     URI uri;
     try {
@@ -174,7 +185,15 @@ public final class ApkDownloader {
     // keeping CPU 100% free for overlapped simulator pre-boot. Falls back to parallel ranged HttpURLConnection
     // if curl is unavailable or disabled (-Dapksim.noCurl=true).
     if (!Boolean.getBoolean("apksim.noCurl") && Files.isExecutable(CURL_BIN)) {
-      return downloadWithCurl(url, dest, stageDir, reqHeaders, maxBytes, computeSha256, onTotal, onProgress, t0);
+      return downloadWithCurl(uri, dest, stageDir, reqHeaders, netrc, maxBytes, computeSha256, onTotal, onProgress, t0);
+    }
+    if (netrc && !hasHeaderIgnoreCase(reqHeaders, "authorization")) {
+      String basic = readNetrcBasicAuth(uri.getHost());
+      if (basic != null) {
+        Map<String, String> withAuth = new LinkedHashMap<>(reqHeaders);
+        withAuth.put("Authorization", basic);
+        reqHeaders = withAuth;
+      }
     }
     int maxConn = DEFAULT_CONNECTIONS;
     String rangeHeader = maxConn > 1 ? "bytes=0-" + (FIRST_CHUNK_BYTES - 1) : null;
@@ -245,8 +264,22 @@ public final class ApkDownloader {
     }
   }
 
-  private static Result downloadWithCurl(String url, Path dest, Path stageDir, Map<String, String> headers,
-      long maxBytes, boolean computeSha256, LongConsumer onTotal, LongConsumer onProgress, long t0) throws IOException {
+  private record CurlTarget(URI uri, Map<String, String> headers, boolean netrc) {}
+
+  private static Result downloadWithCurl(URI startUri, Path dest, Path stageDir, Map<String, String> headers,
+      boolean netrc, long maxBytes, boolean computeSha256, LongConsumer onTotal, LongConsumer onProgress, long t0) throws IOException {
+    for (Map.Entry<String, String> e : headers.entrySet()) {
+      String k = e.getKey(), v = e.getValue();
+      if (k.indexOf('\r') >= 0 || k.indexOf('\n') >= 0 || v.indexOf('\r') >= 0 || v.indexOf('\n') >= 0) {
+        throw new IOException("invalid HTTP header");
+      }
+    }
+    // curl automatically strips Authorization and Cookie on cross-host redirects, but NOT custom API-key headers
+    // like Artifactory's X-JFrog-Art-Api. Resolve redirects hop-by-hop when such headers are present so tokens never
+    // leak to S3/GCS presigned redirect targets or break signed-header verification.
+    CurlTarget target = hasCustomSensitiveHeader(headers)
+        ? resolveRedirectsWithCurl(startUri, headers, netrc)
+        : new CurlTarget(startUri, headers, netrc);
     Files.createDirectories(stageDir);
     Path tmp = stageDir.resolve("dl-" + ProcessHandle.current().pid() + "-" + PART_SEQ.incrementAndGet() + ".part");
     List<String> cmd = new ArrayList<>();
@@ -267,20 +300,17 @@ public final class ApkDownloader {
       cmd.add("--max-filesize");
       cmd.add(String.valueOf(maxBytes));
     }
+    if (target.netrc()) cmd.add("--netrc");
     cmd.add("-A");
     cmd.add("apksim/1");
-    for (Map.Entry<String, String> e : headers.entrySet()) {
-      String k = e.getKey(), v = e.getValue();
-      if (k.indexOf('\r') >= 0 || k.indexOf('\n') >= 0 || v.indexOf('\r') >= 0 || v.indexOf('\n') >= 0) {
-        throw new IOException("invalid HTTP header");
-      }
+    for (Map.Entry<String, String> e : target.headers().entrySet()) {
       cmd.add("-H");
-      cmd.add(k + ": " + v);
+      cmd.add(e.getKey() + ": " + e.getValue());
     }
     cmd.add("-o");
     cmd.add(tmp.toString());
     cmd.add("--");
-    cmd.add(url);
+    cmd.add(target.uri().toString());
 
     boolean ok = false;
     Process proc = null;
@@ -586,7 +616,7 @@ public final class ApkDownloader {
         if (!"https".equalsIgnoreCase(scheme) && !"http".equalsIgnoreCase(scheme)) {
           throw new IOException("refusing redirect to non-http(s) scheme: " + scheme);
         }
-        if (!curHeaders.isEmpty() && (!cur.getHost().equalsIgnoreCase(next.getHost()) || cur.getPort() != next.getPort())) {
+        if (!curHeaders.isEmpty() && !sameOrigin(cur, next)) {
           curHeaders = stripSensitiveHeaders(curHeaders);
         }
         cur = next;
@@ -597,14 +627,185 @@ public final class ApkDownloader {
     throw new IOException("too many redirects (" + MAX_REDIRECTS + ") for " + startUri.getHost());
   }
 
+  private static CurlTarget resolveRedirectsWithCurl(URI startUri, Map<String, String> headers, boolean netrc) throws IOException {
+    URI cur = startUri;
+    Map<String, String> curHeaders = headers;
+    boolean curNetrc = netrc;
+    for (int hop = 0; hop <= MAX_REDIRECTS; hop++) {
+      List<String> cmd = new ArrayList<>();
+      cmd.add(CURL_BIN.toString());
+      cmd.add("-sS");
+      cmd.add("--http2");
+      cmd.add("--proto");
+      cmd.add("=http,https");
+      cmd.add("--max-redirs");
+      cmd.add("0");
+      cmd.add("--connect-timeout");
+      cmd.add(String.valueOf(CONNECT_TIMEOUT_MS / 1000));
+      cmd.add("--max-time");
+      cmd.add("30");
+      cmd.add("-r");
+      cmd.add("0-0");
+      if (curNetrc) cmd.add("--netrc");
+      cmd.add("-A");
+      cmd.add("apksim/1");
+      for (Map.Entry<String, String> e : curHeaders.entrySet()) {
+        cmd.add("-H");
+        cmd.add(e.getKey() + ": " + e.getValue());
+      }
+      cmd.add("-o");
+      cmd.add("/dev/null");
+      cmd.add("-w");
+      cmd.add("%{http_code}\n%{redirect_url}");
+      cmd.add("--");
+      cmd.add(cur.toString());
+
+      Process p = new ProcessBuilder(cmd).start();
+      String out;
+      String err;
+      try (InputStream stdout = p.getInputStream(); InputStream stderr = p.getErrorStream()) {
+        out = new String(stdout.readAllBytes(), StandardCharsets.UTF_8);
+        err = new String(stderr.readAllBytes(), StandardCharsets.UTF_8).trim();
+      }
+      int exit;
+      try {
+        exit = p.waitFor();
+      } catch (InterruptedException ie) {
+        p.destroyForcibly();
+        Thread.currentThread().interrupt();
+        throw new IOException("download interrupted", ie);
+      }
+      if (exit != 0) throw new IOException(err.isEmpty() ? "curl exited with status " + exit : err);
+      String[] lines = out.split("\n", 2);
+      int code;
+      try {
+        code = Integer.parseInt(lines[0].trim());
+      } catch (NumberFormatException e) {
+        return new CurlTarget(cur, curHeaders, curNetrc);
+      }
+      String loc = lines.length > 1 ? lines[1].trim() : "";
+      if ((code == 301 || code == 302 || code == 303 || code == 307 || code == 308) && !loc.isEmpty()) {
+        URI next = cur.resolve(loc);
+        String scheme = next.getScheme();
+        if (!"https".equalsIgnoreCase(scheme) && !"http".equalsIgnoreCase(scheme)) {
+          throw new IOException("refusing redirect to non-http(s) scheme: " + scheme);
+        }
+        if (!sameOrigin(cur, next)) {
+          curHeaders = stripSensitiveHeaders(curHeaders);
+          curNetrc = false;
+        }
+        cur = next;
+        if (!hasCustomSensitiveHeader(curHeaders)) {
+          // Sensitive custom headers have been stripped; curl -L can follow any remaining redirects directly.
+          return new CurlTarget(cur, curHeaders, curNetrc);
+        }
+        continue;
+      }
+      return new CurlTarget(cur, curHeaders, curNetrc);
+    }
+    throw new IOException("too many redirects (" + MAX_REDIRECTS + ") for " + startUri.getHost());
+  }
+
+  private static boolean sameOrigin(URI a, URI b) {
+    return a.getHost() != null && a.getHost().equalsIgnoreCase(b.getHost()) && effectivePort(a) == effectivePort(b);
+  }
+
+  private static int effectivePort(URI u) {
+    int p = u.getPort();
+    if (p != -1) return p;
+    return "https".equalsIgnoreCase(u.getScheme()) ? 443 : 80;
+  }
+
+  private static boolean isCustomSensitiveHeader(String lowerName) {
+    return "x-jfrog-art-api".equals(lowerName) || "x-api-key".equals(lowerName) || "private-token".equals(lowerName);
+  }
+
+  private static boolean hasCustomSensitiveHeader(Map<String, String> headers) {
+    for (String k : headers.keySet()) {
+      if (isCustomSensitiveHeader(k.toLowerCase(Locale.ROOT))) return true;
+    }
+    return false;
+  }
+
+  private static boolean hasHeaderIgnoreCase(Map<String, String> headers, String targetLower) {
+    for (String k : headers.keySet()) {
+      if (targetLower.equals(k.toLowerCase(Locale.ROOT))) return true;
+    }
+    return false;
+  }
+
   private static Map<String, String> stripSensitiveHeaders(Map<String, String> headers) {
     Map<String, String> clean = new LinkedHashMap<>();
     for (Map.Entry<String, String> e : headers.entrySet()) {
       String k = e.getKey().toLowerCase(Locale.ROOT);
-      if ("authorization".equals(k) || "cookie".equals(k) || "proxy-authorization".equals(k)) continue;
+      if ("authorization".equals(k) || "cookie".equals(k) || "proxy-authorization".equals(k) || isCustomSensitiveHeader(k)) continue;
       clean.put(e.getKey(), e.getValue());
     }
     return clean;
+  }
+
+  /** Minimal ~/.netrc reader (machine/default + login + password) for the pure-Java fallback when {@code --netrc} is used. */
+  private static String readNetrcBasicAuth(String host) {
+    if (host == null || host.isEmpty()) return null;
+    String home = System.getProperty("user.home");
+    if (home == null || home.isEmpty()) return null;
+    Path netrc = Path.of(home, ".netrc");
+    if (!Files.isRegularFile(netrc)) return null;
+    try {
+      String text = Files.readString(netrc, StandardCharsets.UTF_8);
+      List<String> tokens = new ArrayList<>();
+      for (String line : text.split("\n")) {
+        int hash = line.indexOf('#');
+        String s = (hash >= 0 ? line.substring(0, hash) : line).trim();
+        if (s.isEmpty()) continue;
+        for (String tok : s.split("\\s+")) if (!tok.isEmpty()) tokens.add(tok);
+      }
+      String matchedLogin = null, matchedPass = null;
+      String defaultLogin = null, defaultPass = null;
+      String curMachine = null;
+      boolean curDefault = false;
+      String curLogin = null, curPass = null;
+      for (int i = 0; i < tokens.size(); i++) {
+        String t = tokens.get(i);
+        if ("machine".equals(t) || "default".equals(t)) {
+          if (curLogin != null && curPass != null) {
+            if (curMachine != null && curMachine.equalsIgnoreCase(host)) {
+              matchedLogin = curLogin; matchedPass = curPass;
+            } else if (curDefault && defaultLogin == null) {
+              defaultLogin = curLogin; defaultPass = curPass;
+            }
+          }
+          curLogin = null; curPass = null;
+          if ("machine".equals(t) && i + 1 < tokens.size()) {
+            curMachine = tokens.get(++i);
+            curDefault = false;
+          } else {
+            curMachine = null;
+            curDefault = true;
+          }
+        } else if ("login".equals(t) && i + 1 < tokens.size()) {
+          curLogin = tokens.get(++i);
+        } else if ("password".equals(t) && i + 1 < tokens.size()) {
+          curPass = tokens.get(++i);
+        } else if ("macdef".equals(t)) {
+          break;
+        }
+      }
+      if (curLogin != null && curPass != null) {
+        if (curMachine != null && curMachine.equalsIgnoreCase(host)) {
+          matchedLogin = curLogin; matchedPass = curPass;
+        } else if (curDefault && defaultLogin == null) {
+          defaultLogin = curLogin; defaultPass = curPass;
+        }
+      }
+      String user = matchedLogin != null ? matchedLogin : defaultLogin;
+      String pass = matchedPass != null ? matchedPass : defaultPass;
+      if (user == null || pass == null) return null;
+      String encoded = java.util.Base64.getEncoder().encodeToString((user + ":" + pass).getBytes(StandardCharsets.UTF_8));
+      return "Basic " + encoded;
+    } catch (IOException ignored) {
+      return null;
+    }
   }
 
   /** Parses {@code Content-Range: bytes START-END/TOTAL} into {@code [start, end, total]}, or null. */
