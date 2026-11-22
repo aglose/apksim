@@ -76,6 +76,7 @@ Common options (each is listed with its values in the README, "Devices and launc
   --rec-window S, --rec-checkpoint S   seconds it keeps (120), between checkpoints (30; 0: when asked)
   rec view [FILE]               open a .apkrec or zipped failure bundle in the trace viewer (docs/trace-viewer.md)
   --no-network, --no-sandbox, --fresh, --debug PORT, --jvm OPTION
+  --header "NAME: VALUE", --netrc   HTTP headers or ~/.netrc credentials for URL launches (Artifactory, private releases)
   --skip-library NAME           the app's System.loadLibrary(NAME) throws UnsatisfiedLinkError (repeatable)
   --move-shared-data            macOS: load 4 KB-aligned libraries with data on a code page (experimental)
 
@@ -432,6 +433,16 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
       if [[ "$2" == inline:* ]]; then EXTRA+=("-Dapksim.networkTrust=$2"); shift 2; continue; fi
       [[ -f "$2" ]] || { echo "no certificate at $2" >&2; exit 2; }
       EXTRA+=("-Dapksim.networkTrust=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"); shift 2 ;;
+    --header)
+      [[ "$2" == ?*:* && "$2" != *$'\r'* && "$2" != *$'\n'* ]] || { echo "--header takes 'NAME: VALUE' with no line breaks" >&2; exit 2; }
+      ((${HEADER_N:-0} < 16)) || { echo "--header: at most 16 headers" >&2; exit 2; }
+      # Not a -D property: a JVM's arguments are in `ps` for every local user and in RuntimeMXBean for app code.
+      # They go to a file only this user reads, which Main deletes once read (below).
+      DOWNLOAD_HEADERS+=("$2"); HEADER_N=$((${HEADER_N:-0} + 1)); shift 2 ;;
+    # Not for users: a warm launch's client passes the headers file on in place of --header pairs (below), so a cold
+    # fallback re-run of this script reads the same file rather than having the values on any command line.
+    --header-file) [[ -f "$2" ]] || { echo "--header-file: no file $2" >&2; exit 2; }; HEADERS_FILE="$2"; shift 2 ;;
+    --netrc) EXTRA+=("-Dapksim.downloadNetrc=true"); shift ;;
     --no-sandbox) NO_SANDBOX=1; shift ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
@@ -446,9 +457,35 @@ done
 # Always both, empty when unset: empty means the default (no store override, no shared folders), where leaving one
 # out would keep what the standby's own environment had.
 EXTRA+=("-Dapksim.skinsDir=${APKSIM_SKINS_DIR:-}" "-Dapksim.skinsShared=${APKSIM_SKINS:-}")
-# A bundle's repro.sh repeats this launch: its arguments (unit separators between them), folder and launcher.
+# --header values (download credentials) for Main, in a file of this user's alone (mktemp makes it 0600).
+# In this launch's own scratch folder (STATE/tmp/PID, kept across exec), which the next launch's sweep removes once
+# this PID is gone, so a file no JVM read (a launch stopped early, a hand-off refused) does not stay on disk.
+if [[ -z "${HEADERS_FILE:-}" && -n "${DOWNLOAD_HEADERS+x}" ]]; then
+  mkdir -p "$STATE/tmp/$$"
+  HEADERS_FILE="$(umask 077; mktemp "$STATE/tmp/$$/download-headers.XXXXXX")" || exit 2
+  printf '%s\n' "${DOWNLOAD_HEADERS[@]}" > "$HEADERS_FILE"
+fi
+[[ -n "${HEADERS_FILE:-}" ]] && EXTRA+=("-Dapksim.downloadHeaders=$HEADERS_FILE")
+# What the warm-launch client keeps for a cold fallback (it is alive, and in `ps`, as long as the app runs): the
+# arguments with each --header pair taken out and the headers file named once instead.
+CLIENT_ARGS=(); PREV=""
+for a in "${ORIG[@]}"; do
+  if [[ "$a" == --header || "$a" == --header-file ]]; then PREV="$a"; continue; fi
+  if [[ "$PREV" == --header || "$PREV" == --header-file ]]; then PREV=""; continue; fi
+  CLIENT_ARGS+=("$a"); PREV="$a"
+done
+[[ -n "${HEADERS_FILE:-}" ]] && CLIENT_ARGS=(--header-file "$HEADERS_FILE" "${CLIENT_ARGS[@]+"${CLIENT_ARGS[@]}"}")
+# A bundle's repro.sh repeats this launch: its arguments (unit separators between them), folder and launcher; a
+# --header's value is left out (it is a credential: repro.sh is uploaded with CI artifacts).
 if [[ -n "${BUNDLES:-}" ]]; then
-  IFS_SAVED="$IFS"; IFS=$'\x1f'; ARGV="${ORIG[*]}"; IFS="$IFS_SAVED"
+  REDACTED=(); PREV=""
+  for a in "${ORIG[@]}"; do
+    if [[ "$PREV" == --header ]]; then REDACTED+=("${a%%:*}: REDACTED")
+    elif [[ "$PREV" == --header-file ]]; then REDACTED+=("REDACTED")
+    else REDACTED+=("$a"); fi
+    PREV="$a"
+  done
+  IFS_SAVED="$IFS"; IFS=$'\x1f'; ARGV="${REDACTED[*]}"; IFS="$IFS_SAVED"
   EXTRA+=("-Dapksim.argv=$ARGV" "-Dapksim.cwd=$PWD" "-Dapksim.launcherScript=$ROOT/apksim")
 fi
 # Always passed: a standby keeps the properties it booted with, and this launch's must replace them.
@@ -508,7 +545,7 @@ if [[ -n "$STANDBY_ON" && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKS
       # Not java.net.preferIPv4Stack: the JDK reads it once at JVM start, so a standby would ignore it (a beamed
       # instance's own `=true` is its standby's, from the beam profile below, when that JVM starts).
       -Dapksim.beamSandbox=*|-Dapksim.beamBuildCache=*|-Dapksim.beamSiblingCaches=*) ;;
-      -Dapksim.classCache=*|-Dapksim.idleSleep=*|-Dapksim.apkCacheMB=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.compatTable=*|-Dapksim.vsync=*|-Dapksim.freshDownload=*|-Dapksim.downloadConnections=*|-Dapksim.overlapDownload=*) ;;
+      -Dapksim.classCache=*|-Dapksim.idleSleep=*|-Dapksim.apkCacheMB=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.compatTable=*|-Dapksim.vsync=*|-Dapksim.freshDownload=*|-Dapksim.downloadConnections=*|-Dapksim.overlapDownload=*|-Dapksim.downloadHeaders=*|-Dapksim.downloadNetrc=*|-Dapksim.netrcFile=*) ;;
       # Recording launches cold: its sandbox must let it write the recording's folder (a standby's is fixed).
       -Dapksim.network=replay:*|-Dapksim.networkProfile=*|-Dapksim.networkRedact=*|-Dapksim.networkMatch=*) ;;
       -Dapksim.networkIgnoreQuery=*|-Dapksim.networkIgnoreHeader=*|-Dapksim.networkUnmatched=*) ;;
@@ -610,7 +647,7 @@ if [[ "$AOT_ROOT" != "$ROOT" && -z "$STANDBY_SOCK" && "${APKSIM_STANDBY:-}" != c
   start_training
 fi
 if [[ -n "$WARM_OK" && "${APKSIM_STANDBY:-}" != cold ]]; then
-  exec "$CLIENT" launch "$ROOT/apksim" "$KEY" "$FLAGS" -- "${EXTRA[@]+"${EXTRA[@]}"}" "$APK" -- "${ORIG[@]}"
+  exec "$CLIENT" launch "$ROOT/apksim" "$KEY" "$FLAGS" -- "${EXTRA[@]+"${EXTRA[@]}"}" "$APK" -- "${CLIENT_ARGS[@]}"
 fi
 # macOS's date has no milliseconds; there Timing takes this process's start time instead (exec keeps the PID), which
 # spares starting python3 just to read the clock.

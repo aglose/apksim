@@ -436,7 +436,11 @@ shows it, and the tab may switch to it again by that name), and replaces the one
   Answers `{"id", "name"}`.
 - `POST /api/apps` with a JSON body `{"url": "https://...", "name": "...", "headers": {...}, "options": [...]}` (only
   `url` is required): serve downloads the APK itself and answers `{"id", "name", "state": "downloading"}` at once.
-  `headers` go with the download only (an artifact store's `Authorization`) and are never stored; `options` are the
+  `headers` go with the download only (an artifact store's `Authorization` or `X-JFrog-Art-Api`) and are never stored;
+  every one of them goes to the URL's origin only: a redirect to another scheme, host or port (such as Artifactory
+  redirecting to presigned S3/GCS URLs) carries none. Downloads use
+  `ApkDownloader` (native `/usr/bin/curl` HTTP/2 fast path, or pure-Java parallel ranged HTTP with `-Dapksim.noCurl=true`).
+  `options` are the
   app's launch options (above). The download is stored by content hash as uploads are, and the id follows the same
   rules: listed nowhere, deleted a day after its last use. Adds of one URL with the same `headers` share one download: while it runs they wait on it (and show its progress),
   and for 5 minutes after it finished a later add reuses the stored APK, each add keeping its own id and `options` (so

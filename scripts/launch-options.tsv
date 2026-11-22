@@ -33,6 +33,8 @@ option	value	cli	serve	beam	mcp	note
 --forward-link	flag	yes	no: the beam agent's own	server-only	no: the beam agent's own	
 --fresh	flag	yes	server-only	server-only	server-only	
 --gles	value	yes	no: undecided	no: undecided	no: undecided	
+--header	value	yes	no: serve passes download headers in POST /api/apps	no: beam never downloads from CLI URLs	no: carries credentials	
+--header-file	value	yes	no: internal, a warm launch's client passes it for --header	no: internal, reads a host file	no: internal, reads a host file	
 --headless	flag	yes	server-only	no: beam runs a hidden window	server-only	
 --health	value	yes	no: reads a host file	no: reads a host file	no: reads a host file	
 --instrument	value	yes	no: test runs only	no: test runs only	no: test runs only	
@@ -42,6 +44,7 @@ option	value	cli	serve	beam	mcp	note
 --mock-maker	value	yes	no: test runs only	no: test runs only	no: test runs only	
 --move-shared-data	flag	yes	yes	yes	no: undecided	
 --nav-bar	value	yes	yes	yes	yes	
+--netrc	flag	yes	no: reads a host file	no: reads a host file	no: reads a host file	
 --network	pair	yes	no: names a recording file	no: names a recording file	no: names a recording file	
 --network-host	value	yes	yes	yes	no: needs an address allow-list the MCP server has none of	
 --network-ignore-header	value	yes	no: only with --network replay	no: only with --network replay	no: only with --network replay	

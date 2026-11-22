@@ -43,13 +43,28 @@ Read README.md for results and limits; this file covers how to work on the code.
   `--jvm -Xmx` of 32 GB or more still loses the cache (the JVM warns "Max heap size too large for Compressed Oops").
 - `runtime/src/main/java/dev/apksim/`
   - `Main`: entry point. Opens the window first, then installs app classes and runs Robolectric's JUnit runner on `Host`.
-    A cold launch first initializes Robolectric's `AndroidTestEnvironment` on a thread of its own (its static
-    BouncyCastleProvider: ~100 ms off a cold first frame and a test process's start; `-Dapksim.initAhead=false`).
+    A cold launch initializes Robolectric's `AndroidTestEnvironment` + `SimKeyStore`, `SimRunner`/`Host` runner,
+    metadata (`CompatTable`, `Gaps`, `InstallState.frameworkProtection`), and framework `CppApkAssets.preload` on
+    parallel threads (`-Dapksim.initAhead=false`). For `http(s)://` URL launches (`ApkDownloader`), `Main` immediately
+    reads `--header` values from a file of the user's alone that the launcher writes in the launch's `STATE/tmp/PID` (swept with it) and Main deletes (never JVM arguments, which `ps` and RuntimeMXBean show; a warm launch's client, alive in `ps` as long as the app, gets the hidden `--header-file FILE` in place of the pairs, so a cold fallback reads the same file), starts downloading via native `/usr/bin/curl`
+    HTTP/2 (or pure-Java 6-stream parallel ranged HTTP with `-Dapksim.noCurl=true`); redirects are followed hop by hop on
+    the download itself (never curl's `-L`), and every caller header and `--netrc`'s credentials go to the first origin
+    only (scheme, host and port), curl getting them on stdin (`scripts/check-download-auth.sh`); `cache/downloads/`
+    LRU-capped at 512 MB via `-Dapksim.downloadCacheMB`), and on cold launches overlaps sandbox + `FastNativeLoader` boot
+    directly inside `SimRunner.SimTestEnvironment.setUpApplicationState` (`SimRunner.deferredApkSetup`, zero warmup/reset).
     Its jar is unsigned in `work/lib` (`gradle deps` strips the signature files): the JVM's AOT cache skips signed jars,
     and with them its ~670 classes are in the cache (issue 205).
     Conscrypt's native library (OkHttp's start asks for it) loads on a thread of its own as the first test environment
     is set up (`SimRunner.conscryptAhead`; not earlier: it reads android.os.Build, which must initialize inside the
     sandbox). docs/perf-plan.md is the plan for memory, launch and run time, with what was done and measured.
+  - `FrameworkFlattener` (B2, `scripts/build.sh` -> `work/runtime/android-all-flat.jar`): offline ASM rewriter that
+    flattens unshadowed non-native `invokedynamic` trampolines (97%), reflective `<clinit>` trampolines, and unshadowed-
+    hierarchy `$$robo$init()` sites (using `InvokeDynamicSupport.NO_SHADOW`), stamp-cached and toggleable with
+    `APKSIM_FLAT_FRAMEWORK=0`. `package-release.sh` and `docker/Dockerfile` strip duplicate `*.class` from
+    `android-all-instrumented-*.jar`. With B2, cold launches default to `-XX:TieredStopAtLevel=1` (matching C2's 120 fps
+    with lower CPU/memory; standbys keep full C2; `--jvm -XX:TieredStopAtLevel=4` overrides).
+  - `FastNativeLoader`: caches Android's serialized system font map in `STATE/cache/framework/fontmap-*.bin` (stamped
+    by `fonts.xml` + native dylib; `-Dapksim.cachedFontMap=false` disables).
   - `Standby`, `StandbyWarmup`: warm launches (see "Warm launches").
   - `HeapTrim`, `native/heaptrim.c` (`libheaptrim`): the Java heap's unused pages given back while an instance or a
     standby is idle (docs/perf-plan.md, "Memory, 2026-11-14"). The serial collector keeps every page it has touched:
