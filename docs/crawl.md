@@ -270,6 +270,11 @@ structure unless it is aliased to the screen; the Shader tab's capture differs o
 compare screens that never settled; a replay checked after the scroll steps rather than before them failed every
 scrolled control.
 
+`--record-deps` (2026-11-21, load 8-13 from other work): home, `apksim://stack` and `apksim://appcompat` to depth 2,
+10 screens, `-j 3`, no captures: 38 s with the flag against 37 s without (class caches warm for both). Three walks of
+check step 1's starts on main and three with this change, interleaved, gave the same 19 screens and 167 transitions
+every time (205-208 s each): the step 2 failure seen once on an "Add" transition did not come back.
+
 ## Limits
 
 - Everything is replayed from a fresh start, so a screen that needs state the path cannot make (a record created on
