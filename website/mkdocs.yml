@@ -153,6 +153,7 @@ nav:
       - 'Conformance': conformance.md
       - 'iOS Simulator Parity': ios-simulator-parity.md
       - 'API Levels': api-levels.md
+      - 'Crawl Dependencies (spike)': crawl-deps-spike.md
       - 'App Corpus': corpus.md
   - 'Changelog': changelog.md
   - 'Project':

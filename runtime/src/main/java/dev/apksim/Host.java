@@ -583,6 +583,8 @@ public class Host {
     drags.clear();
     drag = null;
     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+    // -Dapksim.deps: the old stack's teardown is not the new screen's (docs/crawl-deps-spike.md): a new span begins here.
+    if (dev.apksim.dex.Probes.ON) dev.apksim.dex.Probes.command(new String[] {"deps", "reset"});
     start(name, intent);
     return "ok, " + AppInfo.activityClass(name);
   }

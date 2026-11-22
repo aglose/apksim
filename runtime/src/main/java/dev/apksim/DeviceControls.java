@@ -691,6 +691,10 @@ final class DeviceControls {
         // its count (CompatTable); `all` adds the table's size and the target in use.
         return CompatTable.report(a.length > 1 && a[1].equals("all"));
       }
+      case "deps" -> {
+        // deps [reset|read|mark]: app classes whose code ran since the last reset (dex.Probes; -Dapksim.deps=true).
+        return dev.apksim.dex.Probes.command(a);
+      }
       case "gaps" -> {
         // gaps: framework natives with no shadow that this process called (Gaps), most called first.
         return Gaps.report();
