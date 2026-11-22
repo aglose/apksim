@@ -46,7 +46,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     A cold launch initializes Robolectric's `AndroidTestEnvironment` + `SimKeyStore`, `SimRunner`/`Host` runner,
     metadata (`CompatTable`, `Gaps`, `InstallState.frameworkProtection`), and framework `CppApkAssets.preload` on
     parallel threads (`-Dapksim.initAhead=false`). For `http(s)://` URL launches (`ApkDownloader`), `Main` immediately
-    reads `--header` values from a file of the user's alone that the launcher writes and Main deletes (never JVM arguments, which `ps` and RuntimeMXBean show), starts downloading via native `/usr/bin/curl`
+    reads `--header` values from a file of the user's alone that the launcher writes in the launch's `STATE/tmp/PID` (swept with it) and Main deletes (never JVM arguments, which `ps` and RuntimeMXBean show; a warm launch's client, alive in `ps` as long as the app, gets the hidden `--header-file FILE` in place of the pairs, so a cold fallback reads the same file), starts downloading via native `/usr/bin/curl`
     HTTP/2 (or pure-Java 6-stream parallel ranged HTTP with `-Dapksim.noCurl=true`); redirects are followed hop by hop on
     the download itself (never curl's `-L`), and every caller header and `--netrc`'s credentials go to the first origin
     only (scheme, host and port), curl getting them on stdin (`scripts/check-download-auth.sh`); `cache/downloads/`

@@ -124,6 +124,14 @@ public final class DownloadAuthCheck {
           check(seenA.lines.stream().anyMatch(l -> l.startsWith("/app-final.apk") && l.contains("x-jfrog-art-api=key-123")),
               what + " keeps the key", seenA.lines.toString());
         }
+        seenA.clear();
+        what = path + ": a header value with a quote and a backslash";
+        Map<String, String> odd = new LinkedHashMap<>();
+        odd.put("X-JFrog-Art-Api", "key-123");
+        odd.put("X-Odd", "a\"b\\c = d");
+        if (download(aUrl + "/same.apk", dir, odd, false, what)) {
+          check(seenA.any("x-odd=a\"b\\c = d"), what + " arrives as given", seenA.lines.toString());
+        }
         what = path + ": no credential";
         try {
           ApkDownloader.download(aUrl + "/app.apk", dir.resolve("x.apk"), Map.of(), false, 1 << 20, false, null, null);

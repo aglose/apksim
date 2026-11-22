@@ -439,6 +439,9 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
       # Not a -D property: a JVM's arguments are in `ps` for every local user and in RuntimeMXBean for app code.
       # They go to a file only this user reads, which Main deletes once read (below).
       DOWNLOAD_HEADERS+=("$2"); HEADER_N=$((${HEADER_N:-0} + 1)); shift 2 ;;
+    # Not for users: a warm launch's client passes the headers file on in place of --header pairs (below), so a cold
+    # fallback re-run of this script reads the same file rather than having the values on any command line.
+    --header-file) [[ -f "$2" ]] || { echo "--header-file: no file $2" >&2; exit 2; }; HEADERS_FILE="$2"; shift 2 ;;
     --netrc) EXTRA+=("-Dapksim.downloadNetrc=true"); shift ;;
     --no-sandbox) NO_SANDBOX=1; shift ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
@@ -455,18 +458,31 @@ done
 # out would keep what the standby's own environment had.
 EXTRA+=("-Dapksim.skinsDir=${APKSIM_SKINS_DIR:-}" "-Dapksim.skinsShared=${APKSIM_SKINS:-}")
 # --header values (download credentials) for Main, in a file of this user's alone (mktemp makes it 0600).
-if [[ -n "${DOWNLOAD_HEADERS+x}" ]]; then
-  mkdir -p "$STATE/tmp"
-  HEADERS_FILE="$(mktemp "$STATE/tmp/download-headers.XXXXXX")" || exit 2
+# In this launch's own scratch folder (STATE/tmp/PID, kept across exec), which the next launch's sweep removes once
+# this PID is gone, so a file no JVM read (a launch stopped early, a hand-off refused) does not stay on disk.
+if [[ -z "${HEADERS_FILE:-}" && -n "${DOWNLOAD_HEADERS+x}" ]]; then
+  mkdir -p "$STATE/tmp/$$"
+  HEADERS_FILE="$(umask 077; mktemp "$STATE/tmp/$$/download-headers.XXXXXX")" || exit 2
   printf '%s\n' "${DOWNLOAD_HEADERS[@]}" > "$HEADERS_FILE"
-  EXTRA+=("-Dapksim.downloadHeaders=$HEADERS_FILE")
 fi
+[[ -n "${HEADERS_FILE:-}" ]] && EXTRA+=("-Dapksim.downloadHeaders=$HEADERS_FILE")
+# What the warm-launch client keeps for a cold fallback (it is alive, and in `ps`, as long as the app runs): the
+# arguments with each --header pair taken out and the headers file named once instead.
+CLIENT_ARGS=(); PREV=""
+for a in "${ORIG[@]}"; do
+  if [[ "$a" == --header || "$a" == --header-file ]]; then PREV="$a"; continue; fi
+  if [[ "$PREV" == --header || "$PREV" == --header-file ]]; then PREV=""; continue; fi
+  CLIENT_ARGS+=("$a"); PREV="$a"
+done
+[[ -n "${HEADERS_FILE:-}" ]] && CLIENT_ARGS=(--header-file "$HEADERS_FILE" "${CLIENT_ARGS[@]+"${CLIENT_ARGS[@]}"}")
 # A bundle's repro.sh repeats this launch: its arguments (unit separators between them), folder and launcher; a
 # --header's value is left out (it is a credential: repro.sh is uploaded with CI artifacts).
 if [[ -n "${BUNDLES:-}" ]]; then
   REDACTED=(); PREV=""
   for a in "${ORIG[@]}"; do
-    if [[ "$PREV" == --header ]]; then REDACTED+=("${a%%:*}: REDACTED"); else REDACTED+=("$a"); fi
+    if [[ "$PREV" == --header ]]; then REDACTED+=("${a%%:*}: REDACTED")
+    elif [[ "$PREV" == --header-file ]]; then REDACTED+=("REDACTED")
+    else REDACTED+=("$a"); fi
     PREV="$a"
   done
   IFS_SAVED="$IFS"; IFS=$'\x1f'; ARGV="${REDACTED[*]}"; IFS="$IFS_SAVED"
@@ -631,7 +647,7 @@ if [[ "$AOT_ROOT" != "$ROOT" && -z "$STANDBY_SOCK" && "${APKSIM_STANDBY:-}" != c
   start_training
 fi
 if [[ -n "$WARM_OK" && "${APKSIM_STANDBY:-}" != cold ]]; then
-  exec "$CLIENT" launch "$ROOT/apksim" "$KEY" "$FLAGS" -- "${EXTRA[@]+"${EXTRA[@]}"}" "$APK" -- "${ORIG[@]}"
+  exec "$CLIENT" launch "$ROOT/apksim" "$KEY" "$FLAGS" -- "${EXTRA[@]+"${EXTRA[@]}"}" "$APK" -- "${CLIENT_ARGS[@]}"
 fi
 # macOS's date has no milliseconds; there Timing takes this process's start time instead (exec keeps the PID), which
 # spares starting python3 just to read the clock.
