@@ -407,10 +407,10 @@ rate. It is the biggest saving for many headless instances: the test app's Shade
 | `--network record\|replay FILE` | Record the app's HTTP(S) into a HAR file, or answer from one with no backend ([below](#network-record-replay-and-conditions)) |
 | `--network-profile NAME` | Start with `offline`, `3g`, `lossy`, `latency:MS` or `bandwidth:KBPS` |
 | `--network-host H=ADDR[:PORT]` | Send connections for host H to a fixture server instead (`--network-trust CERT` for its certificate) |
-| `--header "NAME: VALUE"` | HTTP header sent when launching an APK from an `http(s)://` URL (for example `Authorization: Bearer ...` or `X-JFrog-Art-Api: ...`). Repeatable (up to 16); stripped on cross-host redirects and cleared from JVM properties before app code loads |
+| `--header "NAME: VALUE"` | HTTP header sent when launching an APK from an `http(s)://` URL (for example `Authorization: Bearer ...` or `X-JFrog-Art-Api: ...`). Repeatable (up to 16); sent to the URL's origin only (dropped once a redirect changes scheme, host or port), and never on a command line (`ps`) or in a JVM property |
 | `--netrc` | Use credentials from `~/.netrc` when launching an APK from an `http(s)://` URL (keeps tokens off the command line) |
 
-**Launching from a URL:** passing an `http://` or `https://` URL in place of a local APK path (`apksim https://...`) downloads the APK into `STATE/cache/downloads/` (LRU-capped at 512 MB via `--jvm -Dapksim.downloadCacheMB=N`) and overlaps cold simulator boot with the download. `--fresh` (or `--jvm -Dapksim.freshDownload=true`) forces a fresh download. Sensitive auth headers (`Authorization`, `Cookie`, `Proxy-Authorization`, `X-JFrog-Art-Api`, `X-Api-Key`, `Private-Token`) and `.netrc` credentials are stripped on cross-host redirects (such as Artifactory redirecting to presigned S3/GCS storage).
+**Launching from a URL:** passing an `http://` or `https://` URL in place of a local APK path (`apksim https://...`) downloads the APK into `STATE/cache/downloads/` (LRU-capped at 512 MB via `--jvm -Dapksim.downloadCacheMB=N`) and overlaps cold simulator boot with the download. `--fresh` (or `--jvm -Dapksim.freshDownload=true`) forces a fresh download. Every `--header` and the `.netrc` credentials go to the URL's origin only: redirects are followed one hop at a time on the download itself, and a hop to another scheme, host or port (such as Artifactory redirecting to presigned S3/GCS storage) carries none of them. A cached download is reused whatever the credentials: `--fresh` after changing them.
 
 #### Automation options
 

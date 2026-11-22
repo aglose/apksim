@@ -264,8 +264,6 @@ public final class ApkDownloader {
     }
   }
 
-  private record CurlTarget(URI uri, Map<String, String> headers, boolean netrc) {}
-
   private static Result downloadWithCurl(URI startUri, Path dest, Path stageDir, Map<String, String> headers,
       boolean netrc, long maxBytes, boolean computeSha256, LongConsumer onTotal, LongConsumer onProgress, long t0) throws IOException {
     for (Map.Entry<String, String> e : headers.entrySet()) {
@@ -274,24 +272,58 @@ public final class ApkDownloader {
         throw new IOException("invalid HTTP header");
       }
     }
-    // curl automatically strips Authorization and Cookie on cross-host redirects, but NOT custom API-key headers
-    // like Artifactory's X-JFrog-Art-Api. Resolve redirects hop-by-hop when such headers are present so tokens never
-    // leak to S3/GCS presigned redirect targets or break signed-header verification.
-    CurlTarget target = hasCustomSensitiveHeader(headers)
-        ? resolveRedirectsWithCurl(startUri, headers, netrc)
-        : new CurlTarget(startUri, headers, netrc);
     Files.createDirectories(stageDir);
     Path tmp = stageDir.resolve("dl-" + ProcessHandle.current().pid() + "-" + PART_SEQ.incrementAndGet() + ".part");
+    // Redirects are followed here, one curl request per hop, never by curl itself (-L): the request that is redirected
+    // is the download itself (no probe that a server could answer differently), and the caller's headers and netrc
+    // credentials go only to the first origin (scheme, host and port). curl -L would send every -H header to each host
+    // it is sent to (an Artifactory key to the cloud storage it redirects to) and look up ~/.netrc again for each.
+    URI cur = startUri;
+    Map<String, String> curHeaders = headers;
+    boolean curNetrc = netrc;
+    for (int hop = 0; ; hop++) {
+      if (hop > MAX_REDIRECTS) {
+        Files.deleteIfExists(tmp);
+        throw new IOException("too many redirects (" + MAX_REDIRECTS + ") for " + startUri.getHost());
+      }
+      int[] code = new int[1];
+      String[] location = new String[1];
+      Result r = curlOnce(cur, curHeaders, curNetrc, tmp, dest, maxBytes, computeSha256, onTotal, onProgress, t0, code, location);
+      if (r != null) return r;
+      URI next;
+      try {
+        next = cur.resolve(location[0]);
+      } catch (IllegalArgumentException e) {
+        throw new IOException("HTTP " + code[0] + " with a bad Location from " + cur.getHost());
+      }
+      String scheme = next.getScheme();
+      if (!"https".equalsIgnoreCase(scheme) && !"http".equalsIgnoreCase(scheme)) {
+        throw new IOException("refusing redirect to non-http(s) scheme: " + scheme);
+      }
+      if (!sameOrigin(cur, next)) {
+        curHeaders = Map.of();
+        curNetrc = false;
+      }
+      cur = next;
+    }
+  }
+
+  /**
+   * One request with curl, no redirect followed. Returns the result for a 200/206, or null for a redirect (code[0] and
+   * location[0] set, the body discarded); throws for anything else. Headers go to curl on stdin (--config -), not its
+   * command line, which `ps` shows to every local user.
+   */
+  private static Result curlOnce(URI uri, Map<String, String> headers, boolean netrc, Path tmp, Path dest, long maxBytes,
+      boolean computeSha256, LongConsumer onTotal, LongConsumer onProgress, long t0, int[] code, String[] location)
+      throws IOException {
     List<String> cmd = new ArrayList<>();
     cmd.add(CURL_BIN.toString());
-    cmd.add("-fsSL");
+    cmd.add("-sS");
     cmd.add("--http2");
     cmd.add("--proto");
     cmd.add("=http,https");
-    cmd.add("--proto-redir");
-    cmd.add("=http,https");
     cmd.add("--max-redirs");
-    cmd.add(String.valueOf(MAX_REDIRECTS));
+    cmd.add("0");
     cmd.add("--connect-timeout");
     cmd.add(String.valueOf(CONNECT_TIMEOUT_MS / 1000));
     cmd.add("--max-time");
@@ -300,24 +332,39 @@ public final class ApkDownloader {
       cmd.add("--max-filesize");
       cmd.add(String.valueOf(maxBytes));
     }
-    if (target.netrc()) cmd.add("--netrc");
+    if (netrc) {
+      String file = System.getProperty("apksim.netrcFile");
+      if (file != null && !file.isEmpty()) {
+        cmd.add("--netrc-file");
+        cmd.add(file);
+      } else {
+        cmd.add("--netrc");
+      }
+    }
     cmd.add("-A");
     cmd.add("apksim/1");
-    for (Map.Entry<String, String> e : target.headers().entrySet()) {
-      cmd.add("-H");
-      cmd.add(e.getKey() + ": " + e.getValue());
-    }
+    cmd.add("--config");
+    cmd.add("-");
+    cmd.add("-w");
+    cmd.add("%{http_code}\n%{redirect_url}\n");
     cmd.add("-o");
     cmd.add(tmp.toString());
     cmd.add("--");
-    cmd.add(target.uri().toString());
-
+    cmd.add(uri.toString());
+    StringBuilder config = new StringBuilder();
+    for (Map.Entry<String, String> e : headers.entrySet()) {
+      String h = e.getKey() + ": " + e.getValue();
+      config.append("header = \"").append(h.replace("\\", "\\\\").replace("\"", "\\\"")).append("\"\n");
+    }
     boolean ok = false;
     Process proc = null;
     Thread monitor = null;
     java.util.concurrent.atomic.AtomicBoolean tooLarge = new java.util.concurrent.atomic.AtomicBoolean();
     try {
-      proc = new ProcessBuilder(cmd).redirectErrorStream(true).start();
+      proc = new ProcessBuilder(cmd).start();
+      try (java.io.OutputStream in = proc.getOutputStream()) {
+        in.write(config.toString().getBytes(StandardCharsets.UTF_8));
+      }
       Process pRef = proc;
       if (onProgress != null || maxBytes < DEFAULT_MAX_BYTES) {
         monitor = new Thread(() -> {
@@ -342,9 +389,19 @@ public final class ApkDownloader {
         monitor.start();
       }
       String errOut;
-      try (InputStream err = proc.getInputStream()) {
-        errOut = new String(err.readAllBytes(), StandardCharsets.UTF_8).trim();
+      String out;
+      Process pErr = proc;
+      CompletableFuture<String> errText = CompletableFuture.supplyAsync(() -> {
+        try (InputStream err = pErr.getErrorStream()) {
+          return new String(err.readAllBytes(), StandardCharsets.UTF_8).trim();
+        } catch (IOException e) {
+          return "";
+        }
+      });
+      try (InputStream o = proc.getInputStream()) {
+        out = new String(o.readAllBytes(), StandardCharsets.UTF_8);
       }
+      errOut = errText.join();
       int exit;
       try {
         exit = proc.waitFor();
@@ -361,6 +418,20 @@ public final class ApkDownloader {
         if (exit == 63) throw new IOException("too large (limit " + (maxBytes >> 20) + " MB)");
         throw new IOException(errOut.isEmpty() ? "curl exited with status " + exit : errOut);
       }
+      String[] lines = out.split("\n", -1);
+      try {
+        code[0] = Integer.parseInt(lines[0].trim());
+      } catch (NumberFormatException e) {
+        throw new IOException("curl gave no HTTP status for " + uri.getHost());
+      }
+      if (code[0] == 301 || code[0] == 302 || code[0] == 303 || code[0] == 307 || code[0] == 308) {
+        location[0] = lines.length > 1 ? lines[1].trim() : "";
+        if (location[0].isEmpty()) throw new IOException("HTTP " + code[0] + " without Location header from " + uri.getHost());
+        Files.deleteIfExists(tmp);
+        ok = true;  // nothing to clean up beyond the redirect's body, already gone
+        return null;
+      }
+      if (code[0] != 200 && code[0] != 206) throw new IOException("HTTP " + code[0] + " from " + uri.getHost());
       long size = Files.size(tmp);
       if (size > maxBytes) throw new IOException("too large: " + (size >> 20) + " MB (limit " + (maxBytes >> 20) + " MB)");
       if (onTotal != null) onTotal.accept(size);
@@ -617,7 +688,8 @@ public final class ApkDownloader {
           throw new IOException("refusing redirect to non-http(s) scheme: " + scheme);
         }
         if (!curHeaders.isEmpty() && !sameOrigin(cur, next)) {
-          curHeaders = stripSensitiveHeaders(curHeaders);
+          // Every caller header (an API key, netrc's Authorization) goes to the first origin only.
+          curHeaders = Map.of();
         }
         cur = next;
         continue;
@@ -627,104 +699,16 @@ public final class ApkDownloader {
     throw new IOException("too many redirects (" + MAX_REDIRECTS + ") for " + startUri.getHost());
   }
 
-  private static CurlTarget resolveRedirectsWithCurl(URI startUri, Map<String, String> headers, boolean netrc) throws IOException {
-    URI cur = startUri;
-    Map<String, String> curHeaders = headers;
-    boolean curNetrc = netrc;
-    for (int hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      List<String> cmd = new ArrayList<>();
-      cmd.add(CURL_BIN.toString());
-      cmd.add("-sS");
-      cmd.add("--http2");
-      cmd.add("--proto");
-      cmd.add("=http,https");
-      cmd.add("--max-redirs");
-      cmd.add("0");
-      cmd.add("--connect-timeout");
-      cmd.add(String.valueOf(CONNECT_TIMEOUT_MS / 1000));
-      cmd.add("--max-time");
-      cmd.add("30");
-      cmd.add("-r");
-      cmd.add("0-0");
-      if (curNetrc) cmd.add("--netrc");
-      cmd.add("-A");
-      cmd.add("apksim/1");
-      for (Map.Entry<String, String> e : curHeaders.entrySet()) {
-        cmd.add("-H");
-        cmd.add(e.getKey() + ": " + e.getValue());
-      }
-      cmd.add("-o");
-      cmd.add("/dev/null");
-      cmd.add("-w");
-      cmd.add("%{http_code}\n%{redirect_url}");
-      cmd.add("--");
-      cmd.add(cur.toString());
-
-      Process p = new ProcessBuilder(cmd).start();
-      String out;
-      String err;
-      try (InputStream stdout = p.getInputStream(); InputStream stderr = p.getErrorStream()) {
-        out = new String(stdout.readAllBytes(), StandardCharsets.UTF_8);
-        err = new String(stderr.readAllBytes(), StandardCharsets.UTF_8).trim();
-      }
-      int exit;
-      try {
-        exit = p.waitFor();
-      } catch (InterruptedException ie) {
-        p.destroyForcibly();
-        Thread.currentThread().interrupt();
-        throw new IOException("download interrupted", ie);
-      }
-      if (exit != 0) throw new IOException(err.isEmpty() ? "curl exited with status " + exit : err);
-      String[] lines = out.split("\n", 2);
-      int code;
-      try {
-        code = Integer.parseInt(lines[0].trim());
-      } catch (NumberFormatException e) {
-        return new CurlTarget(cur, curHeaders, curNetrc);
-      }
-      String loc = lines.length > 1 ? lines[1].trim() : "";
-      if ((code == 301 || code == 302 || code == 303 || code == 307 || code == 308) && !loc.isEmpty()) {
-        URI next = cur.resolve(loc);
-        String scheme = next.getScheme();
-        if (!"https".equalsIgnoreCase(scheme) && !"http".equalsIgnoreCase(scheme)) {
-          throw new IOException("refusing redirect to non-http(s) scheme: " + scheme);
-        }
-        if (!sameOrigin(cur, next)) {
-          curHeaders = stripSensitiveHeaders(curHeaders);
-          curNetrc = false;
-        }
-        cur = next;
-        if (!hasCustomSensitiveHeader(curHeaders)) {
-          // Sensitive custom headers have been stripped; curl -L can follow any remaining redirects directly.
-          return new CurlTarget(cur, curHeaders, curNetrc);
-        }
-        continue;
-      }
-      return new CurlTarget(cur, curHeaders, curNetrc);
-    }
-    throw new IOException("too many redirects (" + MAX_REDIRECTS + ") for " + startUri.getHost());
-  }
-
   private static boolean sameOrigin(URI a, URI b) {
-    return a.getHost() != null && a.getHost().equalsIgnoreCase(b.getHost()) && effectivePort(a) == effectivePort(b);
+    // Scheme too: an https -> http hop on the same host and port would send the credentials in clear text.
+    return a.getHost() != null && a.getHost().equalsIgnoreCase(b.getHost()) && effectivePort(a) == effectivePort(b)
+        && a.getScheme() != null && a.getScheme().equalsIgnoreCase(b.getScheme());
   }
 
   private static int effectivePort(URI u) {
     int p = u.getPort();
     if (p != -1) return p;
     return "https".equalsIgnoreCase(u.getScheme()) ? 443 : 80;
-  }
-
-  private static boolean isCustomSensitiveHeader(String lowerName) {
-    return "x-jfrog-art-api".equals(lowerName) || "x-api-key".equals(lowerName) || "private-token".equals(lowerName);
-  }
-
-  private static boolean hasCustomSensitiveHeader(Map<String, String> headers) {
-    for (String k : headers.keySet()) {
-      if (isCustomSensitiveHeader(k.toLowerCase(Locale.ROOT))) return true;
-    }
-    return false;
   }
 
   private static boolean hasHeaderIgnoreCase(Map<String, String> headers, String targetLower) {
@@ -734,22 +718,13 @@ public final class ApkDownloader {
     return false;
   }
 
-  private static Map<String, String> stripSensitiveHeaders(Map<String, String> headers) {
-    Map<String, String> clean = new LinkedHashMap<>();
-    for (Map.Entry<String, String> e : headers.entrySet()) {
-      String k = e.getKey().toLowerCase(Locale.ROOT);
-      if ("authorization".equals(k) || "cookie".equals(k) || "proxy-authorization".equals(k) || isCustomSensitiveHeader(k)) continue;
-      clean.put(e.getKey(), e.getValue());
-    }
-    return clean;
-  }
-
   /** Minimal ~/.netrc reader (machine/default + login + password) for the pure-Java fallback when {@code --netrc} is used. */
   private static String readNetrcBasicAuth(String host) {
     if (host == null || host.isEmpty()) return null;
+    String file = System.getProperty("apksim.netrcFile");
     String home = System.getProperty("user.home");
-    if (home == null || home.isEmpty()) return null;
-    Path netrc = Path.of(home, ".netrc");
+    if ((file == null || file.isEmpty()) && (home == null || home.isEmpty())) return null;
+    Path netrc = file != null && !file.isEmpty() ? Path.of(file) : Path.of(home, ".netrc");
     if (!Files.isRegularFile(netrc)) return null;
     try {
       String text = Files.readString(netrc, StandardCharsets.UTF_8);

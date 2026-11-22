@@ -46,9 +46,10 @@ Read README.md for results and limits; this file covers how to work on the code.
     A cold launch initializes Robolectric's `AndroidTestEnvironment` + `SimKeyStore`, `SimRunner`/`Host` runner,
     metadata (`CompatTable`, `Gaps`, `InstallState.frameworkProtection`), and framework `CppApkAssets.preload` on
     parallel threads (`-Dapksim.initAhead=false`). For `http(s)://` URL launches (`ApkDownloader`), `Main` immediately
-    clears `--header` / `--netrc` properties before any app code loads, starts downloading via native `/usr/bin/curl`
-    HTTP/2 (or pure-Java 6-stream parallel ranged HTTP with `-Dapksim.noCurl=true`, stripping `Authorization`, `Cookie`,
-    `Proxy-Authorization`, `X-JFrog-Art-Api`, `X-Api-Key`, `Private-Token` on cross-host redirects; `cache/downloads/`
+    reads `--header` values from a file of the user's alone that the launcher writes and Main deletes (never JVM arguments, which `ps` and RuntimeMXBean show), starts downloading via native `/usr/bin/curl`
+    HTTP/2 (or pure-Java 6-stream parallel ranged HTTP with `-Dapksim.noCurl=true`); redirects are followed hop by hop on
+    the download itself (never curl's `-L`), and every caller header and `--netrc`'s credentials go to the first origin
+    only (scheme, host and port), curl getting them on stdin (`scripts/check-download-auth.sh`); `cache/downloads/`
     LRU-capped at 512 MB via `-Dapksim.downloadCacheMB`), and on cold launches overlaps sandbox + `FastNativeLoader` boot
     directly inside `SimRunner.SimTestEnvironment.setUpApplicationState` (`SimRunner.deferredApkSetup`, zero warmup/reset).
     Its jar is unsigned in `work/lib` (`gradle deps` strips the signature files): the JVM's AOT cache skips signed jars,

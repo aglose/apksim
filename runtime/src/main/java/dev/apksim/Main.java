@@ -195,23 +195,31 @@ public final class Main {
   }
 
   /**
-   * Robolectric's AndroidTestEnvironment builds a BouncyCastleProvider in its static initializer, which loads and
-   * registers every algorithm class: ~180 ms of a cold launch, on the main thread, interpreted, once the sandbox is
-   * made. Nothing in it depends on the sandbox or the APK, so the class is initialized here on a thread of its own,
-   * while the APK is indexed and the runner built; the main thread finds it done, or waits only for the rest. A standby
-   * did it during its warm-up. -Dapksim.initAhead=false turns it off (A/B), and SimRunner's Conscrypt load with it.
+   * The launcher's {@code --header} values: a file of this user's alone (-Dapksim.downloadHeaders), read and deleted at
+   * once, and the property cleared. Never -D properties of their own: a JVM's arguments are in `ps` and in
+   * RuntimeMXBean, which app code in this process can read.
    */
-  /** Reads and immediately clears CLI {@code --header} properties so app code cannot inspect download credentials. */
   private static java.util.Map<String, String> takeDownloadHeaders() {
     java.util.Map<String, String> out = new java.util.LinkedHashMap<>();
-    for (int i = 0; i < 16; i++) {
-      String raw = System.clearProperty("apksim.downloadHeader." + i);
-      if (raw == null) continue;
-      int colon = raw.indexOf(':');
-      if (colon <= 0) continue;
-      String name = raw.substring(0, colon).trim();
-      String val = raw.substring(colon + 1).trim();
-      if (!name.isEmpty()) out.put(name, val);
+    String file = System.clearProperty("apksim.downloadHeaders");
+    if (file == null || file.isEmpty()) return out;
+    Path f = Path.of(file);
+    try {
+      for (String raw : java.nio.file.Files.readAllLines(f, java.nio.charset.StandardCharsets.UTF_8)) {
+        int colon = raw.indexOf(':');
+        if (colon <= 0) continue;
+        String name = raw.substring(0, colon).trim();
+        String val = raw.substring(colon + 1).trim();
+        if (!name.isEmpty() && out.size() < 16) out.put(name, val);
+      }
+    } catch (java.io.IOException e) {
+      System.err.println("[apksim] --header: cannot read the headers the launcher wrote: " + e.getMessage());
+    } finally {
+      try {
+        java.nio.file.Files.deleteIfExists(f);
+      } catch (java.io.IOException ignored) {
+        // the launch's STATE/tmp is the user's own; a file left there is read by nobody else
+      }
     }
     return out;
   }
@@ -264,6 +272,13 @@ public final class Main {
     return classes;
   }
 
+  /**
+   * Robolectric's AndroidTestEnvironment builds a BouncyCastleProvider in its static initializer, which loads and
+   * registers every algorithm class: ~180 ms of a cold launch, on the main thread, interpreted, once the sandbox is
+   * made. Nothing in it depends on the sandbox or the APK, so the class is initialized here on a thread of its own,
+   * while the APK is indexed and the runner built; the main thread finds it done, or waits only for the rest. A standby
+   * did it during its warm-up. -Dapksim.initAhead=false turns it off (A/B), and SimRunner's Conscrypt load with it.
+   */
   private static void initTestEnvironmentAhead() {
     if (!Boolean.parseBoolean(System.getProperty("apksim.initAhead", "true"))) return;
     // Preload the framework's 17 MB resources.arsc on its own thread while the JVM initializes Robolectric + natives.

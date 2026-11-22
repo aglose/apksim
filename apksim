@@ -436,7 +436,9 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --header)
       [[ "$2" == ?*:* && "$2" != *$'\r'* && "$2" != *$'\n'* ]] || { echo "--header takes 'NAME: VALUE' with no line breaks" >&2; exit 2; }
       ((${HEADER_N:-0} < 16)) || { echo "--header: at most 16 headers" >&2; exit 2; }
-      EXTRA+=("-Dapksim.downloadHeader.${HEADER_N:-0}=$2"); HEADER_N=$((${HEADER_N:-0} + 1)); shift 2 ;;
+      # Not a -D property: a JVM's arguments are in `ps` for every local user and in RuntimeMXBean for app code.
+      # They go to a file only this user reads, which Main deletes once read (below).
+      DOWNLOAD_HEADERS+=("$2"); HEADER_N=$((${HEADER_N:-0} + 1)); shift 2 ;;
     --netrc) EXTRA+=("-Dapksim.downloadNetrc=true"); shift ;;
     --no-sandbox) NO_SANDBOX=1; shift ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
@@ -452,9 +454,22 @@ done
 # Always both, empty when unset: empty means the default (no store override, no shared folders), where leaving one
 # out would keep what the standby's own environment had.
 EXTRA+=("-Dapksim.skinsDir=${APKSIM_SKINS_DIR:-}" "-Dapksim.skinsShared=${APKSIM_SKINS:-}")
-# A bundle's repro.sh repeats this launch: its arguments (unit separators between them), folder and launcher.
+# --header values (download credentials) for Main, in a file of this user's alone (mktemp makes it 0600).
+if [[ -n "${DOWNLOAD_HEADERS+x}" ]]; then
+  mkdir -p "$STATE/tmp"
+  HEADERS_FILE="$(mktemp "$STATE/tmp/download-headers.XXXXXX")" || exit 2
+  printf '%s\n' "${DOWNLOAD_HEADERS[@]}" > "$HEADERS_FILE"
+  EXTRA+=("-Dapksim.downloadHeaders=$HEADERS_FILE")
+fi
+# A bundle's repro.sh repeats this launch: its arguments (unit separators between them), folder and launcher; a
+# --header's value is left out (it is a credential: repro.sh is uploaded with CI artifacts).
 if [[ -n "${BUNDLES:-}" ]]; then
-  IFS_SAVED="$IFS"; IFS=$'\x1f'; ARGV="${ORIG[*]}"; IFS="$IFS_SAVED"
+  REDACTED=(); PREV=""
+  for a in "${ORIG[@]}"; do
+    if [[ "$PREV" == --header ]]; then REDACTED+=("${a%%:*}: REDACTED"); else REDACTED+=("$a"); fi
+    PREV="$a"
+  done
+  IFS_SAVED="$IFS"; IFS=$'\x1f'; ARGV="${REDACTED[*]}"; IFS="$IFS_SAVED"
   EXTRA+=("-Dapksim.argv=$ARGV" "-Dapksim.cwd=$PWD" "-Dapksim.launcherScript=$ROOT/apksim")
 fi
 # Always passed: a standby keeps the properties it booted with, and this launch's must replace them.
@@ -514,7 +529,7 @@ if [[ -n "$STANDBY_ON" && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKS
       # Not java.net.preferIPv4Stack: the JDK reads it once at JVM start, so a standby would ignore it (a beamed
       # instance's own `=true` is its standby's, from the beam profile below, when that JVM starts).
       -Dapksim.beamSandbox=*|-Dapksim.beamBuildCache=*|-Dapksim.beamSiblingCaches=*) ;;
-      -Dapksim.classCache=*|-Dapksim.idleSleep=*|-Dapksim.apkCacheMB=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.compatTable=*|-Dapksim.vsync=*|-Dapksim.freshDownload=*|-Dapksim.downloadConnections=*|-Dapksim.overlapDownload=*|-Dapksim.downloadHeader.*|-Dapksim.downloadNetrc=*) ;;
+      -Dapksim.classCache=*|-Dapksim.idleSleep=*|-Dapksim.apkCacheMB=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.compatTable=*|-Dapksim.vsync=*|-Dapksim.freshDownload=*|-Dapksim.downloadConnections=*|-Dapksim.overlapDownload=*|-Dapksim.downloadHeaders=*|-Dapksim.downloadNetrc=*|-Dapksim.netrcFile=*) ;;
       # Recording launches cold: its sandbox must let it write the recording's folder (a standby's is fixed).
       -Dapksim.network=replay:*|-Dapksim.networkProfile=*|-Dapksim.networkRedact=*|-Dapksim.networkMatch=*) ;;
       -Dapksim.networkIgnoreQuery=*|-Dapksim.networkIgnoreHeader=*|-Dapksim.networkUnmatched=*) ;;

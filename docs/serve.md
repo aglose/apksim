@@ -437,8 +437,8 @@ shows it, and the tab may switch to it again by that name), and replaces the one
 - `POST /api/apps` with a JSON body `{"url": "https://...", "name": "...", "headers": {...}, "options": [...]}` (only
   `url` is required): serve downloads the APK itself and answers `{"id", "name", "state": "downloading"}` at once.
   `headers` go with the download only (an artifact store's `Authorization` or `X-JFrog-Art-Api`) and are never stored;
-  sensitive headers (`Authorization`, `Cookie`, `Proxy-Authorization`, `X-JFrog-Art-Api`, `X-Api-Key`, `Private-Token`)
-  are stripped on cross-host redirects (such as Artifactory redirecting to presigned S3/GCS URLs). Downloads use
+  every one of them goes to the URL's origin only: a redirect to another scheme, host or port (such as Artifactory
+  redirecting to presigned S3/GCS URLs) carries none. Downloads use
   `ApkDownloader` (native `/usr/bin/curl` HTTP/2 fast path, or pure-Java parallel ranged HTTP with `-Dapksim.noCurl=true`).
   `options` are the
   app's launch options (above). The download is stored by content hash as uploads are, and the id follows the same
