@@ -364,6 +364,7 @@ public class Host {
           render(roots);
           if (firstFrame) {
             firstFrame = false;
+            AppClasses.onFirstFrame();
             applyFrameDelay(false);
             Timing.mark("first-frame");
             Standby.spawnNextSoon();

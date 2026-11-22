@@ -101,7 +101,9 @@ stage() {
 # kernel everything else near the top of the address space (60 of 60 launches in the two images). APKSIM_AOT_BASE overrides.
 AOT_BASE="${APKSIM_AOT_BASE:-}"
 [[ -z "$AOT_BASE" && "$(uname -s)" == Darwin ]] && AOT_BASE=0x100000000000
-stage record --jvm -XX:AOTMode=record --jvm "-XX:AOTConfiguration=$CONF" "${HEADLESS[@]+"${HEADLESS[@]}"}" --exit-after-first-frame "$APK"
+# -Dapksim.classCache=false during record: ensures ClassTranslator, MethodTranslator, DexFile and ASM are archived in app.aot,
+# speeding up every first-ever launch of a new APK even when the test app's class cache is already warm.
+stage record --jvm -XX:AOTMode=record --jvm "-XX:AOTConfiguration=$CONF" --jvm -XX:TieredStopAtLevel=1 --jvm -Dapksim.classCache=false "${HEADLESS[@]+"${HEADLESS[@]}"}" --exit-after-first-frame "$APK"
 stage create --jvm -XX:AOTMode=create --jvm "-XX:AOTConfiguration=$CONF" --jvm "-XX:AOTCache=$NEW" ${AOT_BASE:+--jvm "-XX:SharedBaseAddress=$AOT_BASE"} "${HEADLESS[@]+"${HEADLESS[@]}"}" --exit-after-first-frame "$APK"
 # Into place by rename, so running instances keep the cache they mapped; the root last, as launches check it.
 mv -f "$NEW" "$STATE/app.aot"

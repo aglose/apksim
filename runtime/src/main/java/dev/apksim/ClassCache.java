@@ -362,13 +362,45 @@ final class ClassCache {
     }
     long deadline = hashBudgetNanos == Long.MAX_VALUE ? Long.MAX_VALUE : System.nanoTime() + hashBudgetNanos;
     Map<Fresh, byte[]> hashes = new IdentityHashMap<>();
-    for (Fresh f : work) {
-      if (hashBudgetNanos == Long.MAX_VALUE ? exiting : System.nanoTime() > deadline) break;
-      try {
-        byte[] h = f.lazy.get();
-        if (h != null) hashes.put(f, h);
-      } catch (RuntimeException ignored) {
-        // Unindexed only: a later build translates it again.
+    if (work.size() >= 64) {
+      int nThreads = Math.min(Math.max(2, Runtime.getRuntime().availableProcessors() / 2), 6);
+      byte[][] results = new byte[work.size()][];
+      java.util.concurrent.atomic.AtomicInteger nextIdx = new java.util.concurrent.atomic.AtomicInteger();
+      Thread[] pool = new Thread[nThreads];
+      for (int t = 0; t < nThreads; t++) {
+        pool[t] = new Thread(() -> {
+          for (int i; (i = nextIdx.getAndIncrement()) < work.size(); ) {
+            if (hashBudgetNanos == Long.MAX_VALUE ? exiting : System.nanoTime() > deadline) return;
+            try {
+              results[i] = work.get(i).lazy.get();
+            } catch (RuntimeException ignored) {
+              // Unindexed only: a later build translates it again.
+            }
+          }
+        }, "apksim-class-hash-" + t);
+        pool[t].setDaemon(true);
+        pool[t].start();
+      }
+      for (Thread th : pool) {
+        try {
+          th.join();
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          break;
+        }
+      }
+      for (int i = 0; i < work.size(); i++) {
+        if (results[i] != null) hashes.put(work.get(i), results[i]);
+      }
+    } else {
+      for (Fresh f : work) {
+        if (hashBudgetNanos == Long.MAX_VALUE ? exiting : System.nanoTime() > deadline) break;
+        try {
+          byte[] h = f.lazy.get();
+          if (h != null) hashes.put(f, h);
+        } catch (RuntimeException ignored) {
+          // Unindexed only: a later build translates it again.
+        }
       }
     }
     if (hashBudgetNanos == Long.MAX_VALUE && exiting) return;  // flush saves it all, under the same lock, next

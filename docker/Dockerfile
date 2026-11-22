@@ -104,6 +104,14 @@ RUN cd /opt/apksim/work && ALL="$(ls lib/android-all-instrumented-*.jar | sort -
     # Now unpacked, they need not ship twice: the compat jar is not on the classpath, and android-all keeps its classes
     # and framework resources but drops natives for other platforms, fonts and ICU data.
     rm "$DIST" && zip -q -d "$ALL" 'native/*' 'fonts/*' 'icu/*' 'hyphen-data/*'
+COPY apksim.jar /opt/apksim/work/apksim.jar
+# Flatten framework jar trampolines (B2) and strip duplicate .class entries from android-all-instrumented-*.jar
+# (keeping resources.arsc, res/, AndroidManifest.xml there for Robolectric's dependency.dir) so the image stays compact.
+RUN cd /opt/apksim/work && ALL="$(ls lib/android-all-instrumented-*.jar | sort -V | tail -1)" && \
+    CP="apksim.jar:$(ls lib/*.jar | tr '\n' ':')" && \
+    java -XX:+UseSerialGC -Xmx2g -XX:TieredStopAtLevel=1 -cp "$CP" dev.apksim.FrameworkFlattener \
+      "$ALL" runtime/android-all-flat.jar apksim.jar lib && \
+    zip -q -d "$ALL" '*.class' && rm -f runtime/android-all-flat.jar.stamp
 # Android 15+ frameworks run on android-all's own libandroid_runtime, and 16-robolectric-13921718-i7 has none for
 # linux/aarch64: an arm64 build takes the one from its respin, which docker-build.sh puts in linux-arm64/ (see
 # build.gradle.kts, linuxArm64Runtime). Either way both Robolectric libraries must be there for this CPU.

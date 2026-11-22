@@ -32,6 +32,11 @@ final class Standby {
     return System.getProperty("apksim.standby") != null;
   }
 
+  /** True when this process is a pre-booted standby handling a warm launch. */
+  static boolean isAdopted() {
+    return adopted;
+  }
+
   /** Boots, waits for a launch, and returns its arguments for {@link Main} (the APK). */
   static String[] await() throws Exception {
     String sock = System.getProperty("apksim.standby");

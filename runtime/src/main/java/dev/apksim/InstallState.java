@@ -13,6 +13,7 @@ final class InstallState {
   private InstallState() {}
 
   static void beforeApplicationOnCreate(Application app) {
+    SimKeyStore.install();
     // --setting, at each test's setup (Robolectric resets the settings between tests); a running instance applied them
     // with its slot's settings already (SlotDevice.take, just before this). Before the ANDROID_ID, so a seeded one wins
     // in both, as one the slot kept does.
@@ -201,19 +202,26 @@ final class InstallState {
     java.util.Map<String, Integer> out = new java.util.HashMap<>();
     try {
       java.net.URL jar = android.view.View.class.getProtectionDomain().getCodeSource().getLocation();
-      String xml;
+      byte[] raw;
       try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(new java.io.File(jar.toURI()));
            java.io.InputStream in = zip.getInputStream(zip.getEntry("AndroidManifest.xml"))) {
-        xml = Axml.decode(in.readAllBytes());
+        raw = in.readAllBytes();
       }
-      java.util.regex.Matcher element = java.util.regex.Pattern.compile("<permission\\s([^>]*)>").matcher(xml);
-      java.util.regex.Pattern name = java.util.regex.Pattern.compile("android:name=\"([^\"]+)\"");
-      java.util.regex.Pattern level = java.util.regex.Pattern.compile("android:protectionLevel=\"0x([0-9a-fA-F]+)\"");
-      while (element.find()) {
-        java.util.regex.Matcher n = name.matcher(element.group(1));
-        java.util.regex.Matcher l = level.matcher(element.group(1));
-        if (n.find()) out.put(n.group(1), l.find() ? (int) Long.parseLong(l.group(1), 16) : 0);
-      }
+      Axml.parse(raw, Integer.MAX_VALUE, false, (tag, attrs) -> {
+        if (!"permission".equals(tag)) return;
+        String n = attrs.get("android:name");
+        if (n == null) return;
+        String l = attrs.get("android:protectionLevel");
+        int v = 0;
+        if (l != null && !l.isEmpty()) {
+          try {
+            v = l.startsWith("0x") ? (int) Long.parseLong(l.substring(2), 16) : Integer.parseInt(l);
+          } catch (NumberFormatException ignored) {
+            v = 0;
+          }
+        }
+        out.put(n, v);
+      });
     } catch (Exception e) {
       System.err.println("[apksim] framework permissions: " + e);
     }
