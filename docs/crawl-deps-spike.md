@@ -1,5 +1,8 @@
 # Spike: which sources each crawled screen depends on (2026-11-21)
 
+The crawler now records this: `crawl.py --record-deps`, documented in docs/crawl.md "Per-screen dependencies". This
+page keeps the spike's measurements, its reasoning and the list of what a changed file cannot be mapped through.
+
 Question from Greenroom: for each screen of a crawl (`scripts/crawl.py`), which of the app's source files and
 resources does it depend on, so that a later commit's changed files pick only the screens worth walking again?
 

@@ -177,6 +177,9 @@ public class Host {
     try {
       if (replay == null) {
         LaunchBroadcasts.send(app);  // --broadcast: after Application.onCreate, before the first activity
+        // -Dapksim.deps: the app's start (launch to here) is a span of its own, kept for `deps start` (crawl.py
+        // --record-deps, docs/crawl.md); the first activity's span begins now.
+        if (dev.apksim.dex.Probes.ON) dev.apksim.dex.Probes.endStartSpan();
         start(System.getProperty("apksim.startActivity"), startIntent());
       } else {
         try {

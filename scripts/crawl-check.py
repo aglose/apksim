@@ -19,6 +19,10 @@ Usage: crawl-check.py [--apk APK] [--out DIR] [--quick] [--docker IMAGE] [-j N] 
    ones, and takes under a fifth of walk 1's time. `--seed` without `--only`, or with `--base`, is refused.
 9. A seed walked with a long Settings value that makes the slot screen's text wrap (another structure), walked again
    seeded without it and `--only` that screen: the screen at its position replaces it (`replaces`), the rest is carried.
+10. `--record-deps` on home, SecondActivity and the AppCompat check screen: Trips' `sources` have `MainActivity.kt` and
+   not `SecondActivity.kt`, SecondActivity's have `SecondActivity.kt`, the AppCompat screen lists its drawable and colour,
+   `start_deps` has the Application's file, a walk without the flag has no `deps`, and a seeded walk carries `deps`.
+   Both walk times are printed.
 
 --quick (CI, where the image is slow) walks to depth 2. --docker IMAGE runs crawl.py in the Linux image
 (`--entrypoint crawl.py`, OUT mounted at /work) as scripts/ci-smoke.sh does. Exit status 1 on any failed expectation.
@@ -287,9 +291,55 @@ def main():
           and len(doc12["screens"]) == len(doc11["screens"]), "the rest of that seed is carried",
           str([(s["id"], s["origin"]) for s in doc12["screens"]]))
 
+    # 10: per-screen dependencies (--record-deps)
+    dep_starts = ["--start", "apksim://composeapp/home", "--start", "apksim://stack", "--start", "apksim://appcompat",
+                  "--max-depth", "2", "--no-captures", "-j", str(args.j)]
+    nodeps_dir, deps_dir, dseed_dir = (os.path.join(args.out, n) for n in ("nodeps", "deps", "deps-seeded"))
+    doc13, secs_plain, _ = crawl(args.apk, nodeps_dir, *dep_starts)
+    check("start_deps" not in doc13 and not any("deps" in s for s in doc13["screens"]),
+          "without --record-deps no deps field is written")
+    doc14, secs_deps, _ = crawl(args.apk, deps_dir, *dep_starts, "--record-deps")
+    dscreens = doc14["screens"]
+
+    def deps_of(pred):
+        hit = [s for s in dscreens if pred(s)]
+        return hit[0].get("deps") if hit else None
+    dtrips = deps_of(lambda s: s["path"] == {"start": "apksim://composeapp/home", "steps": ["tap-text Trips"]})
+    dstack = deps_of(lambda s: s["path"] == {"start": "apksim://stack", "steps": []})
+    dcompat = deps_of(lambda s: s["path"] == {"start": "apksim://appcompat", "steps": []})
+    src = lambda d: d["sources"] if d else []
+    check(bool(dtrips) and "dev/apksim/composeapp/MainActivity.kt" in src(dtrips)
+          and not any(x.endswith("/SecondActivity.kt") for x in src(dtrips)),
+          "Trips depends on MainActivity.kt and not on SecondActivity.kt", str(src(dtrips)))
+    check("dev/apksim/composeapp/SecondActivity.kt" in src(dstack), "the apksim://stack screen depends on SecondActivity.kt",
+          str(src(dstack)))
+    check(bool(dcompat) and "drawable/appcompat_check_square" in dcompat["resources"]
+          and "color/appcompat_check_mode" in dcompat["resources"],
+          "a screen lists the drawable and colour it resolves", str(dcompat and dcompat["resources"][:8]))
+    explored = [s for s in dscreens if s["id"] in {e["from"] for e in doc14["edges"]}]
+    check(all(isinstance(s.get("deps"), dict) and s["deps"]["classes"] == sorted(s["deps"]["classes"])
+              and set(s["deps"]) == {"classes", "sources", "resources"} for s in explored),
+          "every explored screen has deps of classes, sources and resources, sorted",
+          str([s["id"] for s in explored if not s.get("deps")][:4]))
+    sd = doc14.get("start_deps") or {}
+    check("dev/apksim/composeapp/ComposeApp.kt" in sd.get("sources", []) and "deps_unreliable" not in doc14,
+          "start_deps has the Application's file, and a debug build's map is reliable",
+          f"{sd.get('sources')} {doc14.get('deps_unreliable')}")
+    donly = dstack and next(s["id"] for s in dscreens if s.get("deps") is dstack)
+    doc15, _, _ = crawl(args.apk, dseed_dir, "--no-captures", "-j", str(args.j), "--seed", wpath(deps_dir),
+                        "--only", donly or "none", "--record-deps")
+    seed_deps = {s["id"]: s.get("deps") for s in dscreens}
+    carried = [s for s in doc15["screens"] if s.get("origin") == "carried"]
+    walked = [s for s in doc15["screens"] if s["id"] == donly]
+    check(bool(carried) and all(s.get("deps") == seed_deps.get(s["id"]) for s in carried)
+          and bool(walked) and "dev/apksim/composeapp/SecondActivity.kt" in src(walked[0].get("deps"))
+          and "start_deps" in doc15, "a seeded walk carries its seed's deps and records the walked screen's again",
+          str([s["id"] for s in carried if s.get("deps") != seed_deps.get(s["id"])][:3]))
+    print(f"     walk with --record-deps {secs_deps:.0f} s, without {secs_plain:.0f} s ({len(dscreens)} screens)")
+
     print(f"timings: walk+captures {secs_a:.0f} s ({len(screens)} screens, {len(doc['edges'])} transitions), repeat walk {secs_b:.0f} s, "
           f"compare {secs_c:.0f} s, prepared {secs_d:.0f} s, sweep {secs_e:.0f} s ({secs_f:.0f} s with an allow-list), "
-          f"seeded walk of one screen {secs_g:.0f} s")
+          f"seeded walk of one screen {secs_g:.0f} s, walk with --record-deps {secs_deps:.0f} s (without {secs_plain:.0f} s)")
     if failures:
         print(f"crawl-check: {len(failures)} check(s) failed", file=sys.stderr)
         sys.exit(1)

@@ -15,6 +15,7 @@ scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] 
                  [--skip-text REGEX]... [--tap-unlabeled] [--fill TEXT] [--matrix AXIS=V,V]... [--matrix-file SPEC.json]
                  [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--keep-data]
                  [--base-option "APKSIM OPTIONS"] [--seed RUN (--only ID,ID... | --only-file PATH)] [--events]
+                 [--record-deps [--deps-packages PKG,PKG]]
                  [-- APKSIM_OPTION...]
 ```
 
@@ -50,6 +51,8 @@ scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] 
   result instead of from nothing, and walk again only the screens named (see "Seeded walks").
 - `--events`: besides the human lines, which stay as they are (`[new] depth N: ...`), one line of JSON on stdout per
   finished screen, per level, and one at the end (see "Seeded walks").
+- `--record-deps`: per screen, the app classes whose code ran, their source files and the resources resolved, and the
+  same for the app's start (see "Per-screen dependencies").
 - `-j N` instances at once (default 3; others share this machine). Exit status: 0 when the walk finished, 1 when it
   found a crash (or with `--base` a difference), 2 for bad arguments or an instance that never started.
 
@@ -130,6 +133,72 @@ with `"explored": false`. A `level` line comes with each `[BUILD] depth N:` line
 walk's first level is the named screens at their own depths). Captures follow the walk, so a screen's line comes before
 its captures are taken. `build` is `new`, or `base` for the other build of a `--base` walk. Every event is one line
 starting with `{`; the human lines never do.
+
+## Per-screen dependencies
+
+`--record-deps` says, for each screen it walks, which of the app's source files and resources the screen depends on, so
+that a later commit's changed files can select only the screens worth walking again (`--seed RUN --only ...`). The
+crawler records; a tool that knows the changed files selects.
+
+Instances are launched with the class probes on (`--jvm -Dapksim.deps=true`, the probes of `instrument.py
+--record-deps`, docs/affected-tests.md: two static reads at the start of every method of the probed packages) and
+apksim's resource hook (every resource the framework resolves through `CppAssetManager2.GetResource` or `GetBag`:
+values, layout and drawable files, strings, styles and their parents, references followed). An instance answers the
+control command `deps`: `deps reset` starts a span, `deps read` the probed classes whose code ran since, `deps
+resources` the resources resolved since (the app's own and its libraries', `type/name`; `deps resources all` adds the
+framework's), `deps start` and `deps start resources` the app-start span. `restart` opens a span by itself, after the
+old activities are torn down and before the new start activity is made, so one screen's `onStop`/`onDestroy` never lands
+in the next one's set. The app-start span (launch, Application, content providers, receivers, up to the first
+activity's creation) is kept apart once per process.
+
+For every screen it explores, the crawler reads `deps read` and `deps resources` after the first replay of its path has
+settled and the screen has been read (two reads `--stable-ms` apart that agree): the span is the `restart` that begins
+the replay, every step of the path, and the screen settling. Each explored screen of `crawl.json` gains:
+
+```json
+"deps": {"classes": ["dev.apksim.composeapp.MainActivity", "dev.apksim.composeapp.MainActivityKt$Trips$1", ...],
+         "sources": ["dev/apksim/composeapp/MainActivity.kt", "androidx/compose/foundation/layout/Column.kt", ...],
+         "resources": ["string/default_error_message", "style/Theme.ComposeApp"]}
+```
+
+and the document a top-level `"start_deps"` of the same shape (read once per walk, from the first instance) and
+`"deps_packages"` (the probed packages, `dev/apksim/`). All lists are sorted.
+
+- `classes`: as the probes name them (`Class.getName()`). Only classes of the probed packages: by default the app
+  package's first two parts (`com.example` for `com.example.app`, which takes in its modules); `--deps-packages
+  com.example,org.example.lib` chooses. Library code outside them is not probed.
+- `sources`: the files those classes were compiled from, as package path plus file name (`com/example/app/Main.kt`),
+  through `scripts/affected.py`'s map over the APK's DEX: each class's source file attribute in its package, Kotlin's
+  SMAP for code inlined from other files (so a Compose screen also lists `androidx/compose/.../Column.kt` and the app's
+  own inline helpers), and D8's synthetic lambdas take their outer class's file. No repository is read.
+- `resources`: `type/name`, the app's and its libraries' (merged into the app's package by the build), never the
+  framework's. A resource of a shared library package other than the app's is `pkg:type/name`. `id/...` entries are
+  names, not files.
+
+Mapping a changed file to screens is the caller's: a changed source file selects the screens whose `sources` have it; a
+changed resource file (`res/layout/x.xml`, `res/drawable-night/y.xml`) the screens whose `resources` have `layout/x`,
+`drawable/y`; a changed value file (`res/values*/strings.xml`) each name it defines. A change to any file in
+`start_deps` selects every screen (they all run after the start). Never subtract the start set from a screen: a screen
+that shares classes with the start (the first screen shares nearly all) still depends on them. What cannot be mapped
+selects everything: build and packaging files, `assets/` (not recorded), generated code, native code, constants inlined
+by the compiler, dependency versions. docs/crawl-deps-spike.md has the measurements of the prototype and the full list
+of what a changed file cannot be mapped through.
+
+What to know:
+
+- Only explored screens have `deps`. A screen found and not explored (`--max-depth`, `--max-seconds`, `--max-screens`)
+  has none, and should be treated as selected by any change. A carried screen of a `--seed` walk keeps the `deps` its
+  seed had; a screen walked again gets new ones (or none, if this walk has no `--record-deps`: the crawler says so).
+  `start_deps` is recorded again by every walk with the flag.
+- Code that outlives its screen (a callback that runs after the `restart`, work posted for later) is attributed to the
+  next screen walked on that instance; that only makes the next screen walk again more often, never less.
+- R8 builds: renamed and merged classes have no reliable source file. The crawler looks at the probed packages' classes
+  in the DEX and, when more than a tenth name no source file (R8 without `-keepattributes SourceFile`) or more than
+  three tenths have one- or two-letter names (renaming with no mapping file), writes `"deps_unreliable": "why"` at the
+  top level. `sources` are still written from what the DEX names, but a reader must not select screens by them then
+  (walk everything again, or crawl a debug build for maps); `classes` and `resources` stand. No mapping file is read yet.
+- Cost: probes need a cold launch (crawl instances are cold anyway) and probed classes have their own class cache, so
+  the first walk with `--record-deps` after a build translates every class once more. See "Measured" for walk times.
 
 ## What a screen is
 

@@ -263,6 +263,22 @@ class Instance(snapshot.Worker):
             self.settle()
         self.say("pick cancel")
 
+    def read_deps(self):
+        """--record-deps: the classes whose code ran and the resources resolved since the last `restart` (each opens a
+        span: dex.Probes, ResourceHits), as {classes, resources}, classes as the probes name them (`a.B$c`)."""
+        return {"classes": deps_list(self.say("deps read")), "resources": deps_list(self.say("deps resources"))}
+
+    def read_start_deps(self):
+        """--record-deps: the app-start span (launch to the first activity), kept by the instance once per process."""
+        deadline = time.time() + 30
+        while True:
+            reply = self.say("deps start")
+            if not reply.startswith("error") or time.time() > deadline:
+                break
+            time.sleep(0.2)
+        return {"classes": deps_list(reply), "resources": deps_list(self.say("deps start resources")),
+                "packages": self.say("deps")}
+
     def reach_screen(self, screen, extra=()):
         """Replays the screen's path and checks where it ended; [extra] steps (scrolls, a fill) follow the check."""
         self.reach(screen["path"])
@@ -277,6 +293,49 @@ class Instance(snapshot.Worker):
 
 def fmt(v):
     return snapshot.fmt(v)
+
+
+def deps_list(reply):
+    """`deps N: a,b` / `deps resources N: a,b` -> [a, b]; an error answer stops the walk (the probes are off)."""
+    if reply.startswith("error") or ":" not in reply:
+        fail(f"--record-deps: the instance answered {reply!r}")
+    body = reply.split(":", 1)[1].strip()
+    return sorted(x for x in body.split(",") if x)
+
+
+class DepsMap:
+    """--record-deps: probed class -> source files, from the APK's DEX (scripts/affected.py's map: the DEX source file
+    name, its package, and Kotlin's SMAP for inlined code), and whether that map can be trusted."""
+
+    def __init__(self, apk, packages):
+        import affected  # scripts/affected.py
+        self.packages = packages
+        self.map = affected.source_map([apk], packages)
+        # A class counts as sourceless when the map gives it no file even through its outer class (D8's synthetic
+        # lambdas name none of their own, and the map takes their outer class's).
+        total = len(self.map)
+        nosource = sum(1 for keys in self.map.values() if not keys)
+        renamed = sum(1 for c in self.map if re.fullmatch(r"[a-z]{1,2}", c.rsplit("/", 1)[-1].split("$")[0]))
+        why = []
+        if total == 0:
+            why.append(f"the APK has no classes in the probed packages {','.join(packages)}")
+        else:
+            if nosource > total * 0.1:
+                why.append(f"{nosource} of {total} classes in {','.join(packages)} name no source file (R8 without "
+                           "-keepattributes SourceFile?): their files cannot be told")
+            if renamed > total * 0.3:
+                why.append(f"{renamed} of {total} classes in {','.join(packages)} have one- or two-letter names (R8 "
+                           "renaming, no mapping file): classes are merged and inlined, so files may be missing")
+        self.unreliable = "; ".join(why) or None
+
+    def sources(self, classes):
+        out = set()
+        for c in classes:
+            out.update(self.map.get(c.replace(".", "/"), ()))
+        return sorted(out)
+
+    def shape(self, raw):
+        return {"classes": raw["classes"], "sources": self.sources(raw["classes"]), "resources": raw["resources"]}
 
 
 # ----------------------------------------------------------------------------------------------- the explorer
@@ -390,6 +449,20 @@ class Explorer:
                     "stage": self.stage, "snapshot": True, "fresh": not args.keep_data, "screens": [],
                     "record": lambda r: None, "crashes": self.findings, "stable_ms": args.stable_ms, "name": name}
         self.instances = []
+        self.deps_map = None     # --record-deps: DepsMap, once the probed packages are known
+        self.start_deps = None   # --record-deps: the app-start span, read from the first instance
+        if args.record_deps:
+            self.options += ["--jvm", "-Dapksim.deps=true"]
+            if args.deps_packages:
+                self.options += ["--jvm", f"-Dapksim.deps.packages={args.deps_packages}"]
+
+    def record_start_deps(self):
+        """--record-deps: the app-start span, once per walk, and the class -> source map for the probed packages."""
+        raw = self.instances[0].read_start_deps()
+        m = re.search(r"packages (\S+?),? epoch", raw.pop("packages"))
+        packages = [p for p in (m[1] if m else "").split(",") if p]
+        self.deps_map = DepsMap(self.apk, packages)
+        self.start_deps = self.deps_map.shape(raw)
 
     # --- instances
     def pool(self, n):
@@ -410,6 +483,8 @@ class Explorer:
         if errors:
             self.close()
             fail("; ".join(errors))
+        if self.args.record_deps:
+            self.record_start_deps()
 
     def close(self):
         for inst in self.instances:
@@ -509,6 +584,8 @@ class Explorer:
                 self.explored.add(screen["id"])
                 screen["actions"] = res["actions"]
                 screen["flaky"] = res.get("flaky")
+                if res.get("deps") is not None:
+                    screen["deps"] = self.deps_map.shape(res["deps"])
                 for e in res["edges"]:
                     to = e["to"]
                     edge = {"from": screen["id"], "action": e["label"], "cmd": e["cmd"], "kind": e["kind"], "to": to["id"],
@@ -568,7 +645,7 @@ class Explorer:
         for screen, r in zip(targets, results):
             old = screen["id"]
             screen["origin"] = "walked"
-            for k in ("captures", "settled", "unsettled", "flaky", "actions"):
+            for k in ("captures", "settled", "unsettled", "flaky", "actions", "deps"):
                 screen.pop(k, None)
             screen["captures"], screen["actions"] = {}, []
             if r.get("crash"):
@@ -598,7 +675,7 @@ class Explorer:
                 ns = self.screens[new_id]
                 if ns.get("origin") == "carried":
                     self.edges = [e for e in self.edges if e["from"] != new_id]
-                    for k in ("captures", "settled", "unsettled", "flaky"):
+                    for k in ("captures", "settled", "unsettled", "flaky", "deps"):
                         ns.pop(k, None)
                     ns["captures"], ns["actions"], ns["origin"] = {}, [], "walked"
                 self.order.remove(old)
@@ -704,6 +781,14 @@ class Explorer:
             except Gone as e:
                 findings.append(self.crash_finding(e.crash, screen["path"]))
                 return {"actions": [], "edges": [], "findings": findings, "flaky": "ended on arrival"}
+        deps = None
+        if args.record_deps:
+            # The span from the `restart` that began this replay to the screen read as settled (docs/crawl.md).
+            try:
+                deps = inst.read_deps()
+            except Gone as e:
+                findings.append(self.crash_finding(e.crash, screen["path"]))
+                return {"actions": [], "edges": [], "findings": findings, "flaky": "ended on arrival"}
         prep = []
         filled = None
         if args.fill is not None:
@@ -797,7 +882,7 @@ class Explorer:
             if e["to"]["id"] in aliases:
                 e["to"] = {"id": screen["id"]}
         return {"actions": [{k: a[k] for k in ("label", "cmd", "kind", "box", "skipped", "scrolls")} for a in acts],
-                "edges": edges, "findings": findings, "truncated": truncated}
+                "edges": edges, "findings": findings, "truncated": truncated, "deps": deps}
 
     def crash_finding(self, crash, path):
         kind = "crash" if crash["kind"] == "crash" else crash["kind"]
@@ -847,9 +932,15 @@ class Explorer:
                 self.finding("capture", f"{screen['id']} {name}: {e}", screen["path"])
 
     def doc(self):
-        return {"build": self.name, "apk": os.path.basename(self.apk), "screens": [self.screens[i] for i in self.order],
-                "edges": self.edges, "findings": self.findings, "incomplete": self.incomplete,
-                "seconds": {"explore": round(self.t_explore, 1), "capture": round(self.t_capture, 1)}}
+        d = {"build": self.name, "apk": os.path.basename(self.apk), "screens": [self.screens[i] for i in self.order],
+             "edges": self.edges, "findings": self.findings, "incomplete": self.incomplete,
+             "seconds": {"explore": round(self.t_explore, 1), "capture": round(self.t_capture, 1)}}
+        if self.start_deps is not None:
+            d["start_deps"] = self.start_deps
+            d["deps_packages"] = self.deps_map.packages
+            if self.deps_map.unreliable:
+                d["deps_unreliable"] = self.deps_map.unreliable
+        return d
 
 
 def repeated(steps, n):
@@ -1547,6 +1638,8 @@ def parse(argv):
     p.add_argument("--only", help="with --seed: the screen ids to walk again, comma-separated")
     p.add_argument("--only-file", help="with --seed: a file of screen ids to walk again, one per line")
     p.add_argument("--events", action="store_true", help="also print a line of JSON per finished screen and per level")
+    p.add_argument("--record-deps", action="store_true", help="per screen, the app classes that ran, their source files and the resources resolved (crawl.json deps, start_deps; docs/crawl.md)")
+    p.add_argument("--deps-packages", help="with --record-deps: packages to probe, comma-separated (default the app package's first two parts)")
     p.add_argument("--spinner-seconds", type=float, default=6, help="how long a progress indicator may stay up offline")
     args = p.parse_args(argv)
     args.apksim = list(tail)
@@ -1568,6 +1661,8 @@ def parse(argv):
         except OSError as e:
             fail(f"cannot read {args.only_file}: {e}")
     args.only_ids = list(dict.fromkeys(only))
+    if args.deps_packages and not args.record_deps:
+        fail("--deps-packages goes with --record-deps")
     if args.seed:
         if not args.only_ids:
             fail("--seed needs --only or --only-file: a seeded walk walks only the screens named, and with none it would "
@@ -1638,6 +1733,8 @@ def main():
     seed = src_dir = None
     if args.seed:
         seed, src_dir = load_seed(args, out, combos)
+        if "start_deps" in seed and not args.record_deps:
+            log("note: the seed recorded deps and this walk does not: screens walked again will have none (add --record-deps)")
     for d in ("screens", "base-screens", "diff"):
         shutil.rmtree(os.path.join(out, d), ignore_errors=True)
     os.makedirs(out, exist_ok=True)

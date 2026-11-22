@@ -78,6 +78,16 @@ public final class Probes {
     return out;
   }
 
+  /** The app-start span (launch to the first activity), kept by {@link #endStartSpan}; null until then. */
+  private static volatile List<String> startClasses;
+  private static volatile int[] startResources;
+
+  /** Host, just before the first activity: the span so far is the app's start; keeps it and begins a new one. */
+  public static void endStartSpan() {
+    startResources = dev.apksim.ResourceHits.ids(true);
+    startClasses = mark();
+  }
+
   /**
    * The `deps` control command (running instances, -Dapksim.deps=true; docs/crawl-deps-spike.md): `deps reset` starts a
    * new span, `deps read` answers the classes reached since, `deps mark` both at once; alone, whether recording is on.
@@ -100,7 +110,16 @@ public final class Probes {
         boolean all = a.length > 2 && a[2].equals("all");
         yield "deps resources " + names(all).size() + ": " + String.join(",", names(all));
       }
-      default -> "usage: deps [reset|read|mark|resources [all]]";
+      case "start" -> {
+        // deps start [resources]: the app-start span (launch to the first activity), kept once per process.
+        if (startClasses == null) yield "error: deps: no start span (a replay, or the first activity not started yet)";
+        if (a.length > 2 && a[2].equals("resources")) {
+          List<String> n = dev.apksim.ResourceHits.names(startResources, false);
+          yield "deps start resources " + n.size() + ": " + String.join(",", n);
+        }
+        yield "deps start " + startClasses.size() + ": " + String.join(",", startClasses);
+      }
+      default -> "usage: deps [reset|read|mark|resources [all]|start [resources]]";
     };
   }
 
