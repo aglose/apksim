@@ -295,10 +295,14 @@ def fmt(v):
     return snapshot.fmt(v)
 
 
+class DepsOff(RuntimeError):
+    """An instance answered `deps` with an error (the probes are off): the walk cannot record what it was asked to."""
+
+
 def deps_list(reply):
     """`deps N: a,b` / `deps resources N: a,b` -> [a, b]; an error answer stops the walk (the probes are off)."""
     if reply.startswith("error") or ":" not in reply:
-        fail(f"--record-deps: the instance answered {reply!r}")
+        raise DepsOff(f"--record-deps: the instance answered {reply!r}")
     body = reply.split(":", 1)[1].strip()
     return sorted(x for x in body.split(",") if x)
 
@@ -484,7 +488,11 @@ class Explorer:
             self.close()
             fail("; ".join(errors))
         if self.args.record_deps:
-            self.record_start_deps()
+            try:
+                self.record_start_deps()
+            except Gone as e:
+                self.close()
+                fail(f"--record-deps: the first instance ended before its start was read: {e.crash.get('detail')}")
 
     def close(self):
         for inst in self.instances:
@@ -1693,6 +1701,10 @@ def load_seed(args, out, combos):
         fail(f"--seed: the seed was captured in {seed.get('combos', [])} and this walk captures {names}: give the seed's "
              "matrix, or walk in full (carried screens keep the seed's captures)")
     src_dir = seed_dir
+    stranded = os.path.join(seed_dir, ".seed", "screens")
+    if os.path.isdir(stranded) and not os.path.isdir(os.path.join(seed_dir, "screens")):
+        # A seeded run on OUT itself that ended early (an instance never started) left the captures aside: back first.
+        os.rename(stranded, os.path.join(seed_dir, "screens"))
     if os.path.realpath(seed_dir) == os.path.realpath(out):
         # The seed is OUT itself: its captures are moved aside before OUT's screens/ is emptied, and read from there.
         src_dir = os.path.join(out, ".seed")
@@ -1819,6 +1831,8 @@ def main():
             doc["findings"] += [f for f in base.findings if f["kind"] != "note"]
             doc["incomplete"] += [f"base: {x}" for x in base.incomplete]
         doc["seconds"]["total"] = round(time.time() - t0, 1)
+    except DepsOff as e:
+        fail(str(e))  # the finally below still closes the instances
     finally:
         new.close()
         if base:

@@ -268,7 +268,9 @@ def main():
     check({e["id"] for e in evs if e.get("event") == "screen"} == set(origins) and any(e.get("event") == "level" for e in evs)
           and any(e.get("event") == "done" for e in evs) and any(ln.startswith("[new] depth ") for ln in lines),
           "--events prints a JSON line per screen and level, and the human lines stay", str(evs[:2]))
-    check(secs_g < secs_a / 5, "the seeded walk takes under a fifth of the full walk's time", f"{secs_g:.0f} s against {secs_a:.0f} s")
+    # --quick (CI's image) walks to depth 2 only, so the full walk is short and the seeded one's fixed costs weigh more.
+    share = 2 if args.quick else 5
+    check(secs_g < secs_a / share, f"the seeded walk takes under 1/{share} of the full walk's time", f"{secs_g:.0f} s against {secs_a:.0f} s")
     for extra, what in ((["--seed", wpath(a_dir)], "--seed without --only"),
                         (["--seed", wpath(a_dir), "--only", only, "--base", args.apk], "--seed with --base")):
         p = subprocess.run([sys.executable, CRAWL, args.apk, "--out", os.path.join(args.out, "unit"), *extra],

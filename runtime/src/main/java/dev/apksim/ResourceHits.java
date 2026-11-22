@@ -10,7 +10,11 @@ import java.util.List;
  * themes and their parents), recorded in apksim's copy of that class. Names are looked up only when read.
  */
 public final class ResourceHits {
-  public static final boolean ON = Boolean.getBoolean("apksim.deps");
+  /**
+   * Running instances only: `instrument.py --record-deps` test runs probe classes too, and nothing there reads resources,
+   * so the hook on the hot resource path stays off (the launcher sets apksim.instrument on the JVM's command line).
+   */
+  public static final boolean ON = Boolean.getBoolean("apksim.deps") && System.getProperty("apksim.instrument") == null;
 
   private static final Object LOCK = new Object();
   /** Open-addressed set of ids; 0 is never a resource id. */

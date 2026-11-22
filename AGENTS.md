@@ -330,6 +330,11 @@ Read README.md for results and limits; this file covers how to work on the code.
     with and without the collection across appearance switches and rotations; `ci-smoke.sh` checks it. The trade is
     deliberate: a destroyed activity's native-backed objects (Bitmap pixels, renderers) now wait for the next
     collection that reaches them, or Host.Memory's idle one, instead of going at the recreation.
+  - `org.robolectric.res.android.CppAssetManager2` (apksim's copy of Robolectric 4.17's, ahead of it on the class
+    path) and `ResourceHits`: two hook lines (`GetResource`, and `GetBag(int, List)` before its cache) record every
+    resource id the framework resolves, for the `deps resources` command and `crawl.py --record-deps`. Off unless
+    `-Dapksim.deps=true` in a running instance (a `static final`; test runs never). Re-copy the file and put the two
+    lines back at every Robolectric upgrade.
   - `MappedResources`, `org.robolectric.res.android.CppApkAssets` and `ResourceString` (apksim's copies of
     Robolectric 4.17's, ahead of them on the class path): a `resources.arsc` is a mapped file, not a `byte[]` on the
     heap. Robolectric inflates the framework's table (16.7 MB, the largest object of an idle instance's heap) and
