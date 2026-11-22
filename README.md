@@ -407,6 +407,10 @@ rate. It is the biggest saving for many headless instances: the test app's Shade
 | `--network record\|replay FILE` | Record the app's HTTP(S) into a HAR file, or answer from one with no backend ([below](#network-record-replay-and-conditions)) |
 | `--network-profile NAME` | Start with `offline`, `3g`, `lossy`, `latency:MS` or `bandwidth:KBPS` |
 | `--network-host H=ADDR[:PORT]` | Send connections for host H to a fixture server instead (`--network-trust CERT` for its certificate) |
+| `--header "NAME: VALUE"` | HTTP header sent when launching an APK from an `http(s)://` URL (for example `Authorization: Bearer ...` or `X-JFrog-Art-Api: ...`). Repeatable (up to 16); stripped on cross-host redirects and cleared from JVM properties before app code loads |
+| `--netrc` | Use credentials from `~/.netrc` when launching an APK from an `http(s)://` URL (keeps tokens off the command line) |
+
+**Launching from a URL:** passing an `http://` or `https://` URL in place of a local APK path (`apksim https://...`) downloads the APK into `STATE/cache/downloads/` (LRU-capped at 512 MB via `--jvm -Dapksim.downloadCacheMB=N`) and overlaps cold simulator boot with the download. `--fresh` (or `--jvm -Dapksim.freshDownload=true`) forces a fresh download. Sensitive auth headers (`Authorization`, `Cookie`, `Proxy-Authorization`, `X-JFrog-Art-Api`, `X-Api-Key`, `Private-Token`) and `.netrc` credentials are stripped on cross-host redirects (such as Artifactory redirecting to presigned S3/GCS storage).
 
 #### Automation options
 
@@ -1047,6 +1051,7 @@ running it on a Mac are covered in [docs/linux-docker.md](docs/linux-docker.md).
 | `APKSIM_HOME` | Where apksim keeps its state: caches, app data, screenshots (default `~/.apksim` for a release, `work/` for a checkout) |
 | `APKSIM_STANDBY=0` | Launch cold and start no warm-launch standby |
 | `APKSIM_LOGCAT=1` | Copy the app's log output to stderr from the start |
+| `APKSIM_FLAT_FRAMEWORK=0` | Use the stock `android-all-instrumented-*.jar` instead of the B2-flattened `work/runtime/android-all-flat.jar` (source checkouts) |
 | `APKSIM_JDK` | The JDK 24 that build scripts use (from-source builds) |
 
 ### JVM switches
@@ -1058,6 +1063,11 @@ Pass these with `--jvm`, for example `--jvm -Dapksim.vsync=grid`.
 | `-Dapksim.timing=verbose` | Finer startup timing marks |
 | `-Dapksim.vsync=grid` | Pace frames on a fixed 120 Hz grid instead of the display's vsync |
 | `-Dapksim.classCache=false` | Don't reuse translated classes from earlier launches |
+| `-Dapksim.freshDownload=true` | Re-download an `http(s)://` APK URL instead of reusing `cache/downloads/` |
+| `-Dapksim.downloadCacheMB=N` | LRU cap in MB for `cache/downloads/` (default 512; 0 for unlimited) |
+| `-Dapksim.noCurl=true` | Use the pure-Java parallel ranged HTTP downloader (`-Dapksim.downloadConnections=N`, default 6) instead of `/usr/bin/curl` (useful on high-latency VPNs or custom Java truststores) |
+| `-Dapksim.cachedFontMap=false` | Rebuild Android's system font map from `fonts.xml` instead of mapping the cached serialized map |
+| `-XX:TieredStopAtLevel=4` | Re-enable C2 compilation on cold launches (cold launches default to C1 after B2 flattening; warm standbys keep C2) |
 | `-Dapksim.cpuLayerEffects=true` | Run layer shader effects on the CPU, as HWUI does (for comparisons) |
 | `-Dapksim.gpuBitmaps=false` | Resample scaled bitmaps on the CPU |
 | `-Dapksim.gpuBitmapsSnap=false` | Leave big scaled bitmap draws that land off whole pixels to the CPU, not snapped |
@@ -1078,6 +1088,8 @@ because the standby read them when it booted. Of the switches above, only `timin
 |---|---|
 | `app.aot` | The JVM startup cache (`apksim --train` builds it) |
 | `cache/classes/` | Translated app classes, per DEX file |
+| `cache/downloads/` | APKs downloaded from `http(s)://` CLI URLs (LRU-capped at 512 MB) |
+| `cache/framework/` | Inflated framework `resources.arsc` and serialized system font map |
 | `cache/NAME.apk-KEY/` | Each APK's manifest, native libraries and inflated DEX files, keyed by the APK's contents (below) |
 | `cache/data/PKG/` | Each app's persistent data (`default`, or `instance-N` for extra instances) |
 | `cache/data/PKG/SLOT.device/` | What that data slot keeps of the device: `sdcard/` (the app's `/sdcard`) and `settings.properties` (Settings values that differ from the defaults) |

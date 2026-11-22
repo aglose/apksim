@@ -636,15 +636,40 @@ not keep. B2 would remove most of the call sites they serve.
 | C1/A4 Resources mapped | small-medium | -17.5 MB, -40 ms cold | - | done: -17.4 MB of heap, -8 to -22 MB footprint (instances and standbys, the test app and a large app), launches not slower ("Resources mapped") |
 | D1 Idle loop | medium | idle CPU ~0 | - | done: idle CPU -40 to -55%, not ~0 |
 | B1 Constant call sites | medium | -150 to -250 ms cold, -15 to -25 MB | - | done: -290 ms cold, -65 ms warm, -35 to -50 MB, -34% suite CPU |
-| A2 Font map | medium | -100 ms cold | B1 first (both touch start-up; measure apart) | dropped: 33 ms, a rendering risk |
+| A2 Font map | medium | -100 ms cold | B1 first (both touch start-up; measure apart) | done (2026-11-22): cached serialized map (~35 ms saved; 6/6 multi-locale pixel-identical; `-Dapksim.cachedFontMap=false`) |
 | C4 Standbys give way, D2 idle GC | small each | 364 MB back under pressure; no mid-scroll stall | - | done (standby idle time by use left) |
 | A3 Native load on a thread | medium, risky | -150 ms cold | A1, A2 | dropped: ~100 ms left, initializes classes outside the sandbox |
-| B2 Jar rewrite | large | the rest of linking | B1 | not started: weeks; B1 took most of linking's cost |
+| B2 Jar rewrite | large | the rest of linking | B1 | done (2026-11-22): `FrameworkFlattener` flattens 297,642 / 306,820 (97%) `invokedynamic`, 7,024 `<clinit>`, 30,915 `$$robo$init` |
 | E1 spike, then E2/E3 | large | app start-up no longer interpreted | B2 | not started: spikes of weeks each |
 | A5 Install state in test runs | small | - | - | done: Conscrypt ahead, -115 ms cold, a test process 0.90 s |
 | E4 Native resources mode | large | the table's parse at a cold start | a native runtime rebuild | not started; its memory came from C1 instead |
 | Memory: cache in place, idle heap trim, malloc mode | medium | - | - | done: idle instance 350 → 191-214 MB, standby 350 → 189-226 MB; the Linux image idle 413 → 330 MB resident, 324 → 203 MB private (arm64) |
+| Load-time sprint (B2 + DEX + URL overlap + C1 cold) | large | >=50% end-to-end | B1 | done (2026-11-22): 52.5 MB Home Assistant end-to-end 3,659 → 1,782 ms cold (-51.3%) / 1,590-1,650 ms warm (-55%); local cold 2,584 → 1,377 ms (-46.7%); idle footprint 195 → 151-153 MB (-42 MB) |
 
 A1, C3, D1 and C1 are done. B1, A2 and A3 all change the cold path and should
 land one at a time so the gate attributes each. Together, before the bets: cold ~1.83 → ~1.1-1.2 s, a test process
 ~1.55 → ~0.9 s before its first test, warm ~0.32 → ~0.27 s, an idle instance ~375 → ~300 MB, idle CPU near zero.
+
+## Load-time optimizations, 2026-11-22: >50% end-to-end reduction on large APKs
+
+Benchmarked on **Home Assistant Companion Android `2026.11.1`** (52.5 MB APK, 9 Deflated DEX / 68.4 MB uncompressed,
+50,377 total classes, 5,808 translated for first frame, Compose + Hilt), M4 Pro, JDK 24.0.1:
+
+| Scenario | Before | After | Change |
+|---|---:|---:|---:|
+| End-to-end GitHub URL — cold first-ever (`APKSIM_STANDBY=0`, fresh 52.5 MB DL + empty caches) | 3,659 ms | 1,782 ms | -51.3% |
+| End-to-end GitHub URL — warm standby first-ever (default macOS `apksim <url>`, fresh DL + empty caches) | 3,659 ms | 1,590–1,650 ms | -54.9% to -56.5% |
+| End-to-end GitHub URL — warm standby cached | 1,587 ms | 309–332 ms | -79% to -80% |
+| Local cold first-ever (`APKSIM_STANDBY=0`, empty caches) | 2,584 ms (exit 3,713 ms) | 1,377 ms (exit 2,097 ms) | -46.7% (exit -43.5%) |
+| Local cold cached (`APKSIM_STANDBY=0`) | 1,587 ms | 874 ms | -44.9% |
+| Pure DEX translation (`translate-all.java`, 50,377 classes) | 2,467 ms | 1,966 ms | -20.3% |
+| AOT training (`scripts/train.sh --headless`) | 10.46 s (110.6 MB) | 7.98 s (101.3 MB) | -24.6% (-9.3 MB) |
+| Idle footprint (`composeapp`, 5 s after first frame) | 194–196 MB | 151–153 MB | -42 MB (-22%) |
+| 120 fps (`composeapp` fling / GPU shader) | 117.2 / 120.0 fps | 117.2 / 119.9 fps | Identical (-26–42% CPU) |
+
+What landed:
+- **B2 offline framework jar flattening (`FrameworkFlattener`):** `scripts/build.sh` builds `work/runtime/android-all-flat.jar` (stamp-cached; `APKSIM_FLAT_FRAMEWORK=0` restores the stock jar), flattening 297,642 / 306,820 (97.0%) non-native unshadowed `invokedynamic` trampolines, 7,024 `<clinit>` trampolines, and 30,915 unshadowed-hierarchy `$$robo$init()` sites, and dropping `res/` from the classpath jar. `package-release.sh` and `docker/Dockerfile` strip duplicate `*.class` entries from `android-all-instrumented-*.jar` (+5.0 MB release tarball, -1.8 MB installed once `app.aot` is built).
+- **C1 on cold launches after B2:** with 97% of framework `invokedynamic` chains flattened, `-XX:TieredStopAtLevel=1` on cold launches matches C2's 120 fps on flings and GPU shaders while saving ~200–350 ms cold boot, 26–55% CPU, and ~30–40 MB memory. Standbys keep full C2; `--jvm -XX:TieredStopAtLevel=4` opts back in.
+- **Direct streaming DEX peephole & parallel DEX pipeline:** eliminated ASM `MethodNode` on normal launches (`computeParamAliases` + `StoreElideVisitor`), parallel off-heap direct-to-direct zlib DEX inflation with async background disk writes, lock-free per-class `inFlight` coordination, manifest-seeded + dependency-guided speculative pre-translation (cleared in `AppClasses.onFirstFrame()`), and parallelized `ClassCache.flush` hashing.
+- **Parallel cold pre-init, binary AXML, cached font map & AOT:** direct binary `Axml.parse` visitor in `AppInfo` and `InstallState.frameworkProtection()`, concurrent cold pre-init threads (`AndroidTestEnvironment` + `SimKeyStore`, `SimRunner`/`Host` runner, metadata, `CppApkAssets.preload` for framework + app `resources.arsc`), serialized system font map cache stamped by `fonts.xml` + native dylib (`-Dapksim.cachedFontMap=false`; 6/6 multi-locale pixel-identical), and `train.sh` recording with `-Dapksim.classCache=false` + C1 so translator/ASM classes archive in `app.aot`.
+- **Fast `ApkDownloader` + zero-reset overlapped URL launch:** `apksim <url>` supports `--header` / `--netrc` (cleared from `System.getProperties()` before app code loads), uses native `/usr/bin/curl` HTTP/2 (or pure-Java 6-stream parallel ranged HTTP with `-Dapksim.noCurl=true`), strips sensitive auth headers (`Authorization`, `Cookie`, `Proxy-Authorization`, `X-JFrog-Art-Api`, `X-Api-Key`, `Private-Token`) on cross-host redirects, LRU-caps `cache/downloads/` at 512 MB, and boots sandbox + `FastNativeLoader` inside `Host`'s `SimTestEnvironment.setUpApplicationState` while downloading.
