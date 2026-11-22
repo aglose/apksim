@@ -31,7 +31,10 @@ public final class GpuCanvas {
     }
     if (p.getStyle() != Paint.Style.FILL) {
       float sw = p.getStrokeWidth();
-      float pad = sw <= 0f ? 1f : sw * 0.5f * (p.getStrokeJoin() == Paint.Join.MITER ? Math.max(1f, p.getStrokeMiter()) : 1f) + 1f;
+      // Half the width, times the miter limit for MITER joins, or sqrt(2) for SQUARE caps (a cap's corner), plus a pixel.
+      float reach = Math.max(p.getStrokeJoin() == Paint.Join.MITER ? Math.max(1f, p.getStrokeMiter()) : 1f,
+          p.getStrokeCap() == Paint.Cap.SQUARE ? 1.4143f : 1f);
+      float pad = sw <= 0f ? 1f : sw * 0.5f * reach + 1f;
       l -= pad;
       t -= pad;
       r += pad;
@@ -43,20 +46,30 @@ public final class GpuCanvas {
     int y1 = (int) Math.ceil(b);
     // RecordingCanvas.getClipBounds starts from the RenderNode's dimensions even when clipToBounds is false;
     // intersecting with it would cut off bleed draws (glows/effects extending past a node's bounds) and make
-    // BitmapShader's CLAMP mode streak the cut edges outward.
-    if (clipsToBounds(c)) {
-      Rect clip = new Rect();
-      if (c.getClipBounds(clip)) {
-        x0 = Math.max(x0, clip.left);
-        y0 = Math.max(y0, clip.top);
-        x1 = Math.min(x1, clip.right);
-        y1 = Math.min(y1, clip.bottom);
-      }
+    // BitmapShader's CLAMP mode streak the cut edges outward. A clip the app set itself (clipRect inside the node)
+    // still bounds the draw: only that default one is passed over.
+    Rect clip = new Rect();
+    if (c.getClipBounds(clip) && (clipsToBounds(c) || !isNodeDefaultClip((RecordingCanvas) c, clip))) {
+      x0 = Math.max(x0, clip.left);
+      y0 = Math.max(y0, clip.top);
+      x1 = Math.min(x1, clip.right);
+      y1 = Math.min(y1, clip.bottom);
     }
     Shader gpu = tracked.gpuOutput(c, x0, y0, x1 - x0, y1 - y0);
     if (gpu == null) return null;
     p.setShader(gpu);
     return original;
+  }
+
+  /** Whether [clip] (local coordinates) is the node's own bounds, (0, 0, width, height) on the device: no clip of the app's. */
+  private static boolean isNodeDefaultClip(RecordingCanvas c, Rect clip) {
+    if (c.mNode == null) return false;
+    android.graphics.Matrix m = new android.graphics.Matrix();
+    c.getMatrix(m);
+    RectF r = new RectF(clip);
+    m.mapRect(r);
+    return Math.abs(r.left) <= 1 && Math.abs(r.top) <= 1 && Math.abs(r.right - c.mNode.getWidth()) <= 1
+        && Math.abs(r.bottom - c.mNode.getHeight()) <= 1;
   }
 
   private static boolean clipsToBounds(Canvas c) {

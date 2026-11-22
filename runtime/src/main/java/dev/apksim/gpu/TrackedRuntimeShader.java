@@ -80,6 +80,8 @@ public class TrackedRuntimeShader extends RuntimeShader {
   /** A runtime-shader effect's GPU program with its uniforms as they were when the effect was made. */
   record EffectProgram(long pipeline, int uniformBytes, ByteBuffer uniforms, long[] uses) {}
 
+  /** The pixels of the last software-Canvas draw (see gpuOutput), reused while the size holds. */
+  private Bitmap immediate;
   private static final int MAX_SLOTS = 32;
   /** Frame counter incremented once per rendered frame in {@link #sweep()}. */
   private static long currentFrame;
@@ -414,23 +416,29 @@ public class TrackedRuntimeShader extends RuntimeShader {
       getLocalMatrix(local);
       local.getValues(localValues);
       if (localValues[6] != 0f || localValues[7] != 0f || localValues[8] != 1f) return null;
-      boolean allowPipeline = c instanceof RecordingCanvas;
-      Object owner = (c instanceof RecordingCanvas rc && rc.mNode != null) ? rc.mNode : c;
-      Slot slot = takeSlot(owner);
-      int uniformBytes = compiled.program().uniformBytes();
-      if (slot == null) {
-        // Many distinct draws of one shader in one frame: render synchronously into a one-off bitmap.
+      if (!(c instanceof RecordingCanvas)) {
+        // A software Canvas (Canvas(bitmap)) draws at once, so one bitmap per shader serves every such draw: a slot
+        // per canvas would fill the slots with canvases an app makes per draw.
         if (!buildTransform(x, y)) return null;
         long handle = submit(inputTextures, w, h);
-        if (!GpuNative.collect(handle, scratchFor(w, h))) return null;
-        Bitmap b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        if (handle == 0 || !GpuNative.collect(handle, scratchFor(w, h))) return null;
+        if (immediate == null || immediate.getWidth() != w || immediate.getHeight() != h) {
+          immediate = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        }
         scratch.position(0).limit(w * h * 4);
-        b.copyPixelsFromBuffer(scratch);
+        immediate.copyPixelsFromBuffer(scratch);
         scratch.clear();
         renders++;
         compiled.uses()[0]++;
-        return makeOutput(b, x, y);
+        return makeOutput(immediate, x, y);
       }
+      boolean allowPipeline = true;
+      Object owner = ((RecordingCanvas) c).mNode != null ? ((RecordingCanvas) c).mNode : c;
+      Slot slot = takeSlot(owner);
+      int uniformBytes = compiled.program().uniformBytes();
+      // More than MAX_SLOTS draws of one shader in a frame (or a test run, where no frame boundary moves the slots
+      // on): HWUI's CPU shader draws the rest. A one-off bitmap per draw held native pixels until a collection.
+      if (slot == null) return null;
       boolean sameMatrix = slot.lastLocal != null && Arrays.equals(localValues, slot.lastLocal);
       boolean sameArea = slot.output != null && sameMatrix && x == slot.lastX && y == slot.lastY && w == slot.lastW && h == slot.lastH;
       if (sameArea && slot.uniformsMatch(uniforms, uniformBytes) && inputSig == slot.lastInputSignature) {
@@ -469,6 +477,7 @@ public class TrackedRuntimeShader extends RuntimeShader {
         // An animation: start this frame's pixels and show last frame's, one frame behind, so the
         // main thread never waits for the GPU.
         slot.pending = submit(inputTextures, w, h);
+        if (slot.pending == 0) return null;  // no target, or too many inputs: the CPU, and nothing recorded as done
         slot.pendingW = w;
         slot.pendingH = h;
         IN_FLIGHT.add(this);
