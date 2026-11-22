@@ -6,6 +6,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
 import org.objectweb.asm.AnnotationVisitor;
 import org.objectweb.asm.ClassWriter;
@@ -35,6 +36,7 @@ public final class ClassTranslator implements Opcodes {
   private final int def;
   private final Predicate<String> isInterface;
   private final Hierarchy hierarchy;
+  private final Consumer<String> refSink;
   private ClassWriter cw;
   private Set<String> split = Set.of();
   private String name;
@@ -63,10 +65,16 @@ public final class ClassTranslator implements Opcodes {
 
   /** {@code hierarchy} answers for every class of the app, not only this DEX file's. */
   public ClassTranslator(DexFile dex, int classDefIdx, Predicate<String> isInterface, Hierarchy hierarchy) {
+    this(dex, classDefIdx, isInterface, hierarchy, null);
+  }
+
+  /** {@code refSink}, if non-null, hears internal names of classes referenced by this class during translation. */
+  public ClassTranslator(DexFile dex, int classDefIdx, Predicate<String> isInterface, Hierarchy hierarchy, Consumer<String> refSink) {
     this.dex = dex;
     this.hierarchy = hierarchy;
     this.def = dex.classDefOffset(classDefIdx);
     this.isInterface = isInterface;
+    this.refSink = refSink;
   }
 
   public byte[] translate() {
@@ -112,11 +120,15 @@ public final class ClassTranslator implements Opcodes {
 
     String sup = superIdx == -1 ? "java/lang/Object" : internal(dex.type(superIdx));
     sup = MethodTranslator.instantiated(sup);
+    if (refSink != null && !"java/lang/Object".equals(sup)) refSink.accept(sup);
     String[] interfaces = null;
     if (ifaces != 0) {
       String[] ts = dex.typeList(ifaces);
       interfaces = new String[ts.length];
-      for (int i = 0; i < ts.length; i++) interfaces[i] = internal(ts[i]);
+      for (int i = 0; i < ts.length; i++) {
+        interfaces[i] = internal(ts[i]);
+        if (refSink != null) refSink.accept(interfaces[i]);
+      }
     }
     int classAccess = access & ~(ACC_PRIVATE | ACC_PROTECTED | ACC_STATIC);
     if ((access & ACC_PROTECTED) != 0) classAccess |= ACC_PUBLIC;
@@ -177,6 +189,7 @@ public final class ClassTranslator implements Opcodes {
       idx += cur.uleb();
       int access = cur.uleb() & 0xffff;
       DexFile.FieldRef f = dex.field(idx);
+      if (refSink != null && f.type().charAt(0) == 'L') refSink.accept(internal(f.type()));
       Object value = statics != null && i < statics.length ? toConstant(statics[i], f.type()) : null;
       FieldVisitor fv = cw.visitField(access, f.name(), f.type(), fieldSignature(idx), value);
       Integer a = fieldAnnots.get(idx);
@@ -303,8 +316,8 @@ public final class ClassTranslator implements Opcodes {
         sig = signatureFrom(annots);
         exceptions = throwsFrom(annots);
       }
-      // Buffered, so Peephole can shrink the code before it is written (not with debug info, which names the slots).
-      org.objectweb.asm.tree.MethodNode node = PEEPHOLE || probe || cov != null
+      // Direct peephole runs inside MethodTranslator without allocating an ASM MethodNode; only probe/coverage buffer.
+      org.objectweb.asm.tree.MethodNode node = probe || cov != null
           ? new org.objectweb.asm.tree.MethodNode(org.objectweb.asm.Opcodes.ASM9, access, m.name(), m.descriptor(), sig, exceptions)
           : null;
       MethodVisitor mv = node != null ? node : cw.visitMethod(access, m.name(), m.descriptor(), sig, exceptions);
@@ -322,7 +335,7 @@ public final class ClassTranslator implements Opcodes {
       if (code != 0) {
         try {
           boolean big = split.contains(m.name() + m.descriptor());
-          MethodTranslator mt = new MethodTranslator(dex, mv, big ? cw : null, m.name(), isInterface, hierarchy, code, name, (access & ACC_STATIC) != 0, m.params(), m.ret());
+          MethodTranslator mt = new MethodTranslator(dex, mv, big ? cw : null, m.name(), isInterface, hierarchy, code, name, (access & ACC_STATIC) != 0, m.params(), m.ret(), node == null && PEEPHOLE, refSink);
           if (cov != null) {
             covSlot = cov.method(m.name(), m.descriptor());
             mt.cover(cov, covSlot, isIface);

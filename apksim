@@ -508,7 +508,7 @@ if [[ -n "$STANDBY_ON" && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKS
       # Not java.net.preferIPv4Stack: the JDK reads it once at JVM start, so a standby would ignore it (a beamed
       # instance's own `=true` is its standby's, from the beam profile below, when that JVM starts).
       -Dapksim.beamSandbox=*|-Dapksim.beamBuildCache=*|-Dapksim.beamSiblingCaches=*) ;;
-      -Dapksim.classCache=*|-Dapksim.idleSleep=*|-Dapksim.apkCacheMB=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.compatTable=*|-Dapksim.vsync=*) ;;
+      -Dapksim.classCache=*|-Dapksim.idleSleep=*|-Dapksim.apkCacheMB=*|-Dapksim.loadAhead=*|-Dapksim.loadAheadThreads=*|-Dapksim.peephole=*|-Dapksim.compatTable=*|-Dapksim.vsync=*|-Dapksim.freshDownload=*|-Dapksim.downloadConnections=*|-Dapksim.overlapDownload=*) ;;
       # Recording launches cold: its sandbox must let it write the recording's folder (a standby's is fixed).
       -Dapksim.network=replay:*|-Dapksim.networkProfile=*|-Dapksim.networkRedact=*|-Dapksim.networkMatch=*) ;;
       -Dapksim.networkIgnoreQuery=*|-Dapksim.networkIgnoreHeader=*|-Dapksim.networkUnmatched=*) ;;
@@ -593,7 +593,7 @@ fi
 if [[ -n "${1:-}" && ! -e "$1" && "$1" != */* && "$1" != *.apk ]]; then
   echo "apksim: '$1' is not a command or a file (apksim --help; --version prints the version)" >&2; exit 2
 fi
-if [[ "$1" == /* ]]; then APK="$1"; else APK="$PWD/${1#./}"; fi
+if [[ "$1" == /* || "$1" == https://* || "$1" == http://* ]]; then APK="$1"; else APK="$PWD/${1#./}"; fi
 for i in "${!EXTRA[@]}"; do
   # Relative to this launch's directory, whatever the working directory of the JVM that takes it.
   [[ "${EXTRA[$i]}" == -Dapksim.screenshot=* && "${EXTRA[$i]#*=}" != /* ]] && EXTRA[$i]="-Dapksim.screenshot=$PWD/${EXTRA[$i]#*=}"
@@ -630,7 +630,11 @@ LIBS="${TMP%/}/apksim-$(printf '%s' "$ROOT" | { shasum 2>/dev/null || sha1sum; }
 if [[ ! -e "$LIBS" ]] && ! ln -sn "$ROOT/work/lib" "$LIBS" 2>/dev/null && [[ ! -e "$LIBS" ]]; then
   echo "[apksim] cannot link $LIBS to $ROOT/work/lib" >&2; exit 1
 fi
-CP="$ROOT/work/apksim.jar:$(ls "$LIBS"/ | sed "s#^#$LIBS/#" | grep "\.jar$" | grep -v nativeruntime-dist | tr '\n' ':')"
+if [[ "${APKSIM_FLAT_FRAMEWORK:-1}" != 0 && -f "$ROOT/work/runtime/android-all-flat.jar" ]]; then
+  CP="$ROOT/work/apksim.jar:$ROOT/work/runtime/android-all-flat.jar:$(ls "$LIBS"/ | sed "s#^#$LIBS/#" | grep "\.jar$" | grep -v nativeruntime-dist | grep -v android-all-instrumented- | tr '\n' ':')"
+else
+  CP="$ROOT/work/apksim.jar:$(ls "$LIBS"/ | sed "s#^#$LIBS/#" | grep "\.jar$" | grep -v nativeruntime-dist | tr '\n' ':')"
+fi
 # `exec` keeps this PID, which is how a later launch knows whether this scratch dir is still in use.
 mkdir -p "$STATE/tmp/$$"
 # An APK runs as ordinary code in this process, with no VM around it, so confine it: it can only
@@ -756,11 +760,11 @@ if [[ "$OS" != Darwin && -n "${NO_NET:-}" ]]; then
   echo "[apksim] --no-network is macOS-only; in a container use docker run --network none" >&2
 fi
 if [[ -n "${APKSIM_SANDBOX_TEST:-}" ]]; then exec "${SANDBOX[@]+"${SANDBOX[@]}"}" "${ENVP[@]+"${ENVP[@]}"}" /bin/sh -c "$APKSIM_SANDBOX_TEST"; fi
-# A test run's JIT stops at C1: C2's compiles cost more CPU than a test process gets back from them. Measured on a large
-# app's 4,134 device tests: the same wall time or less and ~40% less CPU on the Mac; on 4 CPUs in the Linux image,
-# three suites at once took 135 s against 312 s, and a third of the CPU. `--jvm -XX:TieredStopAtLevel=4` (after this) brings C2 back.
+# Cold launches and test runs stop at C1: after B2 framework flattening, C1 keeps the same 120 fps on flings and GPU
+# shaders while cutting cold-launch wall time by ~200-350 ms and CPU by ~40-55%. Pre-booted standbys warm C2 in the
+# background while idle, so they keep full tiered compilation. `--jvm -XX:TieredStopAtLevel=4` (after this) brings C2 back.
 JIT=()
-[[ -n "${TEST_RUN:-}" ]] && JIT=(-XX:TieredStopAtLevel=1)
+[[ -z "$STANDBY_SOCK" ]] && JIT=(-XX:TieredStopAtLevel=1)
 # ArchiveRelocationMode=0: the cache is mapped where it was built for (train.sh picks an address macOS leaves free),
 # so its 60 MB of read-only metadata stay clean file pages, shared by every instance and standby. The JDK's default
 # moves it to a random address and rewrites every pointer: ~45 MB more of private memory in each process, and ~10 ms.

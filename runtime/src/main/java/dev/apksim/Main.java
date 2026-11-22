@@ -8,6 +8,8 @@ import org.junit.runner.notification.Failure;
 
 /** Process entry point. Everything Android runs on this one process's threads. */
 public final class Main {
+  private static volatile java.util.concurrent.CompletableFuture<org.junit.runner.Runner> prebuiltHostRunner;
+
   private Main() {}
 
   public static void main(String[] args) throws Exception {
@@ -18,6 +20,18 @@ public final class Main {
       initTestEnvironmentAhead();
     }
     if (Boolean.getBoolean("apksim.profile")) Sampler.start();
+    String targetArg = args[0];
+    boolean isUrl = ApkDownloader.isUrl(targetArg);
+    java.util.concurrent.CompletableFuture<ApkDownloader.Result> downloadFuture = null;
+    if (isUrl) {
+      if (BeamSandbox.ON) {
+        System.err.println("[apksim] URL launches are not allowed inside the beam sandbox");
+        Standby.halt(2);
+        return;
+      }
+      boolean freshDl = Boolean.getBoolean("apksim.freshDownload") || Boolean.getBoolean("apksim.fresh");
+      downloadFuture = ApkDownloader.downloadToCacheAsync(targetArg, Path.of(System.getProperty("apksim.cacheRoot")), freshDl);
+    }
     if (Boolean.getBoolean("apksim.traceExit")) {
       Runtime.getRuntime().addShutdownHook(new Thread(() -> Thread.getAllStackTraces().forEach((t, st) -> {
         for (StackTraceElement f : st) {
@@ -49,9 +63,9 @@ public final class Main {
       Standby.halt(2);
       return;
     }
+    Path apkCacheRoot = BeamSandbox.ON ? BeamSandbox.apkCacheRoot() : Path.of(System.getProperty("apksim.cacheRoot"));
     // The APK's cache entry (a content key, locks, ~2 ms) while the ports and the window open.
-    ApkCache.Taking taking = ApkCache.start(BeamSandbox.ON ? BeamSandbox.apkCacheRoot() : Path.of(System.getProperty("apksim.cacheRoot")),
-        Path.of(args[0]).toAbsolutePath());
+    ApkCache.Taking taking = isUrl ? null : ApkCache.start(apkCacheRoot, Path.of(targetArg).toAbsolutePath());
     String control = System.getProperty("apksim.control");
     if (control != null) {
       String tokenFile = System.getProperty("apksim.controlTokenFile");
@@ -73,9 +87,10 @@ public final class Main {
     // A test run draws nothing (tests run on a simulated clock, see Instrument), so it needs no window.
     if (testApk != null) System.setProperty("apksim.headless", "true");
     System.setProperty("apksim.qualifiers", device.qualifiers());
-    System.setProperty("apksim.windowTitle", Path.of(args[0]).getFileName().toString());
+    String displayName = isUrl ? ApkDownloader.fileNameFromUrl(targetArg) : Path.of(targetArg).getFileName().toString();
+    System.setProperty("apksim.windowTitle", displayName);
     SimWindow.open(device.widthPx(), device.heightPx(), device.density(),
-        Path.of(args[0]).getFileName() + " - " + device.name() + " " + device.widthDp() + "\u00d7" + device.heightDp() + " dp");
+        displayName + " - " + device.name() + " " + device.widthDp() + "\u00d7" + device.heightDp() + " dp");
     if (Skinning.current() != null) SimWindow.setSkin(Skinning.layout(device.widthPx(), device.heightPx(), 0));
     if (!SimWindow.isHeadless()) {
       // Device > Skin: the store is read off the launch's path (a few small files, but nothing a first frame needs).
@@ -84,27 +99,40 @@ public final class Main {
       menu.start();
     }
     Storage.initScratch();
-    Path apk = Path.of(args[0]).toAbsolutePath();
-    // For scripts/ctl.py: an instance from a standby has no APK on its command line.
-    java.nio.file.Files.writeString(Path.of(System.getProperty("java.io.tmpdir"), "launch.info"),
-        "apk=" + apk + "\ndevice=" + System.getProperty("apksim.device", "phone") + "\n");
-    try {
-      Path entry = taking.await();
-      Timing.detail("apkcache");
-      AppInfo.load(apk, entry);
-    } catch (AppInfo.LaunchError e) {
-      System.err.println("[apksim] " + e.getMessage());
-      Storage.deleteScratch();
-      Standby.halt(2);
+    AppClasses[] classesHolder = new AppClasses[1];
+    boolean directOverlap = downloadFuture != null && !downloadFuture.isDone() && !Standby.isAdopted() && testApk == null
+        && Boolean.parseBoolean(System.getProperty("apksim.overlapDownload", "true"));
+    if (directOverlap) {
+      // Zero-reset overlap: boot sandbox + native runtime directly inside Host's runner while the APK downloads,
+      // then finish download + APK indexing right before Robolectric parses the manifest.
+      var dlFut = downloadFuture;
+      SimRunner.deferredApkSetup = () -> {
+        try {
+          Path apk = awaitDownload(dlFut, displayName);
+          ApkCache.Taking t = ApkCache.start(apkCacheRoot, apk);
+          classesHolder[0] = prepareApk(apk, t);
+          Path cache = Path.of(System.getProperty("apksim.cache"));
+          String pkg = System.getProperty("apksim.package");
+          return new org.robolectric.manifest.AndroidManifest(cache.resolve("AndroidManifest.xml"), null, null,
+              java.util.List.of(), pkg, apk);
+        } catch (Exception e) {
+          throw new RuntimeException(e);
+        }
+      };
+    } else {
+      Path apk;
+      if (downloadFuture != null) {
+        apk = awaitDownload(downloadFuture, displayName);
+        if (apk == null) return;
+        taking = ApkCache.start(apkCacheRoot, apk);
+      } else {
+        apk = Path.of(targetArg).toAbsolutePath();
+      }
+      classesHolder[0] = prepareApk(apk, taking);
+      if (classesHolder[0] == null) return;
     }
-    Timing.detail("appinfo");
-    AppClasses classes = AppClasses.install(apk);
-    Timing.detail("appclasses");
-    SimKeyStore.install();  // before the app's code runs: Robolectric has no Android Keystore
-    classes.loadAhead();
-    Timing.mark("apk-indexed");
     if (testApk != null) {
-      int code = Instrument.run(Path.of(testApk).toAbsolutePath(), classes);
+      int code = Instrument.run(Path.of(testApk).toAbsolutePath(), classesHolder[0]);
       // -Dapksim.exitMarks=true (instrument.py --exit-marks / --reap-early): where the time between the result and
       // the process ending goes, and the exit status ahead of it, so a caller can count the slot free once the
       // result and the outputs are complete and let the rest (class cache save, scratch removal) finish unwatched.
@@ -120,6 +148,7 @@ public final class Main {
       Uia.report();  // --uia engine: what the UiAutomator engine did
       long t1 = System.nanoTime();
       ClassCache.flush();
+      AppClasses.flushDexCache();
       long t2 = System.nanoTime();
       Storage.deleteScratch();
       long t3 = System.nanoTime();
@@ -135,15 +164,29 @@ public final class Main {
     }
     // A device's default uncaught-exception handler (RuntimeInit's): FATAL EXCEPTION in the log, then the process ends.
     Crashes.install();
-    Result r = new JUnitCore().run(Request.aClass(Host.class));
+    org.junit.runner.Runner hostRunner = null;
+    java.util.concurrent.CompletableFuture<org.junit.runner.Runner> pre = prebuiltHostRunner;
+    prebuiltHostRunner = null;
+    if (pre != null) {
+      try {
+        hostRunner = pre.join();
+      } catch (Throwable ignored) {
+        // Fall through to build on the main thread so any error reports normally.
+      }
+    }
+    Result r = hostRunner != null ? new JUnitCore().run(hostRunner) : new JUnitCore().run(Request.aClass(Host.class));
     for (Failure f : r.getFailures()) {
       if (!Crashes.wasLogged(f.getException())) StackTraces.clean(f.getException()).printStackTrace();
     }
-    System.err.printf("[apksim] translated %d classes in %d ms, %d from cache, %d ahead%n", classes.translated,
-        classes.translateNanos / 1_000_000, classes.cached(), classes.translatedAhead());
+    AppClasses classes = classesHolder[0];
+    if (classes != null) {
+      System.err.printf("[apksim] translated %d classes in %d ms, %d from cache, %d ahead%n", classes.translated,
+          classes.translateNanos / 1_000_000, classes.cached(), classes.translatedAhead());
+    }
     if (r.getRunCount() == 0) System.err.println("[apksim] the app did not start: runner found nothing to run");
     Exits.log(r.wasSuccessful() ? 0 : 1, "the main loop ended" + (r.wasSuccessful() ? "" : " with an error (above)"));
     ClassCache.flush();
+    AppClasses.flushDexCache();
     Storage.deleteScratch();
     Standby.halt(r.wasSuccessful() ? 0 : 1);
   }
@@ -155,18 +198,111 @@ public final class Main {
    * while the APK is indexed and the runner built; the main thread finds it done, or waits only for the rest. A standby
    * did it during its warm-up. -Dapksim.initAhead=false turns it off (A/B), and SimRunner's Conscrypt load with it.
    */
+  private static Path awaitDownload(java.util.concurrent.CompletableFuture<ApkDownloader.Result> future, String displayName) {
+    ApkDownloader.Result dl;
+    try {
+      dl = future.join();
+    } catch (java.util.concurrent.CompletionException e) {
+      Throwable cause = e.getCause();
+      if (cause instanceof java.io.UncheckedIOException uio && uio.getCause() != null) cause = uio.getCause();
+      System.err.println("[apksim] download failed: " + (cause != null ? cause.getMessage() : e.getMessage()));
+      Storage.deleteScratch();
+      Standby.halt(2);
+      return null;
+    }
+    if (dl.connectionsUsed() > 0 && !Boolean.getBoolean("apksim.quiet")) {
+      System.err.printf("[apksim] downloaded %s (%.1f MB) in %d ms (%d streams)%n",
+          displayName, dl.bytes() / 1048576.0, dl.elapsedMs(), dl.connectionsUsed());
+    }
+    Timing.mark("download-ready");
+    return dl.path();
+  }
+
+  private static AppClasses prepareApk(Path apk, ApkCache.Taking taking) throws Exception {
+    // For scripts/ctl.py: an instance from a standby has no APK on its command line.
+    java.nio.file.Files.writeString(Path.of(System.getProperty("java.io.tmpdir"), "launch.info"),
+        "apk=" + apk + "\ndevice=" + System.getProperty("apksim.device", "phone") + "\n");
+    try {
+      Path entry = taking.await();
+      Timing.detail("apkcache");
+      AppInfo.load(apk, entry);
+    } catch (AppInfo.LaunchError e) {
+      System.err.println("[apksim] " + e.getMessage());
+      Storage.deleteScratch();
+      Standby.halt(2);
+      return null;
+    }
+    Timing.detail("appinfo");
+    if (Boolean.parseBoolean(System.getProperty("apksim.initAhead", "true"))) {
+      org.robolectric.res.android.CppApkAssets.preload(apk, false);
+    }
+    AppClasses classes = AppClasses.install(apk);
+    Timing.detail("appclasses");
+    if (!Boolean.parseBoolean(System.getProperty("apksim.initAhead", "true"))) {
+      SimKeyStore.install();  // before the app's code runs: Robolectric has no Android Keystore
+    }
+    classes.loadAhead();
+    Timing.mark("apk-indexed");
+    return classes;
+  }
+
   private static void initTestEnvironmentAhead() {
     if (!Boolean.parseBoolean(System.getProperty("apksim.initAhead", "true"))) return;
-    Thread t = new Thread(() -> {
+    // Preload the framework's 17 MB resources.arsc on its own thread while the JVM initializes Robolectric + natives.
+    String deps = System.getProperty("robolectric.dependency.dir");
+    if (deps != null) {
+      try (var stream = java.nio.file.Files.newDirectoryStream(Path.of(deps), "android-all-instrumented-*.jar")) {
+        for (Path jar : stream) {
+          org.robolectric.res.android.CppApkAssets.preload(jar, true);
+          break;
+        }
+      } catch (Throwable ignored) {
+        // Loaded on demand otherwise.
+      }
+    }
+    // Split cold-boot prerequisites across parallel threads so BouncyCastle, Robolectric's Guice/SimRunner injector,
+    // framework resources.arsc, and metadata tables initialize concurrently while Main handles window + APK setup.
+    Thread bc = new Thread(() -> {
       try {
         Class.forName("org.robolectric.android.internal.AndroidTestEnvironment", true, ClassLoader.getSystemClassLoader());
-        CompatTable.preload();
-        Gaps.preload();
+        SimKeyStore.install();
       } catch (Throwable e) {
         // The main thread meets the same error when it gets there, and reports it.
       }
-    }, "apksim-init-ahead");
-    t.setDaemon(true);
-    t.start();
+    }, "apksim-init-bc");
+    bc.setDaemon(true);
+    bc.start();
+
+    if (System.getProperty("apksim.instrument") == null) {
+      java.util.concurrent.CompletableFuture<org.junit.runner.Runner> rf = new java.util.concurrent.CompletableFuture<>();
+      prebuiltHostRunner = rf;
+      Thread rt = new Thread(() -> {
+        try {
+          rf.complete(Request.aClass(Host.class).getRunner());
+        } catch (Throwable e) {
+          rf.completeExceptionally(e);
+        }
+      }, "apksim-init-runner");
+      rt.setDaemon(true);
+      rt.start();
+    } else {
+      Thread rt = new Thread(() -> {
+        try {
+          Class.forName("dev.apksim.SimRunner", true, ClassLoader.getSystemClassLoader());
+        } catch (Throwable ignored) {}
+      }, "apksim-init-runner");
+      rt.setDaemon(true);
+      rt.start();
+    }
+
+    Thread meta = new Thread(() -> {
+      try {
+        CompatTable.preload();
+        Gaps.preload();
+        InstallState.frameworkProtection();
+      } catch (Throwable ignored) {}
+    }, "apksim-init-meta");
+    meta.setDaemon(true);
+    meta.start();
   }
 }

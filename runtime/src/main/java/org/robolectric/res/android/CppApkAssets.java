@@ -50,6 +50,27 @@ import org.robolectric.res.android.ZipFileRO.ZipEntryRO;
 @SuppressWarnings("NewApi")
 public class CppApkAssets {
   private static final String kResourcesArsc = "resources.arsc";
+  private static final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<CppApkAssets>> PRELOADED =
+      new java.util.concurrent.ConcurrentHashMap<>();
+
+  /** Pre-loads and parses {@code path}'s resources.arsc on a background thread so LoadImpl finds it ready. */
+  public static void preload(java.nio.file.Path path, boolean system) {
+    if (path == null || !java.nio.file.Files.isRegularFile(path)) return;
+    String norm = path.toAbsolutePath().normalize().toString();
+    String key = (system ? "S:" : "A:") + norm;
+    var f = new java.util.concurrent.CompletableFuture<CppApkAssets>();
+    if (PRELOADED.putIfAbsent(key, f) != null) return;
+    Thread t = new Thread(() -> {
+      try {
+        f.complete(loadDirect(-1, norm, null, null, system, false));
+      } catch (Throwable e) {
+        PRELOADED.remove(key, f);
+        f.complete(null);
+      }
+    }, system ? "apksim-arsc-sys" : "apksim-arsc-app");
+    t.setDaemon(true);
+    t.start();
+  }
 
   //  public:
   //   static std::unique_ptr<const ApkAssets> Load(const String& path, bool system = false);
@@ -232,6 +253,24 @@ public class CppApkAssets {
 
   /** Measure performance implications of loading {@link CppApkAssets}. */
   static CppApkAssets LoadImpl(
+      int fd,
+      String path,
+      Asset idmap_asset,
+      LoadedIdmap loaded_idmap,
+      boolean system,
+      boolean load_as_shared_library) {
+    if (fd < 0 && path != null && idmap_asset == null && loaded_idmap == null && !load_as_shared_library) {
+      String key = (system ? "S:" : "A:") + java.nio.file.Path.of(path).toAbsolutePath().normalize();
+      var pre = PRELOADED.remove(key);
+      if (pre != null) {
+        CppApkAssets hit = pre.join();
+        if (hit != null) return hit;
+      }
+    }
+    return loadDirect(fd, path, idmap_asset, loaded_idmap, system, load_as_shared_library);
+  }
+
+  private static CppApkAssets loadDirect(
       int fd,
       String path,
       Asset idmap_asset,

@@ -52,6 +52,11 @@ final class MethodTranslator implements Opcodes {
   private boolean inChunk;
   private final Predicate<String> isInterface;
   private final Hierarchy hierarchy;
+  private final boolean directPeephole;
+  private final java.util.function.Consumer<String> refSink;
+  private int[] paramAlias;
+  private StoreElideVisitor storeElide;
+  private boolean canElideCurrentStore;
   private final int code;
   private final int regs;
   private final int insWords;
@@ -110,12 +115,19 @@ final class MethodTranslator implements Opcodes {
 
   MethodTranslator(DexFile dex, MethodVisitor mv, ClassVisitor splitInto, String methodName, Predicate<String> isInterface, Hierarchy hierarchy,
       int codeOff, String owner, boolean isStatic, String[] params, String ret) {
+    this(dex, mv, splitInto, methodName, isInterface, hierarchy, codeOff, owner, isStatic, params, ret, false, null);
+  }
+
+  MethodTranslator(DexFile dex, MethodVisitor mv, ClassVisitor splitInto, String methodName, Predicate<String> isInterface, Hierarchy hierarchy,
+      int codeOff, String owner, boolean isStatic, String[] params, String ret, boolean directPeephole, java.util.function.Consumer<String> refSink) {
     this.dex = dex;
     this.mv = mv;
     this.splitInto = splitInto;
     this.methodName = methodName;
     this.isInterface = isInterface;
     this.hierarchy = hierarchy;
+    this.directPeephole = directPeephole && splitInto == null;
+    this.refSink = refSink;
     this.code = codeOff;
     this.owner = owner;
     this.isStatic = isStatic;
@@ -885,6 +897,7 @@ final class MethodTranslator implements Opcodes {
     int words = (regs + 64) >>> 6; // a wide use of the last register names one past it
     liveWords = words;
     liveIn = new long[blockCount * words];
+    if (blockCount <= 1 && tries.isEmpty()) return; // single block with no handlers: no block entry merges or live-out
     // Per block: reads before any write in it (gen), writes (kill), writes before its first instruction that can throw
     // to a handler (killPre), and those handlers. A handler's live registers join at a throwing instruction, after its
     // own write: so at block entry they are live less what earlier instructions write. Composed, in = gen + (out -
@@ -1538,7 +1551,7 @@ final class MethodTranslator implements Opcodes {
   // ---------------------------------------------------------------- emission
 
   private int slot(int r) {
-    return base + r;
+    return paramAlias != null ? paramAlias[r] : base + r;
   }
 
   private void regLoad(int k, int r) {
@@ -1559,6 +1572,11 @@ final class MethodTranslator implements Opcodes {
 
   private void regStore(int k, int r) {
     if (!inChunk) {
+      if (storeElide != null && canElideCurrentStore) {
+        canElideCurrentStore = false;
+        storeElide.deferStore(storeOp(k), slot(r));
+        return;
+      }
       mv.visitVarInsn(storeOp(k), slot(r));
       return;
     }
@@ -1665,6 +1683,26 @@ final class MethodTranslator implements Opcodes {
   }
 
   private void emit() {
+    boolean doPeep = directPeephole && locals.isEmpty() && cov == null;
+    if (doPeep) computeParamAliases();
+    boolean[] elideStore = doPeep ? computeElideStore() : null;
+    MethodVisitor origMv = mv;
+    if (doPeep) {
+      storeElide = new StoreElideVisitor(mv);
+      mv = storeElide;
+    }
+    try {
+      emitBody(elideStore);
+    } finally {
+      if (storeElide != null) {
+        storeElide.flush();
+        storeElide = null;
+      }
+      mv = origMv;
+    }
+  }
+
+  private void emitBody(boolean[] elideStore) {
     // Branches, handlers and try bounds all lead to block starts (buildBlocks makes them so), so only those and the
     // end need a label; debug info (line numbers, local ranges) names every instruction.
     Label[] labels = new Label[count + 1];
@@ -1712,8 +1750,13 @@ final class MethodTranslator implements Opcodes {
             covHit(covLines.computeIfAbsent(lines[i], ln -> cov.line(covMethod, ln)));
           }
         }
-        if (reachable) emitInsn(i, s, labels);
+        if (reachable) {
+          canElideCurrentStore = elideStore != null && elideStore[i];
+          emitInsn(i, s, labels);
+          canElideCurrentStore = false;
+        }
       }
+      if (storeElide != null) storeElide.flush();
     }
     mv.visitLabel(labels[count]);
     if (lr != null) lr.finish();
@@ -1985,24 +2028,229 @@ final class MethodTranslator implements Opcodes {
     return max;
   }
 
-  private void copyParams() {
+  private void computeParamAliases() {
+    if (insWords == 0 || regs == 0) return;
+    boolean[] written = new boolean[regs + 1];
+    for (int i = 0; i < count; i++) {
+      int dr = defReg(i);
+      if (dr >= 0) {
+        written[dr] = true;
+        if (defWide(i)) written[dr + 1] = true;
+      }
+    }
+    int[] alias = new int[regs];
+    for (int r = 0; r < regs; r++) alias[r] = base + r;
+    boolean any = false;
     int in = 0;
     int r = regs - insWords;
     if (!isStatic) {
-      mv.visitVarInsn(ALOAD, in++);
-      mv.visitVarInsn(ASTORE, slot(r++));
+      if (!written[r]) {
+        alias[r] = in;
+        any = true;
+      }
+      in++;
+      r++;
     }
     for (String p : params) {
       int k = kindOf(p);
       boolean w = wideParam(p);
-      int held = blockState[0][r] >= 0 ? resolved(blockState[0][r]) : k;
-      mv.visitVarInsn(loadOp(k), in);
-      if (held != k && held != K_OBJ && k != K_OBJ) {
-        convert(k, held);
-      } else {
-        held = k;
+      int held = blockState[0] != null && blockState[0][r] >= 0 ? resolved(blockState[0][r]) : k;
+      boolean needsConvert = held != k && held != K_OBJ && k != K_OBJ;
+      if (!needsConvert && !written[r] && (!w || !written[r + 1])) {
+        alias[r] = in;
+        any = true;
       }
-      mv.visitVarInsn(storeOp(held), slot(r));
+      in += w ? 2 : 1;
+      r += w ? 2 : 1;
+    }
+    if (any) paramAlias = alias;
+  }
+
+  private boolean[] computeElideStore() {
+    if (count < 2) return null;
+    boolean[] elide = new boolean[count];
+    int words = liveWords;
+    long[] live = new long[words];
+    long[] nextLive = new long[words];
+    long[] use = new long[words];
+    for (int bl = 0; bl < blockCount; bl++) {
+      if (blockState[bl] == null) continue;
+      int first = blockStart[bl], end = blockStart[bl + 1];
+      if (end - first < 2) continue;
+      Arrays.fill(live, 0);
+      for (int s : normalSucc[bl]) for (int w = 0; w < words; w++) live[w] |= liveIn[s * words + w];
+      for (int i = end - 1; i >= first; i--) {
+        if (i < end - 1) {
+          int dr = defReg(i);
+          if (dr >= 0) {
+            boolean dw = defWide(i);
+            boolean deadAfterNext = (nextLive[dr >>> 6] & (1L << dr)) == 0
+                && (!dw || (nextLive[(dr + 1) >>> 6] & (1L << (dr + 1))) == 0);
+            if (deadAfterNext && usesAtMostOnce(i + 1, dr, dw)) elide[i] = true;
+          }
+        }
+        int r = defReg(i);
+        if (r >= 0) {
+          live[r >>> 6] &= ~(1L << r);
+          if (defWide(i)) live[(r + 1) >>> 6] &= ~(1L << (r + 1));
+        }
+        System.arraycopy(live, 0, nextLive, 0, words);
+        int[] hs = canThrow(op[i]) ? handlersOf(i) : null;
+        if (hs != null) {
+          for (int h : hs) {
+            for (int w = 0; w < words; w++) {
+              long hw = liveIn[h * words + w];
+              nextLive[w] |= hw;
+              live[w] |= hw;
+            }
+          }
+        }
+        Arrays.fill(use, 0);
+        addUses(i, use);
+        for (int w = 0; w < words; w++) live[w] |= use[w];
+      }
+    }
+    return elide;
+  }
+
+  private boolean usesAtMostOnce(int i, int r, boolean wide) {
+    int o = op[i];
+    if (args[i] != null) {
+      int c0 = 0, c1 = 0;
+      for (int reg : args[i]) {
+        if (reg == r) c0++;
+        else if (wide && reg == r + 1) c1++;
+      }
+      return c0 <= 1 && c1 <= 1;
+    }
+    int ra = a[i], rb = b[i], rc = c[i];
+    if (o == 0x2d || o == 0x2e || (o >= 0x44 && o <= 0x4a)) {
+      return !((rb == r || (wide && rb == r + 1)) && (rc == r || (wide && rc == r + 1)));
+    }
+    if (o >= 0x2f && o <= 0x31) {
+      int hits = 0;
+      if (rb == r || rb + 1 == r || (wide && (rb == r + 1 || rb + 1 == r + 1))) hits++;
+      if (rc == r || rc + 1 == r || (wide && (rc == r + 1 || rc + 1 == r + 1))) hits++;
+      return hits <= 1;
+    }
+    if ((o >= 0x32 && o <= 0x37) || (o >= 0x59 && o <= 0x5f)) {
+      boolean aHit = ra == r || (o == 0x5a && ra + 1 == r) || (wide && (ra == r + 1 || (o == 0x5a && ra + 1 == r + 1)));
+      boolean bHit = rb == r || (wide && rb == r + 1);
+      return !(aHit && bHit);
+    }
+    if (o >= 0x4b && o <= 0x51) {
+      int hits = 0;
+      if (ra == r || (o == 0x4c && ra + 1 == r) || (wide && (ra == r + 1 || (o == 0x4c && ra + 1 == r + 1)))) hits++;
+      if (rb == r || (wide && rb == r + 1)) hits++;
+      if (rc == r || (wide && rc == r + 1)) hits++;
+      return hits <= 1;
+    }
+    if (o >= 0x90 && o <= 0xaf) {
+      boolean w = binWide(o - 0x90);
+      boolean s = w && isShift(o - 0x90);
+      boolean bHit = rb == r || (w && rb + 1 == r) || (wide && (rb == r + 1 || (w && rb + 1 == r + 1)));
+      boolean cHit = rc == r || (w && !s && rc + 1 == r) || (wide && (rc == r + 1 || (w && !s && rc + 1 == r + 1)));
+      return !(bHit && cHit);
+    }
+    if (o >= 0xb0 && o <= 0xcf) {
+      boolean w = binWide(o - 0xb0);
+      boolean s = w && isShift(o - 0xb0);
+      boolean aHit = ra == r || (w && ra + 1 == r) || (wide && (ra == r + 1 || (w && ra + 1 == r + 1)));
+      boolean bHit = rb == r || (w && !s && rb + 1 == r) || (wide && (rb == r + 1 || (w && !s && rb + 1 == r + 1)));
+      return !(aHit && bHit);
+    }
+    return true;
+  }
+
+  /** Cancels an adjacent xSTORE v; xLOAD v pair in one pass without allocating an ASM MethodNode. */
+  private static final class StoreElideVisitor extends MethodVisitor {
+    private int pendingOp = -1;
+    private int pendingVar = -1;
+
+    StoreElideVisitor(MethodVisitor delegate) {
+      super(ASM9, delegate);
+    }
+
+    void deferStore(int op, int var) {
+      flush();
+      pendingOp = op;
+      pendingVar = var;
+    }
+
+    void flush() {
+      if (pendingOp != -1) {
+        int o = pendingOp;
+        int v = pendingVar;
+        pendingOp = -1;
+        super.visitVarInsn(o, v);
+      }
+    }
+
+    private static int loadFor(int storeOp) {
+      return switch (storeOp) {
+        case ISTORE -> ILOAD;
+        case LSTORE -> LLOAD;
+        case FSTORE -> FLOAD;
+        case DSTORE -> DLOAD;
+        case ASTORE -> ALOAD;
+        default -> -1;
+      };
+    }
+
+    @Override public void visitVarInsn(int opcode, int varIndex) {
+      if (pendingOp != -1 && opcode == loadFor(pendingOp) && varIndex == pendingVar) {
+        pendingOp = -1;
+        return;
+      }
+      flush();
+      super.visitVarInsn(opcode, varIndex);
+    }
+
+    @Override public void visitInsn(int opcode) { flush(); super.visitInsn(opcode); }
+    @Override public void visitIntInsn(int opcode, int operand) { flush(); super.visitIntInsn(opcode, operand); }
+    @Override public void visitTypeInsn(int opcode, String type) { flush(); super.visitTypeInsn(opcode, type); }
+    @Override public void visitFieldInsn(int opcode, String owner, String name, String desc) { flush(); super.visitFieldInsn(opcode, owner, name, desc); }
+    @Override public void visitMethodInsn(int opcode, String owner, String name, String desc, boolean isInterface) { flush(); super.visitMethodInsn(opcode, owner, name, desc, isInterface); }
+    @Override public void visitInvokeDynamicInsn(String name, String desc, Handle bsm, Object... args) { flush(); super.visitInvokeDynamicInsn(name, desc, bsm, args); }
+    @Override public void visitJumpInsn(int opcode, Label label) { flush(); super.visitJumpInsn(opcode, label); }
+    @Override public void visitLabel(Label label) { flush(); super.visitLabel(label); }
+    @Override public void visitLdcInsn(Object value) { flush(); super.visitLdcInsn(value); }
+    @Override public void visitIincInsn(int varIndex, int increment) { flush(); super.visitIincInsn(varIndex, increment); }
+    @Override public void visitTableSwitchInsn(int min, int max, Label dflt, Label... labels) { flush(); super.visitTableSwitchInsn(min, max, dflt, labels); }
+    @Override public void visitLookupSwitchInsn(Label dflt, int[] keys, Label[] labels) { flush(); super.visitLookupSwitchInsn(dflt, keys, labels); }
+    @Override public void visitMultiANewArrayInsn(String descriptor, int numDimensions) { flush(); super.visitMultiANewArrayInsn(descriptor, numDimensions); }
+    @Override public void visitTryCatchBlock(Label start, Label end, Label handler, String type) { flush(); super.visitTryCatchBlock(start, end, handler, type); }
+    @Override public void visitLineNumber(int line, Label start) { flush(); super.visitLineNumber(line, start); }
+    @Override public void visitLocalVariable(String name, String desc, String sig, Label start, Label end, int index) { flush(); super.visitLocalVariable(name, desc, sig, start, end, index); }
+    @Override public void visitMaxs(int maxStack, int maxLocals) { flush(); super.visitMaxs(maxStack, maxLocals); }
+    @Override public void visitEnd() { flush(); super.visitEnd(); }
+  }
+
+  private void copyParams() {
+    int in = 0;
+    int r = regs - insWords;
+    if (!isStatic) {
+      if (slot(r) != in) {
+        mv.visitVarInsn(ALOAD, in);
+        mv.visitVarInsn(ASTORE, slot(r));
+      }
+      in++;
+      r++;
+    }
+    for (String p : params) {
+      int k = kindOf(p);
+      boolean w = wideParam(p);
+      int held = blockState[0] != null && blockState[0][r] >= 0 ? resolved(blockState[0][r]) : k;
+      boolean needsConvert = held != k && held != K_OBJ && k != K_OBJ;
+      if (slot(r) != in || needsConvert) {
+        mv.visitVarInsn(loadOp(k), in);
+        if (needsConvert) {
+          convert(k, held);
+        } else {
+          held = k;
+        }
+        mv.visitVarInsn(storeOp(held), slot(r));
+      }
       in += w ? 2 : 1;
       r += w ? 2 : 1;
     }
@@ -2109,10 +2357,13 @@ final class MethodTranslator implements Opcodes {
         ldcString(dex.string(rb));
         store(s, i, ra, K_OBJ, false);
         return;
-      case 0x1c:
-        mv.visitLdcInsn(Type.getType(dex.type(rb)));
+      case 0x1c: {
+        String dt = dex.type(rb);
+        if (refSink != null && dt.charAt(0) == 'L') refSink.accept(dt.substring(1, dt.length() - 1));
+        mv.visitLdcInsn(Type.getType(dt));
         store(s, i, ra, K_OBJ, false);
         return;
+      }
       case 0xfe:
         mv.visitLdcInsn(methodHandle(rb));
         store(s, i, ra, K_OBJ, false);
@@ -2129,25 +2380,34 @@ final class MethodTranslator implements Opcodes {
         load(s, ra, K_OBJ);
         mv.visitInsn(MONITOREXIT);
         return;
-      case 0x1f:
+      case 0x1f: {
+        String t = dex.internalType(rb);
+        if (refSink != null && !t.isEmpty() && t.charAt(0) != '[') refSink.accept(t);
         load(s, ra, K_OBJ);
-        mv.visitTypeInsn(CHECKCAST, dex.internalType(rb));
+        mv.visitTypeInsn(CHECKCAST, t);
         store(s, i, ra, K_OBJ, false);
         return;
-      case 0x20:
+      }
+      case 0x20: {
+        String t = dex.internalType(rc);
+        if (refSink != null && !t.isEmpty() && t.charAt(0) != '[') refSink.accept(t);
         load(s, rb, K_OBJ);
-        mv.visitTypeInsn(INSTANCEOF, dex.internalType(rc));
+        mv.visitTypeInsn(INSTANCEOF, t);
         store(s, i, ra, K_INT, false);
         return;
+      }
       case 0x21:
         load(s, rb, K_OBJ);
         mv.visitInsn(ARRAYLENGTH);
         store(s, i, ra, K_INT, false);
         return;
-      case 0x22:
-        mv.visitTypeInsn(NEW, instantiated(dex.internalType(rb)));
+      case 0x22: {
+        String t = instantiated(dex.internalType(rb));
+        if (refSink != null) refSink.accept(t);
+        mv.visitTypeInsn(NEW, t);
         store(s, i, ra, K_OBJ, false);
         return;
+      }
       case 0x23:
         load(s, rb, K_INT);
         newArray(dex.type(rc).substring(1));
@@ -2516,6 +2776,7 @@ final class MethodTranslator implements Opcodes {
 
   private void emitInvoke(int i, int o, int[] s) {
     DexFile.MethodRef m = dex.method(b[i]);
+    if (refSink != null) refSink.accept(m.ownerInternal());
     int kind = o <= 0x72 ? o - 0x6e : o - 0x74;
     int[] rs = args[i];
     String ownerName = m.ownerInternal();

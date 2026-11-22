@@ -28,8 +28,19 @@ final class Axml {
     return decode(data, Integer.MAX_VALUE);
   }
 
+  /** Receives tag events directly while decoding binary XML, avoiding a second XML DOM parse. */
+  interface Visitor {
+    void startTag(String name, java.util.Map<String, String> attrs);
+    default void endTag(String name) {}
+  }
+
   /** As {@link #decode(byte[])}, stopping after `maxTags` start tags (1: the manifest element alone). */
   static String decode(byte[] data, int maxTags) {
+    return parse(data, maxTags, true, null);
+  }
+
+  /** Decodes binary XML, emitting tag events to {@code visitor} and returning XML text only when {@code wantXml} is true. */
+  static String parse(byte[] data, int maxTags, boolean wantXml, Visitor visitor) {
     int tags = 0;
     ByteBuffer b = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
     b.position(8);
@@ -37,14 +48,14 @@ final class Axml {
     // The manifest element alone (maxTags 1) is a few hundred characters in a real APK.
     long outLimit = maxTags == Integer.MAX_VALUE ? 16L * data.length + (1 << 20) : 1 << 20;
     List<String> strings = new ArrayList<>();
-    StringBuilder out = new StringBuilder("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
+    StringBuilder out = wantXml ? new StringBuilder("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n") : null;
     boolean first = true;
     while (b.remaining() >= 8) {
       int start = b.position();
       int type = b.getShort(start) & 0xffff;
       int size = b.getInt(start + 4);
       if (size < 8) break;  // a chunk is at least its header: a smaller size would step through the bytes one by one
-      if (out.length() > outLimit) throw new IllegalArgumentException("the decoded manifest is too large");
+      if (out != null && out.length() > outLimit) throw new IllegalArgumentException("the decoded manifest is too large");
       if (type == CHUNK_STRING_POOL) {
         readStrings(b, start, strings, budget);
       } else if (type == CHUNK_START_TAG) {
@@ -52,11 +63,14 @@ final class Axml {
         String name = str(strings, b.getInt(start + 16 + 4));
         int count = b.getShort(start + 16 + 12) & 0xffff;
         int attrSize = b.getShort(start + 16 + 10) & 0xffff;
-        out.append('<').append(escape(name));  // names too: only the decoder writes '<' and '>' (see ApkCache.manifestPackage)
-        if (first) {
-          out.append(" xmlns:android=\"http://schemas.android.com/apk/res/android\"");
-          first = false;
+        if (out != null) {
+          out.append('<').append(escape(name));  // names too: only the decoder writes '<' and '>' (see ApkCache.manifestPackage)
+          if (first) {
+            out.append(" xmlns:android=\"http://schemas.android.com/apk/res/android\"");
+            first = false;
+          }
         }
+        java.util.Map<String, String> attrs = visitor != null && count > 0 ? new java.util.HashMap<>(count * 2) : null;
         for (int i = 0; i < count; i++) {
           int a = attrStart + i * attrSize;
           int ns = b.getInt(a);
@@ -64,36 +78,42 @@ final class Axml {
           int rawString = b.getInt(a + 8);
           int dataType = b.get(a + 15) & 0xff;
           int value = b.getInt(a + 16);
-          out.append(' ');
-          if (ns != -1) out.append("android:");
-          out.append(escape(attr)).append("=\"");
+          String valStr;
           if (rawString != -1) {
-            out.append(escape(str(strings, rawString)));
+            valStr = str(strings, rawString);
           } else if (dataType == TYPE_STRING) {
-            out.append(escape(str(strings, value)));
+            valStr = str(strings, value);
           } else if (dataType == TYPE_BOOL) {
-            out.append(value != 0);
+            valStr = value != 0 ? "true" : "false";
           } else if (dataType == 0x01 || dataType == 0x02) {
-            out.append(dataType == 0x01 ? "@0x" : "?0x").append(Integer.toHexString(value));
+            valStr = (dataType == 0x01 ? "@0x" : "?0x") + Integer.toHexString(value);
           } else if (dataType == 0x11) {
-            out.append("0x").append(Integer.toHexString(value));
+            valStr = "0x" + Integer.toHexString(value);
           } else {
-            out.append(value);
+            valStr = Integer.toString(value);
           }
-          out.append('"');
-          // Per attribute too: one tag may declare 65,535 of them, all on the same long string (a stride of 0).
-          if (out.length() > outLimit) throw new IllegalArgumentException("the decoded manifest is too large");
+          if (attrs != null) attrs.put(ns != -1 ? "android:" + attr : attr, valStr);
+          if (out != null) {
+            out.append(' ');
+            if (ns != -1) out.append("android:");
+            out.append(escape(attr)).append("=\"").append(escape(valStr)).append('"');
+            // Per attribute too: one tag may declare 65,535 of them, all on the same long string (a stride of 0).
+            if (out.length() > outLimit) throw new IllegalArgumentException("the decoded manifest is too large");
+          }
         }
-        out.append(">\n");
+        if (out != null) out.append(">\n");
+        if (visitor != null) visitor.startTag(name, attrs != null ? attrs : java.util.Map.of());
         if (++tags >= maxTags) break;
       } else if (type == CHUNK_END_TAG) {
-        out.append("</").append(escape(str(strings, b.getInt(start + 16 + 4)))).append(">\n");
+        String name = str(strings, b.getInt(start + 16 + 4));
+        if (out != null) out.append("</").append(escape(name)).append(">\n");
+        if (visitor != null) visitor.endTag(name);
       } else if (type != CHUNK_START_NS && type != 0x0101 && type != 0x0180 && type != 0x0104) {
         // Unknown chunks are skipped by size.
       }
       b.position(start + size);
     }
-    return out.toString();
+    return out != null ? out.toString() : null;
   }
 
   private static String str(List<String> s, int i) {

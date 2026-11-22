@@ -72,15 +72,13 @@ public class StandbyWarmup {
     Timing.detail("warm-app");
     try {
       // What Host sets up for every app (registrations are reset after this test; classes and libraries stay).
+      SimKeyStore.install();
       ClassCache.runtimeHash();
       InstallState.warm(app);
       conscrypt();
       Gaps.preload();
       CompatTable.preload();  // the table does not depend on the APK: parsed here, not on a launch's main thread
       dev.apksim.video.ShadowSimMediaCodec.install();
-      javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(new java.io.ByteArrayInputStream(
-          "<manifest package=\"a\"><application><activity android:name=\".A\"/></application></manifest>".getBytes()))
-          .getElementsByTagName("activity");
     } catch (Exception e) {
       System.err.println("[apksim] standby: warm-up step failed: " + e);
     }

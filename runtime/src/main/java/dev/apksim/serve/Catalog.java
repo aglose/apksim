@@ -491,32 +491,9 @@ final class Catalog {
     synchronized (this) {
       if (Files.isRegularFile(to)) return to;
       progress.accept("downloading " + a.name());
-      HttpURLConnection c = connect(a.url(), Map.of());
-      try (InputStream in = c.getInputStream()) {
-        Path tmp = store(in, c.getContentLengthLong(), n -> {}).path();
-        Files.move(tmp, to, StandardCopyOption.REPLACE_EXISTING);
-      }
+      dev.apksim.ApkDownloader.download(a.url(), to, Map.of(), maxBytes, false, null, null);
       return to;
     }
-  }
-
-  private static HttpURLConnection connect(String url, Map<String, String> headers) throws IOException {
-    HttpURLConnection c = (HttpURLConnection) URI.create(url).toURL().openConnection();
-    c.setConnectTimeout(15_000);
-    c.setReadTimeout(60_000);
-    headers.forEach(c::setRequestProperty);
-    int code;
-    try {
-      code = c.getResponseCode();
-    } catch (IOException e) {
-      c.disconnect();
-      throw e;
-    }
-    if (code != 200) {
-      c.disconnect();  // not left open until a GC: a failed download releases its slot at once
-      throw new IOException("HTTP " + code + " from " + URI.create(url).getHost());
-    }
-    return c;
   }
 
   /**
@@ -596,12 +573,11 @@ final class Catalog {
     }
     Thread.ofVirtual().name("serve-download").start(() -> {
       try {
-        HttpURLConnection c = connect(url, headers);
-        d.total = c.getContentLengthLong();
-        Staged staged;
-        try (InputStream in = c.getInputStream()) {
-          staged = store(in, d.total, n -> d.received = n);
-        }
+        dev.apksim.ApkDownloader.Result dl = dev.apksim.ApkDownloader.downloadStaged(
+            url, uploads, headers, maxBytes, true, t -> d.total = t, n -> d.received = n);
+        d.received = dl.bytes();
+        if (d.total < 0) d.total = dl.bytes();
+        Staged staged = new Staged(dl.path(), dl.sha256());
         App done = publish(staged, pending.id(), clean, launch);
         readyUnlessAwaited(d, done);  // the warm-up's job exists before a session not yet waiting looks for it
         d.finished = System.currentTimeMillis();

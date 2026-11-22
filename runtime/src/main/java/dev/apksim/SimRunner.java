@@ -48,6 +48,12 @@ import org.robolectric.util.inject.Injector;
 public class SimRunner extends RobolectricTestRunner {
   /** Off with -Dapksim.repeatForever=false: Robolectric's cap of INFINITE repeats at 1 everywhere ({@link ShadowRepeatingAnimator}). */
   static final boolean REPEAT_FOREVER = !"false".equals(System.getProperty("apksim.repeatForever"));
+  /**
+   * Optional one-shot hook for overlapped cold URL launches: runs after sandbox and native runtime initialization
+   * finish, awaits the background APK download, indexes the APK, and returns its {@link AndroidManifest} directly
+   * into {@link SimTestEnvironment#setUpApplicationState} with zero warmup/reset overhead.
+   */
+  static volatile java.util.function.Supplier<AndroidManifest> deferredApkSetup;
 
   static {
     // A window gets the size its view hierarchy measured (WRAP_CONTENT), placed by its gravity, as from a device's
@@ -251,6 +257,15 @@ public class SimRunner extends RobolectricTestRunner {
     public void setUpApplicationState(String testName, ConfigurationStrategy.Configuration config, AndroidManifest manifest) {
       Timing.detail("setup-app-state");
       conscryptAhead();
+      java.util.function.Supplier<AndroidManifest> deferred = deferredApkSetup;
+      if (deferred != null) {
+        deferredApkSetup = null;
+        // Native runtime (dlopen + JNI + fonts + Hyphenator) has zero APK dependency: load it while the APK downloads.
+        // ShadowPickers triggered during JNI_OnLoad read ConfigurationRegistry.instance, so publish it first.
+        org.robolectric.config.ConfigurationRegistry.instance = new org.robolectric.config.ConfigurationRegistry(config.map());
+        org.robolectric.nativeruntime.DefaultNativeRuntimeLoader.injectAndLoad();
+        manifest = deferred.get();
+      }
       TimeZones.applyLaunchZone();  // --timezone: the JDK's, android.icu's and user.timezone (Joda-Time)
       // --clock: before the Application and its startup providers run, so nothing they cache saw real time.
       SimClock.applyLaunchOption();
@@ -471,13 +486,16 @@ public class SimRunner extends RobolectricTestRunner {
 
   @Override
   protected ManifestFactory getManifestFactory(Config config) {
-    if (System.getProperty("apksim.apk") == null) {
-      // A standby's warm-up (StandbyWarmup): no APK yet, so Robolectric's default application.
-      return c -> new ManifestIdentifier(null, null, null, null, List.of(), null);
-    }
-    Path cache = Path.of(System.getProperty("apksim.cache"));
-    Path apk = Path.of(System.getProperty("apksim.apk"));
-    String pkg = System.getProperty("apksim.package");
-    return c -> new ManifestIdentifier(pkg, cache.resolve("AndroidManifest.xml"), null, null, List.of(), apk);
+    return c -> {
+      String apkProp = System.getProperty("apksim.apk");
+      if (apkProp == null) {
+        // A standby's warm-up (StandbyWarmup): no APK yet, so Robolectric's default application.
+        return new ManifestIdentifier(null, null, null, null, List.of(), null);
+      }
+      Path cache = Path.of(System.getProperty("apksim.cache"));
+      Path apk = Path.of(apkProp);
+      String pkg = System.getProperty("apksim.package");
+      return new ManifestIdentifier(pkg, cache.resolve("AndroidManifest.xml"), null, null, List.of(), apk);
+    };
   }
 }

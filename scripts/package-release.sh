@@ -51,6 +51,13 @@ cp -RL "$ROOT/work/runtime" "$D/work/runtime"
 ALL_JAR="$(ls "$D"/work/lib/android-all-instrumented-*.jar | sort -V | tail -1)"
 zip -q -d "$ALL_JAR" 'native/*' 'icu/*'
 [[ -z "$(unzip -Z1 "$ALL_JAR" | grep -E '^(native|icu)/' || true)" ]] || fail "$(basename "$ALL_JAR") still has native/ or icu/ entries"
+# Flattened framework classes ship in work/runtime/android-all-flat.jar (build.sh); strip duplicate .class entries from
+# the staged copy of android-all-instrumented-*.jar (which Robolectric's dependency.dir still reads for resources.arsc
+# and res/), so the release tarball and install stay smaller than before rather than shipping framework classes twice.
+if [[ -f "$D/work/runtime/android-all-flat.jar" ]]; then
+  zip -q -d "$ALL_JAR" '*.class'
+  rm -f "$D/work/runtime/android-all-flat.jar.stamp"
+fi
 for j in "$D"/work/lib/conscrypt-openjdk-uber-*.jar; do
   OTHERS=($(unzip -Z1 "$j" 'META-INF/native/*' 2>/dev/null | grep -v 'osx-aarch_64' || true))
   [[ ${#OTHERS[@]} -gt 0 ]] && zip -q -d "$j" "${OTHERS[@]}"

@@ -30,6 +30,9 @@ import org.robolectric.util.ReflectionHelpers;
  * restores Robolectric's binding altogether (A/B).
  */
 public class InvokeDynamicSupport {
+  /** Exposed for flattened framework classes (dev.apksim.FrameworkFlattener) with no shadow in their hierarchy. */
+  public static final Object NO_SHADOW = ShadowWrangler.NO_SHADOW;
+
   /** Set by Sandbox.configure (reflectively, by name). */
   @SuppressWarnings("unused")
   private static Interceptors INTERCEPTORS;

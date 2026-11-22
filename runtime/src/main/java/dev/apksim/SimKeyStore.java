@@ -48,9 +48,16 @@ final class SimKeyStore {
 
   private SimKeyStore() {}
 
+  private static volatile boolean installed;
+
   /** Before the app runs; the keys are read on first use, from the app's data folder. */
-  static synchronized void install() {
-    if (Security.getProvider("AndroidKeyStore") == null) Security.addProvider(new KeyProvider());
+  static void install() {
+    if (installed) return;
+    synchronized (SimKeyStore.class) {
+      if (installed) return;
+      if (Security.getProvider("AndroidKeyStore") == null) Security.addProvider(new KeyProvider());
+      installed = true;
+    }
   }
 
   private static synchronized void ensureLoaded() {

@@ -1,65 +1,169 @@
 package dev.apksim;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.zip.ZipFile;
-import javax.xml.parsers.DocumentBuilderFactory;
-import org.w3c.dom.Document;
-import org.w3c.dom.Element;
-import org.w3c.dom.NodeList;
 
 /** What the runtime needs from AndroidManifest.xml. Published as system properties for the sandbox. */
 final class AppInfo {
   private static final String NS = "android:";
+  private static volatile List<String> startup = List.of();
 
   private AppInfo() {}
 
+  /** Startup entry-point classes (internal names) read from AndroidManifest.xml, for speculative translation. */
+  static List<String> startupClasses() {
+    return startup;
+  }
+
+  private static final class ActivityEntry {
+    final String name;
+    final String enabled;
+    final String targetActivity;
+    final List<FilterEntry> filters = new ArrayList<>();
+
+    ActivityEntry(String name, String enabled, String targetActivity) {
+      this.name = name;
+      this.enabled = enabled;
+      this.targetActivity = targetActivity;
+    }
+  }
+
+  private static final class FilterEntry {
+    final String priority;
+    boolean main;
+    boolean launcher;
+    boolean home;
+    boolean dflt;
+
+    FilterEntry(String priority) {
+      this.priority = priority;
+    }
+  }
+
   static void load(Path apk, Path cache) throws Exception {
     Files.createDirectories(cache);
-    String xml;
-    Resources arsc = new Resources(apk);  // resources.arsc, read only if a launch filter's attribute names a resource
-    try (ZipFile zip = new ZipFile(apk.toFile()); InputStream in = zip.getInputStream(zip.getEntry("AndroidManifest.xml"))) {
-      xml = Axml.decode(in.readAllBytes());
-    }
     Path manifest = cache.resolve("AndroidManifest.xml");
-    // Written beside it and renamed: processes started together (instrument.py --isolate) read it while others write.
-    Path tmp = cache.resolve("AndroidManifest.xml" + Storage.tmpTag());
-    Files.writeString(tmp, xml);
-    Files.move(tmp, manifest, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
-    Document doc = DocumentBuilderFactory.newInstance().newDocumentBuilder()
-        .parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
-    String pkg = doc.getDocumentElement().getAttribute("package");
+    boolean needWrite = !Files.isRegularFile(manifest) || Files.size(manifest) == 0;
+    Resources arsc = new Resources(apk);  // resources.arsc, read only if a launch filter's attribute names a resource
+    byte[] raw;
+    try (ZipFile zip = new ZipFile(apk.toFile()); InputStream in = zip.getInputStream(zip.getEntry("AndroidManifest.xml"))) {
+      raw = in.readAllBytes();
+    }
+
+    String[] pkgRef = {""};
+    int[] targetSdk = {0};
+    int[] minSdk = {0};
+    boolean[] seenUsesSdk = {false};
+    Map<String, ActivityEntry> activities = new LinkedHashMap<>();
+    List<ActivityEntry> activityOrder = new ArrayList<>();
+    Set<String> seeds = new LinkedHashSet<>();
+
+    String xml = Axml.parse(raw, Integer.MAX_VALUE, needWrite, new Axml.Visitor() {
+      ActivityEntry curAct;
+      FilterEntry curFilter;
+      boolean inProvider;
+
+      @Override
+      public void startTag(String tag, Map<String, String> attrs) {
+        switch (tag) {
+          case "manifest" -> {
+            if (pkgRef[0].isEmpty()) pkgRef[0] = attrs.getOrDefault("package", "");
+          }
+          case "uses-sdk" -> {
+            if (!seenUsesSdk[0]) {
+              seenUsesSdk[0] = true;
+              targetSdk[0] = parseSdk(attrs.getOrDefault(NS + "targetSdkVersion", ""));
+              minSdk[0] = parseSdk(attrs.getOrDefault(NS + "minSdkVersion", ""));
+            }
+          }
+          case "application" -> {
+            addSeed(seeds, pkgRef[0], attrs.get(NS + "appComponentFactory"));
+            addSeed(seeds, pkgRef[0], attrs.get(NS + "name"));
+          }
+          case "provider" -> {
+            inProvider = !"false".equals(attrs.get(NS + "enabled"));
+            if (inProvider) addSeed(seeds, pkgRef[0], attrs.get(NS + "name"));
+          }
+          case "meta-data" -> {
+            if (inProvider && "androidx.startup".equals(attrs.get(NS + "value"))) {
+              addSeed(seeds, pkgRef[0], attrs.get(NS + "name"));
+            }
+          }
+          case "activity", "activity-alias" -> {
+            String n = attrs.getOrDefault(NS + "name", "");
+            String full = fullName(pkgRef[0], n);
+            ActivityEntry entry = new ActivityEntry(full, attrs.getOrDefault(NS + "enabled", ""), attrs.getOrDefault(NS + "targetActivity", ""));
+            activities.putIfAbsent(full, entry);
+            activityOrder.add(entry);
+            curAct = entry;
+          }
+          case "intent-filter" -> {
+            if (curAct != null) {
+              curFilter = new FilterEntry(attrs.getOrDefault(NS + "priority", ""));
+              curAct.filters.add(curFilter);
+            }
+          }
+          case "action" -> {
+            if (curFilter != null && "android.intent.action.MAIN".equals(attrs.get(NS + "name"))) {
+              curFilter.main = true;
+            }
+          }
+          case "category" -> {
+            if (curFilter != null) {
+              String c = attrs.get(NS + "name");
+              if ("android.intent.category.LAUNCHER".equals(c)) curFilter.launcher = true;
+              else if ("android.intent.category.HOME".equals(c)) curFilter.home = true;
+              else if ("android.intent.category.DEFAULT".equals(c)) curFilter.dflt = true;
+            }
+          }
+          default -> {}
+        }
+      }
+
+      @Override
+      public void endTag(String tag) {
+        switch (tag) {
+          case "activity", "activity-alias" -> { curAct = null; curFilter = null; }
+          case "intent-filter" -> curFilter = null;
+          case "provider" -> inProvider = false;
+          default -> {}
+        }
+      }
+    });
+
+    if (needWrite && xml != null) {
+      // Written beside it and renamed: processes started together (instrument.py --isolate) read it while others write.
+      Path tmp = cache.resolve("AndroidManifest.xml" + Storage.tmpTag());
+      Files.writeString(tmp, xml);
+      Files.move(tmp, manifest, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+    }
+
+    String pkg = pkgRef[0];
     // The MAIN/LAUNCHER activity or alias a device's launcher starts, the MAIN/HOME one its home app: the way
     // PackageManager orders matches, highest intent-filter priority first, then CATEGORY_DEFAULT, then manifest order.
-    Element launcher = null;
+    ActivityEntry launcher = null;
     long launcherRank = Long.MIN_VALUE;
-    Element home = null;
+    ActivityEntry home = null;
     long homeRank = Long.MIN_VALUE;
-    Map<String, Element> activities = new LinkedHashMap<>();  // full name -> element, aliases too
-    {  // every activity and alias in the manifest's order, as PackageManager's ties are broken
-      NodeList all = doc.getElementsByTagName("*");
-      for (int i = 0; i < all.getLength(); i++) {
-        Element a = (Element) all.item(i);
-        if (!a.getTagName().equals("activity") && !a.getTagName().equals("activity-alias")) continue;
-        activities.putIfAbsent(fullName(pkg, a.getAttribute(NS + "name")), a);
-        long l = mainRank(a, "android.intent.category.LAUNCHER", arsc);
-        if (l > launcherRank) { launcher = a; launcherRank = l; }
-        long h = mainRank(a, "android.intent.category.HOME", arsc);
-        if (h > homeRank) { home = a; homeRank = h; }
-      }
+    for (ActivityEntry a : activityOrder) {
+      long l = mainRank(a, true, arsc);
+      if (l > launcherRank) { launcher = a; launcherRank = l; }
+      long h = mainRank(a, false, arsc);
+      if (h > homeRank) { home = a; homeRank = h; }
     }
     // A test run needs none: a library's test APK (KMP androidDeviceTest, a library's androidTest) is its own app.
     boolean testRun = System.getProperty("apksim.instrument") != null;
     String asked = System.getProperty("apksim.activity", "");
-    Element start = launcher;
+    ActivityEntry start = launcher;
     if (!asked.isEmpty()) {
       if (testRun) throw new LaunchError("--activity is for running the app: a test run starts what its tests start");
       start = find(pkg, asked, activities);
@@ -71,14 +175,13 @@ final class AppInfo {
     System.setProperty("apksim.cache", cache.toString());
     System.setProperty("apksim.package", pkg);
     // The target SDK compat changes follow (CompatTable): the manifest's, as a device reads it; a launch sets it anew.
-    int target = usesSdk(doc, "targetSdkVersion");
-    if (target <= 0) target = usesSdk(doc, "minSdkVersion");  // no target: the minimum, else 1
+    int target = targetSdk[0] > 0 ? targetSdk[0] : minSdk[0];
     CompatTable.configure(pkg, target > 0 ? target : 1);
     Gaps.reset();
-    if (launcher != null) System.setProperty("apksim.launcher", fullName(pkg, launcher.getAttribute(NS + "name")));
+    if (launcher != null) System.setProperty("apksim.launcher", launcher.name);
     StringBuilder aliases = new StringBuilder(",");
-    for (Map.Entry<String, Element> e : activities.entrySet()) {
-      if (!e.getValue().getAttribute(NS + "targetActivity").isEmpty()) {
+    for (Map.Entry<String, ActivityEntry> e : activities.entrySet()) {
+      if (!e.getValue().targetActivity.isEmpty()) {
         aliases.append(e.getKey()).append('=').append(target(pkg, e.getValue())).append(',');
       }
     }
@@ -86,11 +189,18 @@ final class AppInfo {
     if (start != null) {
       // The component the intent names: an alias stays the alias, as on a device (the app can tell which one started
       // it); activityClass gives the class to make.
-      System.setProperty("apksim.startActivity", fullName(pkg, start.getAttribute(NS + "name")));
+      System.setProperty("apksim.startActivity", start.name);
       // Started as a device would: MAIN with its filter's category (launcher, home), else by component only (am start -n).
-      System.setProperty("apksim.startCategory", hasMain(start, "android.intent.category.LAUNCHER") ? "LAUNCHER"
-          : hasMain(start, "android.intent.category.HOME") ? "HOME" : "");
+      System.setProperty("apksim.startCategory", hasMain(start, true) ? "LAUNCHER"
+          : hasMain(start, false) ? "HOME" : "");
+      addSeed(seeds, pkg, target(pkg, start));
     }
+    startup = List.copyOf(seeds);
+  }
+
+  private static void addSeed(Set<String> seeds, String pkg, String name) {
+    if (name == null || name.isEmpty()) return;
+    seeds.add(fullName(pkg, name).replace('.', '/'));
   }
 
   /**
@@ -117,7 +227,7 @@ final class AppInfo {
    * --activity NAME: PKG/.Act or PKG/full.Name (am start -n's form), .Act, a full class name, or a simple name such as
    * SecondActivity when one activity has it. Any activity or alias in the manifest, exported or not.
    */
-  private static Element find(String pkg, String asked, Map<String, Element> activities) throws LaunchError {
+  private static ActivityEntry find(String pkg, String asked, Map<String, ActivityEntry> activities) throws LaunchError {
     String name = asked;
     int slash = asked.indexOf('/');
     if (slash >= 0) {
@@ -126,7 +236,7 @@ final class AppInfo {
       name = asked.substring(slash + 1);
     }
     if (name.startsWith(".")) name = pkg + name;  // as ComponentName.unflattenFromString
-    Element a = activities.get(name);
+    ActivityEntry a = activities.get(name);
     if (a != null) return a;
     if (slash < 0 && name.indexOf('.') < 0) {
       List<String> same = new ArrayList<>();
@@ -140,17 +250,12 @@ final class AppInfo {
   }
 
   /** The class an activity or alias starts. */
-  private static String target(String pkg, Element a) {
-    String name = a.getAttribute(NS + "targetActivity");
-    if (name.isEmpty()) name = a.getAttribute(NS + "name");
-    return fullName(pkg, name);
+  private static String target(String pkg, ActivityEntry a) {
+    return a.targetActivity.isEmpty() ? a.name : fullName(pkg, a.targetActivity);
   }
 
   /** A uses-sdk attribute as a number (decimal or 0x hex), 0 when absent, the platform's SDK for a codename (a preview). */
-  private static int usesSdk(Document doc, String attr) {
-    NodeList l = doc.getElementsByTagName("uses-sdk");
-    if (l.getLength() == 0) return 0;
-    String v = ((Element) l.item(0)).getAttribute(NS + attr);
+  private static int parseSdk(String v) {
     if (v.isEmpty()) return 0;
     try {
       return Integer.decode(v.trim());
@@ -166,11 +271,9 @@ final class AppInfo {
   }
 
   /** Whether one of the activity's intent filters has action MAIN and this category. */
-  private static boolean hasMain(Element activity, String category) {
-    NodeList filters = activity.getElementsByTagName("intent-filter");
-    for (int i = 0; i < filters.getLength(); i++) {
-      Element f = (Element) filters.item(i);
-      if (has(f, "action", "android.intent.action.MAIN") && has(f, "category", category)) return true;
+  private static boolean hasMain(ActivityEntry activity, boolean launcher) {
+    for (FilterEntry f : activity.filters) {
+      if (f.main && (launcher ? f.launcher : f.home)) return true;
     }
     return false;
   }
@@ -179,18 +282,15 @@ final class AppInfo {
    * The best rank of the activity's MAIN filters with this category (priority, then CATEGORY_DEFAULT), else Long.MIN_VALUE.
    * A disabled activity or alias is never a candidate: PackageManager leaves it out, and Host would start it anyway.
    */
-  private static long mainRank(Element activity, String category, Resources arsc) {
-    String en = activity.getAttribute(NS + "enabled");
-    Long enabled = "false".equals(en) ? Long.valueOf(0) : intAttr(en, arsc);
+  private static long mainRank(ActivityEntry activity, boolean launcher, Resources arsc) {
+    Long enabled = "false".equals(activity.enabled) ? Long.valueOf(0) : intAttr(activity.enabled, arsc);
     if (enabled != null && enabled == 0) return Long.MIN_VALUE;  // an unresolvable value counts as the default, enabled
     long best = Long.MIN_VALUE;
-    NodeList filters = activity.getElementsByTagName("intent-filter");
-    for (int i = 0; i < filters.getLength(); i++) {
-      Element f = (Element) filters.item(i);
-      if (!has(f, "action", "android.intent.action.MAIN") || !has(f, "category", category)) continue;
-      Long v = intAttr(f.getAttribute(NS + "priority"), arsc);
+    for (FilterEntry f : activity.filters) {
+      if (!f.main || !(launcher ? f.launcher : f.home)) continue;
+      Long v = intAttr(f.priority, arsc);
       int priority = v == null ? 0 : v.intValue();  // unreadable or unresolvable (a framework resource): 0
-      long rank = priority * 2L + (has(f, "category", "android.intent.category.DEFAULT") ? 1 : 0);
+      long rank = priority * 2L + (f.dflt ? 1 : 0);
       best = Math.max(best, rank);
     }
     return best;
@@ -233,13 +333,5 @@ final class AppInfo {
       }
       return data == null ? null : Arsc.intValue(data, resId);
     }
-  }
-
-  private static boolean has(Element filter, String tag, String value) {
-    NodeList l = filter.getElementsByTagName(tag);
-    for (int i = 0; i < l.getLength(); i++) {
-      if (value.equals(((Element) l.item(i)).getAttribute(NS + "name"))) return true;
-    }
-    return false;
   }
 }
