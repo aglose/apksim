@@ -339,6 +339,7 @@ public class GpuRenderNode extends RenderNode {
     }
     Bitmap image = scaledBitmapSelfTest(content, w, h);
     inputShaderSelfTest(image);
+    sharedAndBleedShaderSelfTest();
     // Layers as the screen draws them: inside a parent, transformed, and one effect layer inside another.
     for (String arrangement : new String[] {"scaled", "rotated", "nested"}) {
       ByteBuffer expected = arrangedFrame(arrangement, false, cases, content, w, h);
@@ -446,6 +447,56 @@ public class GpuRenderNode extends RenderNode {
       if (gpu == 1 && paint.getShader() != shader) out[1] = null;
     }
     System.err.printf("[apksim] effect self-test input shaders: %s%n", difference(out[0], out[1]));
+  }
+
+  /**
+   * One shared RuntimeShader drawn into multiple unclipped RenderNodes in the same frame with different uniforms
+   * and a bleed rectangle extending past each node's bounds (e.g. a shared card glow shader): HWUI's CPU
+   * shader against TrackedRuntimeShader's GPU output.
+   */
+  private static void sharedAndBleedShaderSelfTest() {
+    String source = "uniform float2 size; uniform float phase;"
+        + " half4 main(float2 p) {"
+        + "   float2 d = abs(p - size * 0.5) - size * 0.5;"
+        + "   float m = max(d.x, d.y);"
+        + "   float edge = exp(-(m * m) / 36.0);"
+        + "   float glow = exp(-length(p - float2(size.x * phase, 0.0)) / 18.0);"
+        + "   float3 col = float3(glow * 0.6, min(1.0, edge * 0.7 + glow), edge * 0.3);"
+        + "   float a = clamp(max(col.r, max(col.g, col.b)), 0.0, 1.0);"
+        + "   return half4(col * a, a);"
+        + " }";
+    int cw = 120;
+    int ch = 36;
+    int bleed = 12;
+    float[] phases = {0.15f, 0.55f, 0.85f};
+    ByteBuffer[] out = new ByteBuffer[2];
+    for (int gpu = 0; gpu < 2; gpu++) {
+      TrackedRuntimeShader shader = new TrackedRuntimeShader(source);
+      Paint paint = new Paint();
+      paint.setShader(shader);
+      RenderNode parent = new RenderNode("selftest-shared-parent");
+      parent.setPosition(0, 0, ARRANGED_W, ARRANGED_H);
+      RecordingCanvas pc = parent.beginRecording(ARRANGED_W, ARRANGED_H);
+      pc.drawColor(0xff101010);
+      for (int i = 0; i < phases.length; i++) {
+        RenderNode card = new RenderNode("selftest-card-" + i);
+        card.setClipToBounds(false);
+        int top = 16 + i * 44;
+        card.setPosition(30, top, 30 + cw, top + ch);
+        RecordingCanvas cc = card.beginRecording(cw, ch);
+        shader.setFloatUniform("size", cw, ch);
+        shader.setFloatUniform("phase", phases[i]);
+        if (gpu == 1) GpuCanvas.drawRect(cc, -bleed, -bleed, cw + bleed, ch + bleed, paint);
+        else cc.drawRect(-bleed, -bleed, cw + bleed, ch + bleed, paint);
+        card.endRecording();
+        pc.drawRenderNode(card);
+      }
+      parent.endRecording();
+      Raster r = new Raster(ARRANGED_W, ARRANGED_H, parent);
+      out[gpu] = r.capture();
+      r.close();
+    }
+    System.err.printf("[apksim] effect self-test shared+bleed shaders: %s%n", difference(out[0], out[1]));
   }
 
   private static final int ARRANGED_W = 180;
