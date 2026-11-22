@@ -177,6 +177,9 @@ public class Host {
     try {
       if (replay == null) {
         LaunchBroadcasts.send(app);  // --broadcast: after Application.onCreate, before the first activity
+        // -Dapksim.deps: the app's start (launch to here) is a span of its own, kept for `deps start` (crawl.py
+        // --record-deps, docs/crawl.md); the first activity's span begins now.
+        if (dev.apksim.dex.Probes.ON) dev.apksim.dex.Probes.endStartSpan();
         start(System.getProperty("apksim.startActivity"), startIntent());
       } else {
         try {
@@ -584,6 +587,8 @@ public class Host {
     drags.clear();
     drag = null;
     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+    // -Dapksim.deps: the old stack's teardown is not the new screen's (docs/crawl-deps-spike.md): a new span begins here.
+    if (dev.apksim.dex.Probes.ON) dev.apksim.dex.Probes.command(new String[] {"deps", "reset"});
     start(name, intent);
     return "ok, " + AppInfo.activityClass(name);
   }

@@ -4,7 +4,8 @@
 Usage: crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] [--max-seconds S] [--max-depth N]
                 [--skip-text REGEX]... [--tap-unlabeled] [--fill TEXT] [--matrix AXIS=V,V]... [--matrix-file SPEC.json]
                 [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--keep-data]
-                [--base-option "APKSIM OPTIONS"] [--sweep LIST ...] [-- APKSIM_OPTION...]
+                [--base-option "APKSIM OPTIONS"] [--sweep LIST ...] [--seed RUN (--only ID,... | --only-file PATH)]
+                [--events] [-- APKSIM_OPTION...]
 
 Starts N headless instances (`apksim --headless --snapshot`, as scripts/snapshot.py does) and walks the app level by
 level: each screen reached is replayed from a fresh start, every control on it is tried in turn, and where it leads
@@ -16,6 +17,10 @@ the two are compared: screens new, gone and changed, with a difference image.
 Writes OUT/report.html (a clickable map and a card per screen), OUT/crawl.json (graph, paths, captures, findings),
 OUT/screens/ (captures) and OUT/logs/. Exit status: 0 when the walk finished, 1 when it found crashes (or, with --base,
 differences), 2 for bad arguments or an instance that never started.
+
+--seed RUN with --only ID,... starts from an earlier walk's crawl.json and walks only the named screens again (and any
+new screen they lead to); the rest is carried over with its captures (docs/crawl.md "Seeded walks"). --events adds a
+line of JSON per finished screen and level on stdout.
 """
 import argparse, base64, concurrent.futures, hashlib, html, itertools, json, os, re, shlex, shutil, subprocess, sys
 import tempfile, threading, time
@@ -258,6 +263,22 @@ class Instance(snapshot.Worker):
             self.settle()
         self.say("pick cancel")
 
+    def read_deps(self):
+        """--record-deps: the classes whose code ran and the resources resolved since the last `restart` (each opens a
+        span: dex.Probes, ResourceHits), as {classes, resources}, classes as the probes name them (`a.B$c`)."""
+        return {"classes": deps_list(self.say("deps read")), "resources": deps_list(self.say("deps resources"))}
+
+    def read_start_deps(self):
+        """--record-deps: the app-start span (launch to the first activity), kept by the instance once per process."""
+        deadline = time.time() + 30
+        while True:
+            reply = self.say("deps start")
+            if not reply.startswith("error") or time.time() > deadline:
+                break
+            time.sleep(0.2)
+        return {"classes": deps_list(reply), "resources": deps_list(self.say("deps start resources")),
+                "packages": self.say("deps")}
+
     def reach_screen(self, screen, extra=()):
         """Replays the screen's path and checks where it ended; [extra] steps (scrolls, a fill) follow the check."""
         self.reach(screen["path"])
@@ -272,6 +293,53 @@ class Instance(snapshot.Worker):
 
 def fmt(v):
     return snapshot.fmt(v)
+
+
+class DepsOff(RuntimeError):
+    """An instance answered `deps` with an error (the probes are off): the walk cannot record what it was asked to."""
+
+
+def deps_list(reply):
+    """`deps N: a,b` / `deps resources N: a,b` -> [a, b]; an error answer stops the walk (the probes are off)."""
+    if reply.startswith("error") or ":" not in reply:
+        raise DepsOff(f"--record-deps: the instance answered {reply!r}")
+    body = reply.split(":", 1)[1].strip()
+    return sorted(x for x in body.split(",") if x)
+
+
+class DepsMap:
+    """--record-deps: probed class -> source files, from the APK's DEX (scripts/affected.py's map: the DEX source file
+    name, its package, and Kotlin's SMAP for inlined code), and whether that map can be trusted."""
+
+    def __init__(self, apk, packages):
+        import affected  # scripts/affected.py
+        self.packages = packages
+        self.map = affected.source_map([apk], packages)
+        # A class counts as sourceless when the map gives it no file even through its outer class (D8's synthetic
+        # lambdas name none of their own, and the map takes their outer class's).
+        total = len(self.map)
+        nosource = sum(1 for keys in self.map.values() if not keys)
+        renamed = sum(1 for c in self.map if re.fullmatch(r"[a-z]{1,2}", c.rsplit("/", 1)[-1].split("$")[0]))
+        why = []
+        if total == 0:
+            why.append(f"the APK has no classes in the probed packages {','.join(packages)}")
+        else:
+            if nosource > total * 0.1:
+                why.append(f"{nosource} of {total} classes in {','.join(packages)} name no source file (R8 without "
+                           "-keepattributes SourceFile?): their files cannot be told")
+            if renamed > total * 0.3:
+                why.append(f"{renamed} of {total} classes in {','.join(packages)} have one- or two-letter names (R8 "
+                           "renaming, no mapping file): classes are merged and inlined, so files may be missing")
+        self.unreliable = "; ".join(why) or None
+
+    def sources(self, classes):
+        out = set()
+        for c in classes:
+            out.update(self.map.get(c.replace(".", "/"), ()))
+        return sorted(out)
+
+    def shape(self, raw):
+        return {"classes": raw["classes"], "sources": self.sources(raw["classes"]), "resources": raw["resources"]}
 
 
 # ----------------------------------------------------------------------------------------------- the explorer
@@ -375,6 +443,8 @@ class Explorer:
         self.skip_re = re.compile("|".join(f"(?:{p})" for p in (args.skip_text or [DEFAULT_SKIP])), re.I)
         self.budget = Budget(args)
         self.t_explore = self.t_capture = 0.0
+        self.explored = set()   # ids whose controls were tried in this run
+        self.announced = set()  # ids --events has told
         os.makedirs(os.path.join(out, "logs"), exist_ok=True)
         self.stage = tempfile.mkdtemp(prefix="apksim-crawl-")
         if re.search(r"\s", self.stage):
@@ -383,6 +453,20 @@ class Explorer:
                     "stage": self.stage, "snapshot": True, "fresh": not args.keep_data, "screens": [],
                     "record": lambda r: None, "crashes": self.findings, "stable_ms": args.stable_ms, "name": name}
         self.instances = []
+        self.deps_map = None     # --record-deps: DepsMap, once the probed packages are known
+        self.start_deps = None   # --record-deps: the app-start span, read from the first instance
+        if args.record_deps:
+            self.options += ["--jvm", "-Dapksim.deps=true"]
+            if args.deps_packages:
+                self.options += ["--jvm", f"-Dapksim.deps.packages={args.deps_packages}"]
+
+    def record_start_deps(self):
+        """--record-deps: the app-start span, once per walk, and the class -> source map for the probed packages."""
+        raw = self.instances[0].read_start_deps()
+        m = re.search(r"packages (\S+?),? epoch", raw.pop("packages"))
+        packages = [p for p in (m[1] if m else "").split(",") if p]
+        self.deps_map = DepsMap(self.apk, packages)
+        self.start_deps = self.deps_map.shape(raw)
 
     # --- instances
     def pool(self, n):
@@ -403,6 +487,12 @@ class Explorer:
         if errors:
             self.close()
             fail("; ".join(errors))
+        if self.args.record_deps:
+            try:
+                self.record_start_deps()
+            except Gone as e:
+                self.close()
+                fail(f"--record-deps: the first instance ended before its start was read: {e.crash.get('detail')}")
 
     def close(self):
         for inst in self.instances:
@@ -440,6 +530,23 @@ class Explorer:
     def full_path(self, screen, extra=()):
         return {"start": screen["path"].get("start"), "steps": list(screen["path"]["steps"]) + list(extra)}
 
+    def event(self, kind, **fields):
+        """--events: one line of JSON on stdout, beside the human lines (which stay as they are)."""
+        if self.args.events:
+            print(json.dumps(dict({"event": kind, "build": self.name}, **fields)), flush=True)
+
+    def screen_event(self, screen, explored=True):
+        if screen["id"] in self.announced:
+            return
+        self.announced.add(screen["id"])
+        ev = {"id": screen["id"], "origin": screen.get("origin", "walked"), "depth": screen["depth"],
+              "title": screen.get("title", "")}
+        if screen.get("replaces"):
+            ev["replaces"] = screen["replaces"]
+        if not explored:
+            ev["explored"] = False
+        self.event("screen", **ev)
+
     def explore(self):
         t0 = time.time()
         args = self.args
@@ -455,13 +562,24 @@ class Explorer:
                     self.incomplete.append(f"--max-screens {self.budget.max_screens}: start {start or 'the launcher activity'} not added")
                     continue
                 level.append(self.add_screen(obs, {"start": start, "steps": []}, None, 0))
-        depth = 0
+        self.walk(level)
+        self.t_explore = time.time() - t0
+
+    def walk(self, level):
+        """Explores level after level from [level]: each screen's controls tried, new screens one level deeper."""
+        args = self.args
         cut = False  # the time ran out inside a level: some screens or controls were left
         while level and not self.budget.out_of_time():
+            depth = min(s["depth"] for s in level)
             log(f"[{self.name}] depth {depth}: {len(level)} screen(s) to explore, {len(self.screens)} known")
-            if self.budget.max_depth is not None and depth >= self.budget.max_depth:
-                self.incomplete.append(f"--max-depth {self.budget.max_depth}: {', '.join(s['id'] for s in level)} not explored")
-                break
+            self.event("level", depth=depth, screens=len(level), known=len(self.screens))
+            if self.budget.max_depth is not None:
+                deep = [s for s in level if s["depth"] >= self.budget.max_depth]
+                if deep:
+                    self.incomplete.append(f"--max-depth {self.budget.max_depth}: {', '.join(s['id'] for s in deep)} not explored")
+                    level = [s for s in level if s["depth"] < self.budget.max_depth]
+                    if not level:
+                        break
             level.sort(key=lambda s: s["id"])
             results = self.run_on_pool(level, self.explore_screen)
             nxt = []
@@ -471,8 +589,11 @@ class Explorer:
                     cut = True
                 if res is None:
                     continue
+                self.explored.add(screen["id"])
                 screen["actions"] = res["actions"]
                 screen["flaky"] = res.get("flaky")
+                if res.get("deps") is not None:
+                    screen["deps"] = self.deps_map.shape(res["deps"])
                 for e in res["edges"]:
                     to = e["to"]
                     edge = {"from": screen["id"], "action": e["label"], "cmd": e["cmd"], "kind": e["kind"], "to": to["id"],
@@ -489,16 +610,146 @@ class Explorer:
                             edge["note"] = "not followed: --max-screens"
                             edge["to"] = None
                         else:
-                            nxt.append(self.add_screen(to, self.full_path(screen, e["steps"]), screen["id"], depth + 1))
+                            nxt.append(self.add_screen(to, self.full_path(screen, e["steps"]), screen["id"], screen["depth"] + 1))
                     self.edges.append(edge)
                 for f in res["findings"]:
                     self.findings.append(f)
+                self.screen_event(screen)
             level = nxt
-            depth += 1
         if (level or cut) and self.budget.out_of_time():
             self.incomplete.append(f"--max-seconds {self.args.max_seconds}: {len(level)} screen(s) not explored"
                                    + (", and some controls of the last level not tried" if cut else ""))
+        for sid in self.order:  # found and never explored (a budget): said too, so a reader has every screen
+            if self.screens[sid].get("origin") == "walked":
+                self.screen_event(self.screens[sid], explored=False)
+
+    # --- a seeded walk: an earlier walk's graph, with only the named screens walked again
+    def explore_seeded(self, seed, only):
+        t0 = time.time()
+        for s in seed["screens"]:
+            c = dict(s)
+            c["origin"] = "carried"
+            c.pop("replaces", None)
+            self.screens[c["id"]] = c
+            self.order.append(c["id"])
+        self.edges = [dict(e) for e in seed["edges"] if e["from"] not in only]
+        targets = [self.screens[o] for o in only]
+
+        def under(path, s):
+            p = s["path"]
+            return isinstance(path, dict) and path.get("start") == p.get("start") and \
+                list(path.get("steps") or [])[:len(p["steps"])] == list(p["steps"])
+        # The seed's findings on screens carried over stand; those on or past a screen walked again are found again.
+        self.findings.extend(f for f in seed.get("findings", []) if f.get("kind") not in ("sweep", "compare")
+                             and not any(under(f.get("path"), t) for t in targets))
+        self.incomplete += [f"seed: {x}" for x in seed.get("incomplete", [])]
+        for sid in self.order:
+            if sid not in only:
+                self.screen_event(self.screens[sid])
+        # First the --only screens: each reached by its stored path and observed again.
+        results = self.run_on_pool(targets, self.observe_at)
+        now = {t["id"]: t["id"] for t in targets}  # an --only id -> the screen at its position now
+        level = []
+        for screen, r in zip(targets, results):
+            old = screen["id"]
+            screen["origin"] = "walked"
+            for k in ("captures", "settled", "unsettled", "flaky", "actions", "deps"):
+                screen.pop(k, None)
+            screen["captures"], screen["actions"] = {}, []
+            if r.get("crash"):
+                self.findings.append(self.crash_finding(r["crash"], screen["path"]))
+                screen["flaky"] = "ended on arrival"
+                self.explored.add(old)
+                self.screen_event(screen)
+                continue
+            obs = r["obs"]
+            if r.get("note"):
+                self.finding("replay", f"{old}: the stored path no longer replays ({r['note']}): what it reaches stands for it",
+                             screen["path"])
+            if obs["id"] in PSEUDO:
+                screen["flaky"] = "the stored path ends the app"
+                self.explored.add(old)
+                self.screen_event(screen)
+                continue
+            if obs["id"] == old:
+                screen.update(activity=obs["activity"], nodes=obs["nodes"], title=title_of(obs["recs"]),
+                              texts=texts_list(obs["recs"]))
+                if screen not in level:
+                    level.append(screen)
+                continue
+            # The path now arrives at another structure: that is the screen at this position.
+            new_id = obs["id"]
+            if new_id in self.screens:
+                ns = self.screens[new_id]
+                if ns.get("origin") == "carried":
+                    self.edges = [e for e in self.edges if e["from"] != new_id]
+                    for k in ("captures", "settled", "unsettled", "flaky", "deps"):
+                        ns.pop(k, None)
+                    ns["captures"], ns["actions"], ns["origin"] = {}, [], "walked"
+                self.order.remove(old)
+            else:
+                ns = {"id": new_id, "activity": obs["activity"], "nodes": obs["nodes"], "path": screen["path"],
+                      "parent": screen["parent"], "depth": screen["depth"], "actions": [], "captures": {},
+                      "title": title_of(obs["recs"]), "texts": texts_list(obs["recs"]), "origin": "walked"}
+                self.screens[new_id] = ns
+                self.order[self.order.index(old)] = new_id
+            ns["replaces"] = old
+            now[old] = new_id
+            del self.screens[old]
+            for e in self.edges:
+                if e["to"] == old:
+                    e["to"] = new_id
+            for s in self.screens.values():
+                if s.get("parent") == old:
+                    s["parent"] = new_id
+            level = [x for x in level if x["id"] != old]
+            if ns not in level:
+                level.append(ns)
+            log(f"[{self.name}] {old} is now {new_id}: its path arrives at another structure")
+        self.walk(level)
+        left = [now[o] for o in only if now[o] in self.screens and now[o] not in self.explored]
+        if left:
+            self.incomplete.append(f"--max-seconds {self.args.max_seconds}: --only screen(s) not explored: {', '.join(left)}")
         self.t_explore = time.time() - t0
+
+    def observe_at(self, inst, screen):
+        """An --only screen's stored path replayed: what it reaches now ({obs}, a {note} when a step failed) or a {crash}."""
+        note = None
+        for attempt in range(2):
+            try:
+                inst.reach(screen["path"])
+                return {"obs": inst.observe()}
+            except ReplayFailed as e:
+                note = str(e)
+                if attempt:
+                    try:
+                        return {"obs": inst.observe(), "note": note}
+                    except Gone as g:
+                        return {"crash": g.crash}
+            except Gone as e:
+                if attempt:
+                    return {"crash": e.crash}
+        return {"crash": {"kind": "died", "detail": note or "unreachable"}}
+
+    def carry_captures(self, src):
+        """The carried screens' captures, linked (else copied) from the seed into OUT."""
+        for sid in self.order:
+            s = self.screens[sid]
+            if s.get("origin") != "carried":
+                continue
+            caps = {}
+            for name, rel in (s.get("captures") or {}).items():
+                dst = os.path.join(self.out, self.shots, sid, name + ".png")
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                try:
+                    try:
+                        os.link(src(rel), dst)
+                    except OSError:
+                        shutil.copyfile(src(rel), dst)
+                    caps[name] = f"{self.shots}/{sid}/{name}.png"
+                except OSError as e:
+                    self.finding("capture", f"{sid} {name}: the seed's capture could not be carried: {e}", s["path"])
+            s["captures"] = caps
 
     def observe_root(self, inst, start):
         for attempt in range(2):
@@ -514,7 +765,7 @@ class Explorer:
     def add_screen(self, obs, path, parent, depth):
         s = {"id": obs["id"], "activity": obs["activity"], "nodes": obs["nodes"], "path": path, "parent": parent,
              "depth": depth, "actions": [], "captures": {}, "title": title_of(obs["recs"]),
-             "texts": [r.text[:80] for r in obs["recs"] if r.text and "v" in r.flags][:40]}
+             "texts": texts_list(obs["recs"]), "origin": "walked"}
         self.screens[s["id"]] = s
         self.order.append(s["id"])
         return s
@@ -535,6 +786,14 @@ class Explorer:
                 if attempt:
                     findings.append({"kind": "flaky", "detail": f"{screen['id']}: {e}", "path": screen["path"], "build": self.name})
                     return {"actions": [], "edges": [], "findings": findings, "flaky": str(e)}
+            except Gone as e:
+                findings.append(self.crash_finding(e.crash, screen["path"]))
+                return {"actions": [], "edges": [], "findings": findings, "flaky": "ended on arrival"}
+        deps = None
+        if args.record_deps:
+            # The span from the `restart` that began this replay to the screen read as settled (docs/crawl.md).
+            try:
+                deps = inst.read_deps()
             except Gone as e:
                 findings.append(self.crash_finding(e.crash, screen["path"]))
                 return {"actions": [], "edges": [], "findings": findings, "flaky": "ended on arrival"}
@@ -631,7 +890,7 @@ class Explorer:
             if e["to"]["id"] in aliases:
                 e["to"] = {"id": screen["id"]}
         return {"actions": [{k: a[k] for k in ("label", "cmd", "kind", "box", "skipped", "scrolls")} for a in acts],
-                "edges": edges, "findings": findings, "truncated": truncated}
+                "edges": edges, "findings": findings, "truncated": truncated, "deps": deps}
 
     def crash_finding(self, crash, path):
         kind = "crash" if crash["kind"] == "crash" else crash["kind"]
@@ -639,9 +898,9 @@ class Explorer:
                 "log": crash.get("log"), "after": crash.get("after")}
 
     # --- captures
-    def capture(self, combos):
+    def capture(self, combos, ids=None):
         t0 = time.time()
-        ids = sorted(self.screens)
+        ids = sorted(self.screens if ids is None else ids)
         jobs = len(self.instances)
         chunks = max(1, min(len(combos), -(-jobs // max(1, len(ids)))))
         tasks = []
@@ -681,14 +940,24 @@ class Explorer:
                 self.finding("capture", f"{screen['id']} {name}: {e}", screen["path"])
 
     def doc(self):
-        return {"build": self.name, "apk": os.path.basename(self.apk), "screens": [self.screens[i] for i in self.order],
-                "edges": self.edges, "findings": self.findings, "incomplete": self.incomplete,
-                "seconds": {"explore": round(self.t_explore, 1), "capture": round(self.t_capture, 1)}}
+        d = {"build": self.name, "apk": os.path.basename(self.apk), "screens": [self.screens[i] for i in self.order],
+             "edges": self.edges, "findings": self.findings, "incomplete": self.incomplete,
+             "seconds": {"explore": round(self.t_explore, 1), "capture": round(self.t_capture, 1)}}
+        if self.start_deps is not None:
+            d["start_deps"] = self.start_deps
+            d["deps_packages"] = self.deps_map.packages
+            if self.deps_map.unreliable:
+                d["deps_unreliable"] = self.deps_map.unreliable
+        return d
 
 
 def repeated(steps, n):
     """The path ends in the same step n times (a counter, a stack of dialogs: a chain that never ends)."""
     return len(steps) >= n and len(set(steps[-n:])) == 1
+
+
+def texts_list(recs):
+    return [r.text[:80] for r in recs if r.text and "v" in r.flags][:40]
 
 
 def title_of(recs):
@@ -1373,6 +1642,12 @@ def parse(argv):
     p.add_argument("--junit", help="JUnit XML of the sweep (default OUT/junit.xml): a failing case per finding")
     p.add_argument("--sweep-actions", type=int, default=3, help="how many controls that stay on the screen the state perturbations tap, one at a time, besides the screen as reached (default 3: as reached and up to three taps; 0: as reached only)")
     p.add_argument("--sweep-pixels", type=float, default=0.002, help="share of pixels that may differ between a screen before and after a perturbation")
+    p.add_argument("--seed", metavar="RUN", help="an earlier walk's OUT folder: start from its graph and walk again only the --only screens")
+    p.add_argument("--only", help="with --seed: the screen ids to walk again, comma-separated")
+    p.add_argument("--only-file", help="with --seed: a file of screen ids to walk again, one per line")
+    p.add_argument("--events", action="store_true", help="also print a line of JSON per finished screen and per level")
+    p.add_argument("--record-deps", action="store_true", help="per screen, the app classes that ran, their source files and the resources resolved (crawl.json deps, start_deps; docs/crawl.md)")
+    p.add_argument("--deps-packages", help="with --record-deps: packages to probe, comma-separated (default the app package's first two parts)")
     p.add_argument("--spinner-seconds", type=float, default=6, help="how long a progress indicator may stay up offline")
     args = p.parse_args(argv)
     args.apksim = list(tail)
@@ -1386,7 +1661,58 @@ def parse(argv):
             fail("--keep-data cannot be used with --base: two walks cannot start from one prepared data slot")
     if args.jobs < 1:
         fail("-j takes 1 or more")
+    only = [x.strip() for x in (args.only or "").split(",") if x.strip()]
+    if args.only_file:
+        try:
+            with open(args.only_file) as f:
+                only += [ln.strip() for ln in f if ln.strip() and not ln.strip().startswith("#")]
+        except OSError as e:
+            fail(f"cannot read {args.only_file}: {e}")
+    args.only_ids = list(dict.fromkeys(only))
+    if args.deps_packages and not args.record_deps:
+        fail("--deps-packages goes with --record-deps")
+    if args.seed:
+        if not args.only_ids:
+            fail("--seed needs --only or --only-file: a seeded walk walks only the screens named, and with none it would "
+                 "walk nothing (to walk everything again, leave out --seed)")
+        if args.base or args.base_option:
+            fail("--seed cannot be used with --base or --base-option: a comparison walks both builds in full")
+        if args.sweep:
+            fail("--seed cannot be used with --sweep: the sweep runs on every screen, carried ones too")
+    elif args.only or args.only_file:
+        fail("--only and --only-file name screens of a --seed walk: give --seed RUN")
     return args
+
+
+def load_seed(args, out, combos):
+    """The seed's crawl.json, checked against this run, and where its captures are read from."""
+    seed_dir = os.path.abspath(args.seed)
+    try:
+        with open(os.path.join(seed_dir, "crawl.json")) as f:
+            seed = json.load(f)
+    except (OSError, ValueError) as e:
+        fail(f"--seed: cannot read {os.path.join(seed_dir, 'crawl.json')}: {e}")
+    known = {s["id"] for s in seed.get("screens", [])}
+    unknown = [o for o in args.only_ids if o not in known]
+    if unknown:
+        fail(f"--only: the seed has no screen {', '.join(unknown)}")
+    names = [snapshot.combo_name(c) for c in combos]
+    if list(seed.get("combos", [])) != names:
+        fail(f"--seed: the seed was captured in {seed.get('combos', [])} and this walk captures {names}: give the seed's "
+             "matrix, or walk in full (carried screens keep the seed's captures)")
+    src_dir = seed_dir
+    stranded = os.path.join(seed_dir, ".seed", "screens")
+    if os.path.isdir(stranded) and not os.path.isdir(os.path.join(seed_dir, "screens")):
+        # A seeded run on OUT itself that ended early (an instance never started) left the captures aside: back first.
+        os.rename(stranded, os.path.join(seed_dir, "screens"))
+    if os.path.realpath(seed_dir) == os.path.realpath(out):
+        # The seed is OUT itself: its captures are moved aside before OUT's screens/ is emptied, and read from there.
+        src_dir = os.path.join(out, ".seed")
+        shutil.rmtree(src_dir, ignore_errors=True)
+        os.makedirs(src_dir)
+        if os.path.isdir(os.path.join(out, "screens")):
+            os.rename(os.path.join(out, "screens"), os.path.join(src_dir, "screens"))
+    return seed, src_dir
 
 
 def matrix_of(args):
@@ -1416,6 +1742,11 @@ def main():
         fail(f"no APK {base_apk}")
     combos = [] if args.no_captures else matrix_of(args)
     out = os.path.abspath(args.out)
+    seed = src_dir = None
+    if args.seed:
+        seed, src_dir = load_seed(args, out, combos)
+        if "start_deps" in seed and not args.record_deps:
+            log("note: the seed recorded deps and this walk does not: screens walked again will have none (add --record-deps)")
     for d in ("screens", "base-screens", "diff"):
         shutil.rmtree(os.path.join(out, d), ignore_errors=True)
     os.makedirs(out, exist_ok=True)
@@ -1424,11 +1755,18 @@ def main():
     base = None
     try:
         new.pool(args.jobs)
-        new.explore()
+        if seed is not None:
+            new.explore_seeded(seed, args.only_ids)
+        else:
+            new.explore()
         log(f"[new] {len(new.screens)} screens, {len(new.edges)} transitions in {new.t_explore:.1f} s")
         if combos:
-            new.capture(combos)
+            new.capture(combos, None if seed is None else [i for i in new.order if new.screens[i]["origin"] == "walked"])
             log(f"[new] {len(combos)} combination(s) captured in {new.t_capture:.1f} s")
+        if seed is not None:
+            new.carry_captures(lambda rel: os.path.join(src_dir, rel))
+            if os.path.basename(src_dir) == ".seed":
+                shutil.rmtree(src_dir, ignore_errors=True)
         doc = new.doc()
         doc["combos"] = [snapshot.combo_name(c) for c in combos]
         sweep = None
@@ -1493,6 +1831,8 @@ def main():
             doc["findings"] += [f for f in base.findings if f["kind"] != "note"]
             doc["incomplete"] += [f"base: {x}" for x in base.incomplete]
         doc["seconds"]["total"] = round(time.time() - t0, 1)
+    except DepsOff as e:
+        fail(str(e))  # the finally below still closes the instances
     finally:
         new.close()
         if base:
@@ -1507,7 +1847,11 @@ def main():
     differs = [p for p in doc.get("compare", []) if p["status"] != "same"]
     for p in differs:
         log(f"{p['status']:>8}  {p['id'] or p['base']}  {p.get('why') or ''}")
-    sys.exit(1 if crashes or differs else 0)
+    code = 1 if crashes or differs else 0
+    if args.events:
+        print(json.dumps({"event": "done", "exit": code, "screens": len(doc["screens"]), "edges": len(doc["edges"]),
+                          "incomplete": doc["incomplete"], "seconds": doc["seconds"]}), flush=True)
+    sys.exit(code)
 
 
 if __name__ == "__main__":

@@ -330,6 +330,11 @@ Read README.md for results and limits; this file covers how to work on the code.
     with and without the collection across appearance switches and rotations; `ci-smoke.sh` checks it. The trade is
     deliberate: a destroyed activity's native-backed objects (Bitmap pixels, renderers) now wait for the next
     collection that reaches them, or Host.Memory's idle one, instead of going at the recreation.
+  - `org.robolectric.res.android.CppAssetManager2` (apksim's copy of Robolectric 4.17's, ahead of it on the class
+    path) and `ResourceHits`: two hook lines (`GetResource`, and `GetBag(int, List)` before its cache) record every
+    resource id the framework resolves, for the `deps resources` command and `crawl.py --record-deps`. Off unless
+    `-Dapksim.deps=true` in a running instance (a `static final`; test runs never). Re-copy the file and put the two
+    lines back at every Robolectric upgrade.
   - `MappedResources`, `org.robolectric.res.android.CppApkAssets` and `ResourceString` (apksim's copies of
     Robolectric 4.17's, ahead of them on the class path): a `resources.arsc` is a mapped file, not a `byte[]` on the
     heap. Robolectric inflates the framework's table (16.7 MB, the largest object of an idle instance's heap) and
@@ -703,7 +708,7 @@ Read README.md for results and limits; this file covers how to work on the code.
   refusals, and a recording saved and downloaded, against a running `apksim serve --allow-rec`), `kept-check.py` (kept
   sessions on a running `apksim serve --keep-max N`),
   `crawl.py` (explores an APK's screens breadth-first over the control channel: graph, replayable paths, a capture per
-  screen per matrix combination, crashes, `--base` comparison of two builds; docs/crawl.md; `crawl-check.py` checks it),
+  screen per matrix combination, crashes, `--base` comparison of two builds, `--seed`/`--only` walks, `--record-deps` per-screen classes, sources and resources; docs/crawl.md; `crawl-check.py` checks it),
   `serve-check.py` (a running `apksim serve` driven as a browser tab, see
   "apksim serve"), `slot-check.sh` (a data slot's /sdcard and Settings across launches, `SlotDevice`), `relaunch.sh`,
   `both.py`/`vshift.py` (emulator comparison),
@@ -852,6 +857,7 @@ last call, then what reached the screen per display vsync), `fps` (per-stage cos
 `maxfps [N]` (frame rate cap, 1-120; see "Per-instance costs" below), `animscale N` (animation speed, any time),
 `vsync [PERIOD_US SHIFT_US|off]` (pace to a viewer's display: see `Host`).
 `gaps` (`Gaps`, see Layout): framework natives with no shadow that this process called, outside the baseline of harmless ones.
+`deps [reset|read|mark|resources [all]|start [resources]]` (`dex.Probes`, `ResourceHits`; with `--jvm -Dapksim.deps=true`): the app classes whose code ran and the resources resolved since the last reset or `restart` (each `restart` opens a span), and the app-start span; `crawl.py --record-deps` reads them per screen (docs/crawl.md "Per-screen dependencies").
 For screenshot tests (docs/snapshots.md): `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]` (answers once nothing is queued,
 dirty or wanting a frame and no main-thread message is due within HORIZON_MS, for QUIET_MS of real time with no frame
 drawn; else `error: not settled ...: REASON` ("a frame is wanted" says what wants it when it can: `: a spinning ProgressBar #id at X,Y`, or `: animators running: ...`); while the app is in the background (`home`, `lock`, Back on the root launcher activity) nothing draws and either answer ends `(app in background: ...)`: match the `settled`/`error:` prefix, as mcp.py does), `restart [URL]` (every activity destroyed, the start activity (launcher or

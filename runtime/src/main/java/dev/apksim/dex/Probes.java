@@ -68,6 +68,69 @@ public final class Probes {
     return out;
   }
 
+  /** The classes reached since the last mark, sorted, without starting a new span (the `deps read` command). */
+  public static List<String> peek() {
+    List<String> out;
+    synchronized (LOCK) {
+      out = new ArrayList<>(current);
+    }
+    out.sort(null);
+    return out;
+  }
+
+  /** The app-start span (launch to the first activity), kept by {@link #endStartSpan}; null until then. */
+  private static volatile List<String> startClasses;
+  private static volatile int[] startResources;
+
+  /** Host, just before the first activity: the span so far is the app's start; keeps it and begins a new one. */
+  public static void endStartSpan() {
+    startResources = dev.apksim.ResourceHits.ids(true);
+    startClasses = mark();
+  }
+
+  /**
+   * The `deps` control command (running instances, -Dapksim.deps=true; docs/crawl-deps-spike.md): `deps reset` starts a
+   * new span, `deps read` answers the classes reached since, `deps mark` both at once; alone, whether recording is on.
+   * Answers `deps N: a.B,a.C` (one line, as every control answer).
+   */
+  public static String command(String[] a) {
+    if (!ON) return "error: deps: off (launch with --jvm -Dapksim.deps=true)";
+    String sub = a.length > 1 ? a[1] : "";
+    return switch (sub) {
+      case "" -> "deps on, packages " + packages() + ", epoch " + epoch;
+      case "reset" -> {
+        mark();
+        dev.apksim.ResourceHits.ids(true);
+        yield "ok";
+      }
+      case "read" -> list(peek());
+      case "mark" -> list(mark());
+      case "resources" -> {
+        // deps resources [all]: resources resolved since the last reset, `type/name` (app's own; all adds android:...)
+        boolean all = a.length > 2 && a[2].equals("all");
+        yield "deps resources " + names(all).size() + ": " + String.join(",", names(all));
+      }
+      case "start" -> {
+        // deps start [resources]: the app-start span (launch to the first activity), kept once per process.
+        if (startClasses == null) yield "error: deps: no start span (a replay, or the first activity not started yet)";
+        if (a.length > 2 && a[2].equals("resources")) {
+          List<String> n = dev.apksim.ResourceHits.names(startResources, false);
+          yield "deps start resources " + n.size() + ": " + String.join(",", n);
+        }
+        yield "deps start " + startClasses.size() + ": " + String.join(",", startClasses);
+      }
+      default -> "usage: deps [reset|read|mark|resources [all]|start [resources]]";
+    };
+  }
+
+  private static List<String> names(boolean all) {
+    return dev.apksim.ResourceHits.names(dev.apksim.ResourceHits.ids(false), all);
+  }
+
+  private static String list(List<String> l) {
+    return "deps " + l.size() + ": " + String.join(",", l);
+  }
+
   /**
    * Whether classes of this package get probes: -Dapksim.deps.packages (comma-separated prefixes, `com.example`), else
    * the app package's first two parts (`com.example` for `com.example.app`), which takes in its modules and its test
