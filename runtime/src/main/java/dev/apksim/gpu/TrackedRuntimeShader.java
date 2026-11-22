@@ -417,6 +417,9 @@ public class TrackedRuntimeShader extends RuntimeShader {
       local.getValues(localValues);
       if (localValues[6] != 0f || localValues[7] != 0f || localValues[8] != 1f) return null;
       if (!(c instanceof RecordingCanvas)) {
+        // A Picture's canvas records the draw for later (it is no RecordingCanvas): a bitmap shared between its draws
+        // would show the last one's pixels in all of them, so HWUI's CPU shader draws it.
+        if (c.getClass().getName().startsWith("android.graphics.Picture$")) return null;
         // A software Canvas (Canvas(bitmap)) draws at once, so one bitmap per shader serves every such draw: a slot
         // per canvas would fill the slots with canvases an app makes per draw.
         if (!buildTransform(x, y)) return null;

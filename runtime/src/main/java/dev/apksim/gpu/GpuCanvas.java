@@ -61,15 +61,21 @@ public final class GpuCanvas {
     return original;
   }
 
-  /** Whether [clip] (local coordinates) is the node's own bounds, (0, 0, width, height) on the device: no clip of the app's. */
+  /**
+   * Whether [clip] (local coordinates) is no clip of the app's: it contains the node's own bounds, (0, 0, width,
+   * height) on the device, mapped back into local coordinates (a bounding box under a rotation or skew), within a pixel.
+   * A clipRect the app set inside the node is smaller and fails.
+   */
   private static boolean isNodeDefaultClip(RecordingCanvas c, Rect clip) {
     if (c.mNode == null) return false;
     android.graphics.Matrix m = new android.graphics.Matrix();
     c.getMatrix(m);
-    RectF r = new RectF(clip);
-    m.mapRect(r);
-    return Math.abs(r.left) <= 1 && Math.abs(r.top) <= 1 && Math.abs(r.right - c.mNode.getWidth()) <= 1
-        && Math.abs(r.bottom - c.mNode.getHeight()) <= 1;
+    android.graphics.Matrix inv = new android.graphics.Matrix();
+    if (!m.invert(inv)) return false;
+    RectF node = new RectF(0, 0, c.mNode.getWidth(), c.mNode.getHeight());
+    inv.mapRect(node);
+    node.inset(1, 1);
+    return clip.left <= node.left && clip.top <= node.top && clip.right >= node.right && clip.bottom >= node.bottom;
   }
 
   private static boolean clipsToBounds(Canvas c) {
