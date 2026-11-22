@@ -207,15 +207,15 @@ final class InstallState {
            java.io.InputStream in = zip.getInputStream(zip.getEntry("AndroidManifest.xml"))) {
         raw = in.readAllBytes();
       }
-      Axml.parse(raw, 0, false, (tag, attrs) -> {
+      Axml.parse(raw, Integer.MAX_VALUE, false, (tag, attrs) -> {
         if (!"permission".equals(tag)) return;
         String n = attrs.get("android:name");
         if (n == null) return;
         String l = attrs.get("android:protectionLevel");
         int v = 0;
-        if (l != null && l.startsWith("0x")) {
+        if (l != null && !l.isEmpty()) {
           try {
-            v = (int) Long.parseLong(l.substring(2), 16);
+            v = l.startsWith("0x") ? (int) Long.parseLong(l.substring(2), 16) : Integer.parseInt(l);
           } catch (NumberFormatException ignored) {
             v = 0;
           }
