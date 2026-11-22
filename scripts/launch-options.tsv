@@ -34,6 +34,7 @@ option	value	cli	serve	beam	mcp	note
 --fresh	flag	yes	server-only	server-only	server-only	
 --gles	value	yes	no: undecided	no: undecided	no: undecided	
 --header	value	yes	no: serve passes download headers in POST /api/apps	no: beam never downloads from CLI URLs	no: carries credentials	
+--header-file	value	yes	no: internal, a warm launch's client passes it for --header	no: internal, reads a host file	no: internal, reads a host file	
 --headless	flag	yes	server-only	no: beam runs a hidden window	server-only	
 --health	value	yes	no: reads a host file	no: reads a host file	no: reads a host file	
 --instrument	value	yes	no: test runs only	no: test runs only	no: test runs only	
