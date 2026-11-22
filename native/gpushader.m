@@ -106,7 +106,7 @@ JNIEXPORT jboolean JNICALL Java_dev_apksim_gpu_GpuNative_render(JNIEnv *env, jcl
 @implementation ApksimTarget
 @end
 
-#define POOL_MAX 6
+#define POOL_MAX 12
 static NSMutableArray<ApksimTarget *> *freeTargets;
 
 static ApksimTarget *takeTarget(int w, int h) {

@@ -431,7 +431,16 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `gpu/`: AGSL → Metal. `AgslTranslator` puts uniforms and functions in one MSL struct. `TrackedRuntimeShader`
     renders on the GPU one frame ahead (`submit`/`collect`) and is drawn as a BitmapShader; a shader not drawn for a
     second has its frame collected by `sweep` (each one left behind mid-animation held a full-size Metal texture for
-    good: the owner's app grew ~16 MB per visit to a shader screen). `uniform shader` inputs
+    good: the owner's app grew ~16 MB per visit to a shader screen). One shader drawn at several places in a frame (a
+    shared RuntimeShader whose uniforms change between cards) gets a slot per draw site, keyed by the RenderNode and
+    its draw's order in the frame, each with two bitmaps (HWUI may still be drawing the last frame's); past 32 draw sites
+    of one shader in a frame, and in test runs past 32 draws (no frame boundary moves slots on), HWUI's CPU shader
+    draws the rest. A software Canvas (`Canvas(bitmap)`) draws at once and shares one bitmap per shader; a Picture's canvas,
+    which records for later, goes to the CPU. A node that does not clip to its bounds is not clipped to them (a glow past
+    a card's edge), but a clip the app set inside it still bounds the shaded area (a clip that contains the node's
+    bounds, mapped back through the canvas matrix, counts as none); strokes are padded by half their width times the miter limit or sqrt(2) for square caps.
+    Self-test `shared+bleed shaders` (three unclipped cards of one shader): mean 0.144 max 2 against HWUI's CPU, the
+    bleed edges' sampling. `uniform shader` inputs
     become textures (`AgslChild`: bilinear, transparent outside, as Skia samples an effect's input).
     `GpuRenderNode` (Compose's graphicsLayer nodes) runs `createRuntimeShaderEffect(shader, "content")` on Metal:
     the app's drawing goes into a separate content node, which `HwRenderer.draw` (`beforeSync`, before HWUI syncs)
