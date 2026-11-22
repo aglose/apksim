@@ -23,6 +23,10 @@ Usage: crawl-check.py [--apk APK] [--out DIR] [--quick] [--docker IMAGE] [-j N] 
    not `SecondActivity.kt`, SecondActivity's have `SecondActivity.kt`, the AppCompat screen lists its drawable and colour,
    `start_deps` has the Application's file, a walk without the flag has no `deps`, and a seeded walk carries `deps`.
    Both walk times are printed.
+11. One instance on the slot screen, whose Write button writes a Settings value and an /sdcard file the screen shows:
+   every screen's path replays (the screen before Write too, which needs the app's data as it was at launch: the
+   instance is launched again on an emptied slot, `relaunches`), and with `--keep-app-state` the screen before Write no
+   longer replays (what a walk did before: later captures and replays saw what earlier taps had written).
 
 --quick (CI, where the image is slow) walks to depth 2. --docker IMAGE runs crawl.py in the Linux image
 (`--entrypoint crawl.py`, OUT mounted at /work) as scripts/ci-smoke.sh does. Exit status 1 on any failed expectation.
@@ -339,9 +343,24 @@ def main():
           str([s["id"] for s in carried if s.get("deps") != seed_deps.get(s["id"])][:3]))
     print(f"     walk with --record-deps {secs_deps:.0f} s, without {secs_plain:.0f} s ({len(dscreens)} screens)")
 
+    # 11: replays from the data the app started with
+    slot_walk = ["--start", "apksim://slot", "--max-depth", "1", "-j", "1", "--matrix", "appearance=light"]
+    doc16, secs_h, _ = crawl(args.apk, os.path.join(args.out, "state"), *slot_walk)
+    written = [s for s in doc16["screens"] if s["path"]["steps"] == ["tap-text Write"]]
+    bad = [f for f in doc16["findings"] if f["kind"] in ("replay", "capture", "flaky")]
+    check(bool(written) and not bad and doc16.get("relaunches", 0) >= 1
+          and all(s.get("captures") for s in doc16["screens"]),
+          "a tap that writes the app's data leaves later replays and captures alone (the instance is launched again)",
+          f"relaunches {doc16.get('relaunches')}, findings {[f['detail'][:80] for f in bad]}")
+    doc17, _, _ = crawl(args.apk, os.path.join(args.out, "state-kept"), *slot_walk, "--keep-app-state")
+    check(any(f["kind"] in ("replay", "capture", "flaky") for f in doc17["findings"]) and doc17.get("relaunches") == 0,
+          "with --keep-app-state the screen before Write does not replay (the check sees the leak)",
+          str([f["detail"][:80] for f in doc17["findings"]]))
+
     print(f"timings: walk+captures {secs_a:.0f} s ({len(screens)} screens, {len(doc['edges'])} transitions), repeat walk {secs_b:.0f} s, "
           f"compare {secs_c:.0f} s, prepared {secs_d:.0f} s, sweep {secs_e:.0f} s ({secs_f:.0f} s with an allow-list), "
-          f"seeded walk of one screen {secs_g:.0f} s, walk with --record-deps {secs_deps:.0f} s (without {secs_plain:.0f} s)")
+          f"seeded walk of one screen {secs_g:.0f} s, walk with --record-deps {secs_deps:.0f} s (without {secs_plain:.0f} s), "
+          f"slot walk with a relaunch {secs_h:.0f} s")
     if failures:
         print(f"crawl-check: {len(failures)} check(s) failed", file=sys.stderr)
         sys.exit(1)

@@ -22,6 +22,7 @@ differences), 2 for bad arguments or an instance that never started.
 new screen they lead to); the rest is carried over with its captures (docs/crawl.md "Seeded walks"). --events adds a
 line of JSON per finished screen and level on stdout.
 """
+import xml.etree.ElementTree as ET
 import argparse, base64, concurrent.futures, hashlib, html, itertools, json, os, re, shlex, shutil, subprocess, sys
 import tempfile, threading, time
 
@@ -150,6 +151,28 @@ class ReplayFailed(Exception):
     pass
 
 
+# Files in a data slot that no screen shows, left out of Instance.data_state (paths relative to the slot).
+BOOKKEEPING = re.compile(r"(^|/)(cache|code_cache)/|^files/profileInstalled$|^no_backup/androidx\.work\.workdb|-shm$|"
+                         r"(^|/)\.lock$")
+
+
+def shared_prefs(path):
+    """A SharedPreferences file's values, {name: (type, value)}, or None when it is not one (or cannot be read)."""
+    try:
+        root = ET.parse(path).getroot()
+    except (ET.ParseError, OSError):
+        return None
+    if root.tag != "map":
+        return None
+    out = {}
+    for e in root:
+        v = e.get("value")
+        if v is None:
+            v = tuple(sorted(c.text or "" for c in e)) if e.tag == "set" else (e.text or "")
+        out[e.get("name")] = (e.tag, v)
+    return out
+
+
 class Gone(Exception):
     """The instance ended: [crash] says how."""
 
@@ -168,9 +191,12 @@ class Instance(snapshot.Worker):
         self.generation = 0
         self.applied = {a: None for a in AXES}  # unknown: a launch option may have set any of them
         self.crashes = ctx["crashes"]
+        self.slot = None      # the data slot's folders (the slot and its .device), read from the launch's log
+        self.baseline = None  # what they held once this launch's app had started (see reach)
 
     def launch(self):
         self.generation += 1
+        self.slot = self.baseline = None
         self.log = os.path.join(self.ctx["out"], "logs", f"{self.ctx['name']}-instance-{self.i}.{self.generation}.log")
         self.proc = self.file = self.sock = None
         self.applied = {a: None for a in AXES}  # unknown: a launch option may have set any of them
@@ -251,13 +277,93 @@ class Instance(snapshot.Worker):
                 self.expect_ok(f"{axis} {fmt(combo[axis])}")
                 self.applied[axis] = combo[axis]
 
+    # --- the app's data between replays
+    def slot_dirs(self):
+        """The data slot this launch took and its device folder (/sdcard, Settings), from the log's `data slot` line."""
+        if self.slot is None:
+            try:
+                with open(self.log, errors="replace") as f:
+                    m = re.search(r"^\[apksim\] data slot (.+) pid \d+$", f.read(), re.M)
+            except OSError:
+                m = None
+            if not m:
+                return []
+            self.slot = [m[1], m[1] + ".device"]
+        return self.slot
+
+    def data_state(self):
+        """What the slot holds, {file: state}: a SharedPreferences file as its values ({key: value}), any other as
+        (size, mtime), so a write anywhere changes it. Left out: what no screen reads (BOOKKEEPING): an app's caches,
+        AndroidX's profile installer (which writes once some seconds after every start, so each new launch would want
+        another), WorkManager's own database, SQLite's shared memory index (-shm, which readers write too), the slot's
+        lock."""
+        out = {}
+        for root in self.slot_dirs():
+            for d, dirs, files in os.walk(root):
+                dirs.sort()
+                for n in sorted(files):
+                    p = os.path.join(d, n)
+                    rel = os.path.relpath(p, root)
+                    if BOOKKEEPING.search(rel):
+                        continue
+                    prefs = shared_prefs(p) if rel.startswith("shared_prefs/") and n.endswith(".xml") else None
+                    if prefs is not None:
+                        out[rel] = prefs
+                        continue
+                    try:
+                        st = os.stat(p)
+                    except OSError:
+                        continue
+                    out[rel] = (st.st_size, st.st_mtime_ns)
+        return out
+
+    def changed_files(self):
+        """What was written since the baseline (see reach): files added, removed or written, and for preferences the
+        keys whose value changed (`file#key`). A preference key that appears is a change only when its value is not the
+        one that key first appeared with in this walk: opening a settings screen writes its defaults (a fresh slot has
+        none), which every replay through it repeats, while a toggle writes another value."""
+        if self.baseline is None:
+            return []
+        before, now = self.baseline, self.data_state()
+        out = []
+        for f in sorted(before.keys() | now.keys()):
+            a, b = before.get(f), now.get(f)
+            if a == b:
+                continue
+            if isinstance(b, dict) and (a is None or isinstance(a, dict)):
+                for k in sorted((a or {}).keys() | b.keys()):
+                    if (a or {}).get(k) == b.get(k):
+                        continue
+                    if k not in (a or {}):
+                        with self.ctx["lock"]:
+                            first = self.ctx["first_values"].setdefault((f, k), b[k])
+                        if first == b[k]:
+                            continue
+                    out.append(f"{f}#{k}")
+                continue
+            out.append(f)
+        return out
+
     def reach(self, path, extra=()):
-        """Back to a screen: the default configuration, a fresh start (at the path's deep link), the path's steps."""
+        """Back to a screen: the default configuration, a fresh start (at the path's deep link), the path's steps.
+        From the data the app had at its start: a launch whose app has written to its data since is replaced by a
+        new one on an emptied slot (--fresh) first. Not with --keep-data, whose slot cannot be put back."""
         self.ensure()
+        changed = self.changed_files() if self.ctx.get("fresh") and not self.ctx.get("keep_state") else []
+        if changed:
+            self.quit()
+            self.launch()
+            with self.ctx["lock"]:
+                self.ctx["relaunches"][0] += 1
+                for f in changed:
+                    self.ctx["relaunch_files"][f] = self.ctx["relaunch_files"].get(f, 0) + 1
         self.configure(DEFAULT_COMBO)
         self.say(f"clock {CLOCK}")
         self.expect_ok("restart" + (f" {path['start']}" if path.get("start") else ""))
         self.settle()
+        if self.baseline is None and self.ctx.get("fresh") and not self.ctx.get("keep_state"):
+            # Once the app's start has written what it writes at every start (taken after a restart and a settle).
+            self.baseline = self.data_state()
         for step in list(path["steps"]) + list(extra):
             self.expect_ok(step)
             self.settle()
@@ -451,7 +557,8 @@ class Explorer:
             fail(f"the temporary folder {self.stage!r} has whitespace in its path: set TMPDIR")
         self.ctx = {"spec": {"timezone": "UTC", "clock": CLOCK}, "apk": apk, "apksim": self.options, "out": out,
                     "stage": self.stage, "snapshot": True, "fresh": not args.keep_data, "screens": [],
-                    "record": lambda r: None, "crashes": self.findings, "stable_ms": args.stable_ms, "name": name}
+                    "record": lambda r: None, "crashes": self.findings, "stable_ms": args.stable_ms, "name": name,
+                    "keep_state": args.keep_app_state, "relaunches": [0], "relaunch_files": {}, "first_values": {}, "lock": threading.Lock()}
         self.instances = []
         self.deps_map = None     # --record-deps: DepsMap, once the probed packages are known
         self.start_deps = None   # --record-deps: the app-start span, read from the first instance
@@ -943,6 +1050,10 @@ class Explorer:
         d = {"build": self.name, "apk": os.path.basename(self.apk), "screens": [self.screens[i] for i in self.order],
              "edges": self.edges, "findings": self.findings, "incomplete": self.incomplete,
              "seconds": {"explore": round(self.t_explore, 1), "capture": round(self.t_capture, 1)}}
+        # Launches that replaced an instance whose app had written to its data (Instance.reach).
+        d["relaunches"] = self.ctx["relaunches"][0]
+        if self.ctx["relaunch_files"]:
+            d["relaunch_files"] = dict(sorted(self.ctx["relaunch_files"].items(), key=lambda kv: -kv[1]))
         if self.start_deps is not None:
             d["start_deps"] = self.start_deps
             d["deps_packages"] = self.deps_map.packages
@@ -1634,6 +1745,9 @@ def parse(argv):
     p.add_argument("--setting", action="append", default=[])
     p.add_argument("--sdcard-file", action="append", default=[])
     p.add_argument("--keep-data", action="store_true", help="use the data slot as it is (one instance, no --fresh)")
+    p.add_argument("--keep-app-state", action="store_true",
+                   help="replay on an instance whose app has written to its data since its launch (faster; walks can "
+                        "then differ: by default such an instance is launched again on an emptied slot first)")
     p.add_argument("-j", "--jobs", type=int, default=3)
     p.add_argument("--diff-delta", type=int, default=8)
     p.add_argument("--diff-pixels", type=float, default=0, help="share (or count, from 1) of differing pixels allowed")
