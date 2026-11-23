@@ -23,6 +23,11 @@ if [[ -n "$ALL_JAR" && "${APKSIM_SKIP_FLATTEN:-0}" != 1 ]]; then
   "$JDK/bin/java" -XX:+UseSerialGC -Xmx2g -XX:TieredStopAtLevel=1 \
     -cp "$ROOT/work/apksim.jar:$CP" dev.apksim.FrameworkFlattener \
     "$ALL_JAR" "$ROOT/work/runtime/android-all-flat.jar" "$ROOT/work/apksim.jar" "$ROOT/work/lib"
+  # MimeMap reads these as class resources from the flat jar (issue 599): dropping them breaks MimeTypeMap.
+  for f in android debian vendor; do
+    unzip -Z1 "$ROOT/work/runtime/android-all-flat.jar" "res/$f.mime.types" >/dev/null \
+      || { echo "build.sh: res/$f.mime.types missing from android-all-flat.jar" >&2; exit 1; }
+  done
 fi
 # The launcher runs the JDK it was built with (it reads this with a builtin: no fork per launch).
 # A JDK inside this folder (setup's work/jdk-24) is recorded relative to it, so moving the folder keeps it.
