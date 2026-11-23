@@ -20,6 +20,9 @@ import org.junit.runners.model.TestTimedOutException;
  * it holds the main thread, and the run would hang for good. So if it is still running {@link #GRACE_MS} after its
  * timeout, the watchdog prints where it is and ends the process with status 1: the run then has no result for that
  * test, which `instrument.py` reports failed, running the tests left in a new process (--isolate: its own anyway).
+ *
+ * <p>The failure carries a suppressed exception with the state when time ran out ({@code dev.apksim.TimeoutDiagnostics}:
+ * the main looper thread's stack, each window root's focus and layout-requested flags, idling resources not idle).
  */
 public class FailOnTimeout extends Statement {
   /** How long past its timeout a test that ignores interrupts may run before the process ends. */
@@ -88,6 +91,8 @@ public class FailOnTimeout extends Statement {
     if (stuck != null) {
       TestTimedOutException e = new TestTimedOutException(timeout, unit);
       e.setStackTrace(stuck);
+      Throwable state = dog.state;
+      if (state != null) e.addSuppressed(state);  // the main thread's stack, window focus, busy idling resources (issue 604)
       throw e;
     }
     if (failure != null) throw failure;
@@ -98,6 +103,7 @@ public class FailOnTimeout extends Statement {
     private final long nanos;
     private boolean done;
     private StackTraceElement[] stuck;
+    volatile Throwable state;
 
     Watchdog(Thread target, long nanos) {
       super("Time-limited test watchdog");
@@ -118,6 +124,11 @@ public class FailOnTimeout extends Statement {
           }
           if (done) return;
           stuck = target.getStackTrace();
+          try {
+            state = dev.apksim.TimeoutDiagnostics.capture(target);
+          } catch (Throwable t) {
+            // diagnostics must never change the failure
+          }
           long giveUp = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(GRACE_MS);
           while (!done) {
             if (System.nanoTime() - giveUp >= 0) halt();
@@ -136,6 +147,8 @@ public class FailOnTimeout extends Statement {
           .append(" s after its timeout of ").append(TimeUnit.NANOSECONDS.toMillis(nanos))
           .append(" ms, ignoring interrupts; ending the process (on a device its thread would be abandoned). It is at:\n");
       for (StackTraceElement e : target.getStackTrace()) b.append("\tat ").append(e).append('\n');
+      Throwable st = state;
+      if (st != null) b.append(st.getMessage()).append('\n');
       dev.apksim.Bundles.watchdog(b.toString());  // with --bundles: the failure, threads and log, before the process ends
       System.err.print(b);
       System.err.flush();
