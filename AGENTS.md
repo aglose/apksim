@@ -2271,7 +2271,9 @@ change, measured locally). `work/release` makes the launcher keep its state (`ST
 `STATE`. Standbys are keyed by install folder plus `STATE`. A release has no AOT cache (it is tied to its folder and
 JDK): the first launch without one, and the beam agent when it starts (`start_training` in the launcher; never a beamed launch, whose sandbox refuses the record stage's writes: issue 559), starts `train.sh --headless` detached (`STATE/train.pid`, log `STATE/train.log`)
 and goes on without it; a headless-trained cache is as fast as a windowed one (1.73 against 1.72 s). The launcher
-follows a symlink to itself (Homebrew's and install.sh's `bin/apksim`).
+follows a symlink to itself (Homebrew's and install.sh's `bin/apksim`). The tarball's `scripts/` must hold every sibling a shipped script imports or opens by
+name (`package-release.sh` fails otherwise: 0.60.0 lacked `subsystem-audit.py`, which `crawl.py --keep-data` loads), and
+release.yml's installed-release check runs a short `crawl.py --keep-data` from the unpacked, read-only tree.
 `.github/workflows/release.yml`: a `v*` tag builds and checks the tarball on an Apple Silicon runner and makes a
 *draft* release; publishing it pushes `packaging/homebrew/apksim.rb` (filled in) to the `aglose/homebrew-apksim` tap
 as `Casks/apksim.rb` (it pushes with the `TAP_DEPLOY_KEY` secret: a deploy key with write access to the tap only); users run `brew tap aglose/apksim`, `brew trust aglose/apksim` (Homebrew 7 refuses casks from untrusted taps:

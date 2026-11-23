@@ -32,9 +32,22 @@ mkdir -p "$D/scripts" "$D/work/lib"
 
 cp "$ROOT/apksim" "$ROOT/LICENSE" "$ROOT/NOTICE" "$ROOT/THIRD-PARTY-NOTICES.md" "$ROOT/README.md" "$D/"
 # train.sh builds the startup cache; ctl.py and drive.py drive running instances; instrument.py (with affected.py) runs
-# test suites; snapshot.py screenshot tests.
+# test suites; snapshot.py screenshot tests; crawl.py reads an APK's package with subsystem-audit.py's manifest reader.
 cp "$ROOT/scripts/train.sh" "$ROOT/scripts/ctl.py" "$ROOT/scripts/drive.py" "$ROOT/scripts/instrument.py" \
-  "$ROOT/scripts/affected.py" "$ROOT/scripts/coverage.py" "$ROOT/scripts/snapshot.py" "$ROOT/scripts/crawl.py" "$ROOT/scripts/device-profile.py" "$ROOT/scripts/replay-adb.py" "$ROOT/scripts/mcp.py" "$D/scripts/"
+  "$ROOT/scripts/affected.py" "$ROOT/scripts/coverage.py" "$ROOT/scripts/snapshot.py" "$ROOT/scripts/crawl.py" "$ROOT/scripts/device-profile.py" "$ROOT/scripts/replay-adb.py" "$ROOT/scripts/mcp.py" \
+  "$ROOT/scripts/subsystem-audit.py" "$D/scripts/"
+# Every script a shipped one loads (`import NAME` of a sibling, or a quoted "NAME.py" / "NAME.sh" it opens by path)
+# must ship too: 0.60.0 left out subsystem-audit.py, and every crawl.py --keep-data walk failed in an installed copy.
+for f in "$D"/scripts/*.py; do
+  # A heuristic: names built at run time (importlib with a variable, a path joined with a separator) are not seen.
+  for n in $( (grep -E "^[[:space:]]*(import|from)[[:space:]]+[A-Za-z0-9_]" "$f" | sed -E 's/^[[:space:]]*(import|from)[[:space:]]+//; s/[[:space:]]+(import|as)[[:space:]].*//' \
+                 | tr ',' '\n' | awk '{print $1 ".py"}'
+               grep -oE "[\"'][A-Za-z0-9_-]+\.(py|sh)[\"']" "$f" | tr -d "\"'") | sort -u); do
+    if [[ -e "$ROOT/scripts/$n" && ! -e "$D/scripts/$n" ]]; then
+      fail "scripts/$(basename "$f") loads $n, which the release does not ship"
+    fi
+  done
+done
 cp "$ROOT/work/apksim.jar" "$D/work/"
 # Robolectric's native runtime is unpacked into work/runtime (prepare-runtime.sh) and never read from its jar.
 for j in "$ROOT"/work/lib/*.jar; do
