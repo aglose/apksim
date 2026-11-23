@@ -1273,7 +1273,12 @@ device does (joda-time-android sets Joda's default from it; plain Joda keeps its
 that reaches the wrong window fails it (`keyTarget` in `Host`: keys go to the topmost shown, sized, focusable window).
 `apksim://popup-trace` opens `PopupTraceActivity`: "Trace twice" begins one Trace async section twice, and dragging
 its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outside it must not reach (`ci-smoke.sh`
-drives it; `PopupTouchTest` in a test run). The tap also gives the popup ACTION_OUTSIDE, so its `onDismissRequest` runs once ("outside: 1").
+drives it; `PopupTouchTest` in a test run). The tap also gives the popup ACTION_OUTSIDE, so its `onDismissRequest` runs once ("outside: 1"). "Open menu" shows a framework PopupMenu, whose rows
+must read as clickable nodes ("menu: beta" once chosen; `ci-smoke.sh`): a ListView marks its rows clickable for
+accessibility only through a delegate it sets while accessibility is on, never in a running instance, so `Nodes.listItem`
+fills each row's node as `AbsListView.onInitializeAccessibilityNodeInfoForItem` does (`nodes`, `nodes tree`, `tap-text`,
+`crawl.py`); before, an overflow menu's or a ListPopupWindow sheet's rows gave the crawler no actions. `uiautomator dump`
+and UiAutomation read the framework's own nodes and still show such rows unclickable.
 View animations (issue 475): in running instances `SimRunner.realViewAnimations` turns on Robolectric's `ShadowView.setUseRealViewAnimations`, so the framework steps an `Animation` at each frame's drawing time, as on a device. Robolectric's `AnimationRunner` stepped by the Choreographer's frame delay, which Host sets to 1 ms, so a 300 ms AndroidX Fragment transition kept `settle` busy for ~3-7 s after its screen was done (and `apksim mcp` waited ~2.6 s per fragment change). Test runs keep Robolectric's runner (`ShadowView.getAnimations()`); `-Dapksim.realViewAnimations=false` is the old behaviour. The test app's `apksim://view-animations` (`ViewAnimationsActivity`: "Replace" an animated fragment, "Fade" a 300 ms AlphaAnimation: "fade: ended after N ms") As on a device, an animation ends only when its view is drawn: one on a hidden, stopped or detached view waits (Robolectric's runner ended it after N frames regardless). It is checked in `ci-smoke.sh`: Replace settles in under 2 s (2.9 s before, 0.65 s after).
 `apksim://drawer` opens `DrawerActivity`: a `DrawerLayout` with three items that count clicks, settling through
 ViewDragHelper's Scroller (`DrawerSettleTest`, opt-in, see `--realtime-clock`).

@@ -360,6 +360,8 @@ every time (205-208 s each): the step 2 failure seen once on an "Add" transition
   the way, a purchase) is reached only through the start (`--start`, `--setting`, `--sdcard-file`, `--keep-data`).
 - Only taps, swipes and the fills of `--fill` are tried: no long press, drag, text entry into a search field, back
   button or keyboard navigation, and a control the accessibility tree does not list as clickable is not found.
+  A ListView's rows (a popup menu, a toolbar's overflow, a ListPopupWindow sheet) count as clickable when enabled,
+  as a device's accessibility reports them (`Nodes.listItem`).
 - A control that opens another app, a picker or a chooser leaves the screen unchanged (a picker is cancelled).
 - Crash detection is the instance ending with `FATAL EXCEPTION` in its log (exit 10); an exception the app handles
   is not one. The instance is started again and the walk goes on.

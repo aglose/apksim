@@ -116,6 +116,15 @@ tapped="$(popup)"
 drive 'open apksim://composeapp/trips?overlay=full' 'wait 2500' 'tap 550 1690' 'wait 1000' >/dev/null
 drive nodes | grep -q 'text="Notifications"' || { echo "a tap did not pass an untouchable overlay" >&2; exit 1; }
 echo "Popup and Trace: $shown-> $tapped"
+# A framework PopupMenu's rows (a ListView in a popup window, as an overflow menu or a ListPopupWindow sheet) read as
+# clickable nodes, as on a device: a ListView marks its rows so only while accessibility is on, never here, and the
+# crawler found nothing to tap in such menus (Nodes.listItem).
+drive 'open apksim://popup-trace' 'wait 2000' 'tap-text Open menu' 'wait 1000' >/dev/null
+rows="$(drive nodes | grep -oE '\] clickable ; \[[0-9,]+\] text="Menu (alpha|beta)"' | wc -l | tr -d ' ')"
+drive 'tap-text Menu beta' 'wait 1000' >/dev/null
+chosen="$(drive nodes | grep -oE 'text="menu: [a-z]+"')"
+echo "Popup menu: $rows clickable rows, $chosen"
+[[ "$rows" == 2 && "$chosen" == 'text="menu: beta"' ]] || { echo "a popup menu's rows are not clickable nodes" >&2; exit 1; }
 # A floating WRAP_CONTENT window whose list is taller than the display is the size its views measured, inside the
 # bars, as the API 36 emulator gives it (issue 506): it was the display's width and a status bar shorter.
 drive 'open apksim://floating-tall' 'wait 2000' >/dev/null

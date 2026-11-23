@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -28,6 +29,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.viewinterop.AndroidView
 
 /**
  * apksim://popup-trace: two things a large app did that stopped a running instance (issue 52).
@@ -39,6 +41,9 @@ import androidx.compose.ui.window.PopupProperties
  *   the windows behind it (InputDispatcher's touch-modal rule). Tapping it also closes the tooltip: in a test run an
  *   open Compose Popup never lets the main looper idle (its frame loop runs at once with Robolectric's Choreographer),
  *   so ActivityScenario.close() would wait for ever.
+ * - "Open menu" shows a framework PopupMenu (a ListView in a popup window, as a toolbar's overflow menu is). Its rows
+ *   must read as clickable nodes, as on a device, so `nodes` lists them and scripts/crawl.py offers them as actions;
+ *   choosing one shows "menu: NAME".
  */
 class PopupTraceActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: android.os.Bundle?) {
@@ -53,6 +58,9 @@ class PopupTraceActivity : ComponentActivity() {
     var value by remember { mutableFloatStateOf(0.2f) }
     var tooltip by remember { mutableStateOf(false) }
     var outside by remember { mutableIntStateOf(0) }
+    var chosen by remember { mutableStateOf("none") }
+    // The menu's anchor: a small view under the button (anchored to the whole Compose view it opened off the screen).
+    var anchor by remember { mutableStateOf<android.view.View?>(null) }
     Column(Modifier.fillMaxSize().padding(24.dp)) {
       Text("Popup and Trace", style = MaterialTheme.typography.titleLarge)
       Button(onClick = {
@@ -74,6 +82,16 @@ class PopupTraceActivity : ComponentActivity() {
       Button(onClick = { taps++; tooltip = false }, Modifier.padding(top = 48.dp).testTag("tapMe")) { Text("Tap me") }
       Text("taps: $taps")
       Text("outside: $outside")
+      Button(onClick = {
+        android.widget.PopupMenu(this@PopupTraceActivity, anchor ?: return@Button).apply {
+          menu.add("Menu alpha")
+          menu.add("Menu beta")
+          setOnMenuItemClickListener { chosen = it.title.toString().removePrefix("Menu "); true }
+          show()
+        }
+      }, Modifier.padding(top = 24.dp).testTag("openMenu")) { Text("Open menu") }
+      AndroidView({ android.view.View(it).also { v -> anchor = v } }, Modifier.size(48.dp, 1.dp))
+      Text("menu: $chosen")
     }
   }
 }
