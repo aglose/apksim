@@ -27,11 +27,16 @@ Usage: crawl-check.py [--apk APK] [--out DIR] [--quick] [--docker IMAGE] [-j N] 
    after a walk that tapped Write, the screen's capture is the picture a walk that tapped nothing takes (the instance
    was launched again on an emptied slot, `relaunches`, for those two files), and with `--keep-app-state` it is not
    (what a walk did before: later captures saw what earlier taps had written).
+12. `--keep-data -j 2` from a slot prepared by a launch that tapped Write: the slot screen shows the prepared values,
+   the second instance is used, the prepared slot's files are unchanged and no copy is left (not with --docker).
+13. A walk stopped with SIGTERM while it explores depth 1 exits 143 within 4 s with crawl.json written (`stopped`,
+   `cut_by`, `unexplored` ids); `--seed` on it with `--only-file` of those ids ends with walk 1's screens and
+   transitions, every screen captured.
 
 --quick (CI, where the image is slow) walks to depth 2. --docker IMAGE runs crawl.py in the Linux image
 (`--entrypoint crawl.py`, OUT mounted at /work) as scripts/ci-smoke.sh does. Exit status 1 on any failed expectation.
 """
-import argparse, hashlib, json, os, subprocess, sys, time
+import argparse, hashlib, json, os, re, shutil, signal, subprocess, sys, time
 import xml.etree.ElementTree as ET
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -39,6 +44,19 @@ CRAWL = os.path.join(ROOT, "scripts", "crawl.py")
 DEFAULT_APK = os.path.join(ROOT, "testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk")
 failures = []
 
+
+
+def descendants(pid):
+    """Every process below pid (pgrep -P, level by level)."""
+    out, level = [], [pid]
+    while level:
+        nxt = []
+        for p in level:
+            r = subprocess.run(["pgrep", "-P", str(p)], capture_output=True, text=True)
+            nxt += [int(x) for x in r.stdout.split()]
+        out += nxt
+        level = nxt
+    return out
 
 def check(ok, what, detail=""):
     print(("ok   " if ok else "FAIL ") + what + (f": {detail}" if detail and not ok else ""), flush=True)
@@ -376,10 +394,113 @@ def main():
           "with --keep-app-state the slot screen is captured as Write left it (the check sees the leak)",
           f"differs: {kept != ref}, relaunches {doc17.get('relaunches')}")
 
+    # 13: a walk stopped (SIGTERM, as Greenroom's Stop) once it is exploring depth 1 writes what it has; continued
+    # with --seed and its unexplored ids, it ends with walk 1's graph.
+    stop_dir, cont_dir = os.path.join(args.out, "stopped"), os.path.join(args.out, "continued")
+    try:
+        os.remove(os.path.join(stop_dir, "crawl.json"))
+    except OSError:
+        pass
+    if DOCKER:
+        image, platform, work = DOCKER
+        cmd = ["docker", "run", "--rm", "--platform", platform, "-v", f"{work}:/work", "--entrypoint", "crawl.py", image,
+               "/work/app.apk", "--out", "/work/" + os.path.relpath(stop_dir, work)]
+    else:
+        cmd = [sys.executable, CRAWL, args.apk, "--out", stop_dir]
+    proc = subprocess.Popen(cmd + [*starts, *matrix, *opts], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    t_stop, kids = None, []
+    for line in proc.stdout:
+        if line.startswith("[new] depth 1:"):
+            time.sleep(3)
+            kids = [] if DOCKER else descendants(proc.pid)  # the instances: none may outlive the stop
+            t_stop = time.time()
+            proc.send_signal(signal.SIGTERM)
+            break
+    rest = proc.stdout.read()
+    code = proc.wait()
+    took = time.time() - t_stop if t_stop else None
+    try:
+        with open(os.path.join(stop_dir, "crawl.json")) as f:
+            sdoc = json.load(f)
+    except (OSError, ValueError):
+        sdoc = {}
+    ids = {x["id"] for x in sdoc.get("screens", [])}
+    time.sleep(1)
+    alive = [k for k in kids if subprocess.run(["kill", "-0", str(k)], capture_output=True).returncode == 0]
+    check(DOCKER or t_stop is None or (kids and not alive), "no process the walk started outlives its stop",
+          f"{len(kids)} started, still running: {alive}")
+    check(t_stop is not None and code == 143 and sdoc.get("stopped") is True and "stopped" in sdoc.get("cut_by", [])
+          and sdoc.get("unexplored") and set(sdoc["unexplored"]) <= ids
+          and any("stopped (SIGTERM)" in x for x in sdoc.get("incomplete", [])) and took is not None and took < 4,
+          "a stopped walk writes crawl.json with its screens, `unexplored` ids and `stopped`, within 4 s",
+          f"exit {code}, stopped {sdoc.get('stopped')}, cut_by {sdoc.get('cut_by')}, unexplored "
+          f"{len(sdoc.get('unexplored') or [])} of {len(ids)}, {took and round(took, 1)} s; {rest[-300:]}")
+    if sdoc.get("unexplored"):
+        only_file = os.path.join(args.out, "stopped-unexplored.txt")  # stop_dir is the container's (root) with --docker
+        with open(only_file, "w") as f:
+            f.write("\n".join(sdoc["unexplored"]) + "\n")
+        doc20, _, _ = crawl(args.apk, cont_dir, *matrix, *opts, "--seed", wpath(stop_dir), "--only-file", wpath(only_file))
+        sa, sc = shape(doc), shape(doc20)
+        check(set(sa[0]) == set(sc[0]) and set(sa[1]) == set(sc[1])
+              and set(doc20.get("unexplored", ["?"])) == set(doc.get("unexplored", [])),
+              "the stopped walk continued (--seed, --only-file its unexplored ids) ends with walk 1's screens and transitions",
+              f"screens only in walk 1 {sorted(set(sa[0]) - set(sc[0]))[:3]}, only in the continuation "
+              f"{sorted(set(sc[0]) - set(sa[0]))[:3]}, edges differing {len(set(sa[1]) ^ set(sc[1]))}, "
+              f"still unexplored {doc20.get('unexplored', [])[:4]}")
+        caps = [(x["id"], c) for x in doc20["screens"] for c in doc20["combos"]
+                if not os.path.isfile(os.path.join(cont_dir, x["captures"].get(c, "missing")))]
+        check(not caps, "every screen of the continued walk has its captures (the stopped walk took none)", str(caps[:3]))
+
+    # 12: --keep-data with two instances: each runs on its own copy of a prepared slot (Write tapped in it beforehand),
+    # so the slot screen shows the prepared values; the prepared slot is not written and no copy is left. Mac only (a
+    # prepared slot in the image would need a launch in the walk's own container).
+    secs_k = 0
+    if not DOCKER:
+        state = os.environ.get("APKSIM_HOME") or (os.path.expanduser("~/.apksim") if os.path.exists(
+            os.path.join(ROOT, "work", "release")) else os.path.join(ROOT, "work"))
+        data = os.path.join(state, "cache", "data", "dev.apksim.composeapp")
+        prepared = os.path.join(data, "ckprep-0")
+        prep = subprocess.Popen([os.path.join(ROOT, "apksim"), "--headless", "--fresh", "--control", "7487",
+                                 "--data-slots", "ckprep", args.apk], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        drive = [sys.executable, os.path.join(ROOT, "scripts", "drive.py"), "7487"]
+        for _ in range(90):
+            if "pong" in subprocess.run(drive + ["ping"], capture_output=True, text=True).stdout:
+                break
+            time.sleep(1)
+        subprocess.run(drive + ["wait 1500", "open apksim://slot", "wait 2000", "tap-text Write", "wait 1500", "quit"],
+                       capture_output=True)
+        prep.wait(timeout=60)
+
+        def tree_sum():
+            h = hashlib.sha256()
+            for root in (prepared, prepared + ".device"):
+                for d, dirs, files in sorted(os.walk(root)):
+                    dirs.sort()
+                    for n in sorted(files):
+                        if n != ".lock":
+                            with open(os.path.join(d, n), "rb") as f:
+                                h.update(os.path.relpath(os.path.join(d, n), data).encode() + f.read())
+            return h.hexdigest()
+        before = tree_sum()
+        kd_dir = os.path.join(args.out, "keep-data")
+        doc19, secs_k, _ = crawl(args.apk, kd_dir, "--start", "apksim://slot", "-j", "2", "--matrix", "appearance=light",
+                                 "--max-depth", "1", "--keep-data", "--", "--data-slots", "ckprep")
+        seen = root_capture(doc19, kd_dir)
+        bad = [f for f in doc19["findings"] if f["kind"] in ("replay", "capture", "flaky")]
+        left = [n for n in os.listdir(data) if re.match(r"k[0-9a-f]{8}\d+-0(\.device)?$", n)]
+        logs = os.listdir(os.path.join(kd_dir, "logs"))
+        check(seen is not None and seen != ref and not bad and tree_sum() == before and not left
+              and any("instance-1." in n for n in logs),
+              "--keep-data -j 2: both instances start from copies of the prepared slot, which is left as it was",
+              f"prepared values shown: {seen != ref}, findings {[f['detail'][:80] for f in bad]}, prepared slot unchanged: "
+              f"{tree_sum() == before}, copies left {left}, second instance used: {any('instance-1.' in n for n in logs)}")
+        for d in (prepared, prepared + ".device"):
+            shutil.rmtree(d, ignore_errors=True)
+
     print(f"timings: walk+captures {secs_a:.0f} s ({len(screens)} screens, {len(doc['edges'])} transitions), repeat walk {secs_b:.0f} s, "
           f"compare {secs_c:.0f} s, prepared {secs_d:.0f} s, sweep {secs_e:.0f} s ({secs_f:.0f} s with an allow-list), "
           f"seeded walk of one screen {secs_g:.0f} s, walk with --record-deps {secs_deps:.0f} s (without {secs_plain:.0f} s), "
-          f"slot walk with a relaunch {secs_h:.0f} s")
+          f"slot walk with a relaunch {secs_h:.0f} s, kept-data walk on two instances {secs_k:.0f} s")
     if failures:
         print(f"crawl-check: {len(failures)} check(s) failed", file=sys.stderr)
         sys.exit(1)
