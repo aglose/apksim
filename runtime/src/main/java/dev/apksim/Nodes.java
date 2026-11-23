@@ -47,6 +47,7 @@ final class Nodes {
       AccessibilityNodeProvider p = host.getAccessibilityNodeProvider();
       AccessibilityNodeInfo i = p != null && virtualId != AccessibilityNodeProvider.HOST_VIEW_ID
           ? p.createAccessibilityNodeInfo(virtualId) : host.createAccessibilityNodeInfo();
+      if (i != null && virtualId == AccessibilityNodeProvider.HOST_VIEW_ID) listItem(host, i);
       return i == null ? null : new Node(host, virtualId, i);
     }
 
@@ -64,6 +65,23 @@ final class Nodes {
 
     boolean click() {
       return perform(AccessibilityNodeInfo.ACTION_CLICK, null);
+    }
+  }
+
+  /**
+   * A ListView or GridView row as a device describes it: clickable when enabled and holding no focusable of its own
+   * (AbsListView.onInitializeAccessibilityNodeInfoForItem). On a device the list puts that on each row through an
+   * accessibility delegate it sets only while accessibility is on, which it normally never is in a running instance, so a
+   * popup menu's rows (PopupMenu, a toolbar's overflow, a ListPopupWindow sheet) had no clickable flag, and the
+   * crawler found nothing to tap in them. Only nodes read here change: the app's views are left as they are.
+   */
+  static void listItem(View v, AccessibilityNodeInfo info) {
+    if (info.isClickable() || !(v.getParent() instanceof android.widget.AbsListView list)) return;
+    try {
+      int position = list.getPositionForView(v);
+      if (position != android.widget.AdapterView.INVALID_POSITION) list.onInitializeAccessibilityNodeInfoForItem(v, position, info);
+    } catch (RuntimeException e) {
+      // an adapter that cannot answer for this row: left as the view reported it
     }
   }
 
@@ -90,6 +108,7 @@ final class Nodes {
       return;
     }
     AccessibilityNodeInfo info = v.createAccessibilityNodeInfo();
+    listItem(v, info);
     // A View reports its id only to a service that asked for ids (FLAG_REPORT_VIEW_IDS): given here, as UiAutomator
     // would get it, so `nodes` and journeys can find an unlabelled button by its id.
     if (info.getViewIdResourceName() == null && v.getId() != View.NO_ID && v.getId() > 0) {
