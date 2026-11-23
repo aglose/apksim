@@ -323,6 +323,9 @@ class Instance(snapshot.Worker):
                     except OSError:
                         continue
                     out[rel] = (st.st_size, st.st_mtime_ns)
+        # Kept by the instance, not the slot, and outliving `restart` too: a permission request no one answered (the
+        # walk never answers one) and runtime grants made since the launch.
+        out["<permission>"] = self.say("permission")
         return out
 
     def changed_files(self):

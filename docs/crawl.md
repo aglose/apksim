@@ -96,7 +96,9 @@ So each replay starts from the data the app had at its launch:
   the slot and of its device folder with its size and modification time, and each SharedPreferences file by its
   values (`Instance.data_state`). Left out, as no screen reads them: the app's caches, AndroidX's profile installer
   (it writes once some seconds after every start, so each new launch would call for another), WorkManager's own
-  database, SQLite's `-shm` index (readers write it too) and the slot's lock.
+  database, SQLite's `-shm` index (readers write it too) and the slot's lock. Also what the instance itself keeps
+  across a `restart`: a permission request nobody answered (the walk never answers one) and runtime grants
+  (`permission`), so a replay after a tap on "Camera" is not a replay with a request still waiting.
 - Before each replay (explore, capture, sweep), it compares: when the app has written anything since, the instance is
   quit and launched again on an emptied slot (`--fresh`, as at the walk's start) before the replay goes on.
   Preferences count key by key: a value that changed or went is a write, and so is a key that appears, unless it
