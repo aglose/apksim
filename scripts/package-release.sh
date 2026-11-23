@@ -39,7 +39,9 @@ cp "$ROOT/scripts/train.sh" "$ROOT/scripts/ctl.py" "$ROOT/scripts/drive.py" "$RO
 # Every script a shipped one loads (`import NAME` of a sibling, or a quoted "NAME.py" / "NAME.sh" it opens by path)
 # must ship too: 0.60.0 left out subsystem-audit.py, and every crawl.py --keep-data walk failed in an installed copy.
 for f in "$D"/scripts/*.py; do
-  for n in $( (grep -oE "^[[:space:]]*(import|from)[[:space:]]+[A-Za-z0-9_]+" "$f" | awk '{print $2 ".py"}'
+  # A heuristic: names built at run time (importlib with a variable, a path joined with a separator) are not seen.
+  for n in $( (grep -E "^[[:space:]]*(import|from)[[:space:]]+[A-Za-z0-9_]" "$f" | sed -E 's/^[[:space:]]*(import|from)[[:space:]]+//; s/[[:space:]]+(import|as)[[:space:]].*//' \
+                 | tr ',' '\n' | awk '{print $1 ".py"}'
                grep -oE "[\"'][A-Za-z0-9_-]+\.(py|sh)[\"']" "$f" | tr -d "\"'") | sort -u); do
     if [[ -e "$ROOT/scripts/$n" && ! -e "$D/scripts/$n" ]]; then
       fail "scripts/$(basename "$f") loads $n, which the release does not ship"

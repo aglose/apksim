@@ -33,11 +33,7 @@ on:
       - packaging/**
       - docker/**
       - scripts/docker-build.sh
-      - scripts/instrument.py
-      - scripts/snapshot.py
-      - scripts/crawl.py
-      - scripts/journey.py
-      - scripts/affected.py
+      - scripts/*.py
       - .github/actions/linux-build/**
   workflow_dispatch:
 
