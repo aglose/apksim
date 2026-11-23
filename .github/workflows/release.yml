@@ -84,6 +84,12 @@ jobs:
           APKSIM_DOWNLOAD_URL="file://$PWD/dist" "$RUNNER_TEMP/bin/apksim" --train --headless
           "$RUNNER_TEMP/bin/apksim" --headless --no-network --exit-after-first-frame "$APKSIM_HOME/testapp-$VERSION.apk" 2>&1 | tee launch.log
           grep -q first-frame launch.log
+          # The shipped scripts run from the installed tree, not the repository: a crawl from the slot that launch
+          # prepared (--keep-data reads the APK's package with subsystem-audit.py, which 0.60.0 did not ship).
+          set -o pipefail
+          python3 "$D/scripts/crawl.py" "$APKSIM_HOME/testapp-$VERSION.apk" --out "$RUNNER_TEMP/crawl" --keep-data \
+            --max-screens 2 --max-seconds 180 -- --no-network 2>&1 | tee crawl.log
+          python3 -c 'import json, sys; c = json.load(open(sys.argv[1])); assert c["screens"], c' "$RUNNER_TEMP/crawl/crawl.json"
       - name: Checksums
         run: |
           cd dist
@@ -98,6 +104,7 @@ jobs:
           path: |
             dist/SHA256SUMS
             launch.log
+            crawl.log
             ${{ runner.temp }}/state/train-*.log
       # The files the draft release gets, made by `draft` once the images are pushed.
       - uses: actions/upload-artifact@v4
