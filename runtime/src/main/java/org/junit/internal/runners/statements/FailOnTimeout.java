@@ -22,7 +22,7 @@ import org.junit.runners.model.TestTimedOutException;
  * test, which `instrument.py` reports failed, running the tests left in a new process (--isolate: its own anyway).
  *
  * <p>The failure carries a suppressed exception with the state when time ran out ({@code dev.apksim.TimeoutDiagnostics}:
- * the main looper thread's stack, each window root's focus and layout-requested flags, idling resources not idle).
+ * the main looper thread's stack, each window root's focus and layout-requested flags, registered idling resources).
  */
 public class FailOnTimeout extends Statement {
   /** How long past its timeout a test that ignores interrupts may run before the process ends. */
@@ -125,7 +125,7 @@ public class FailOnTimeout extends Statement {
           if (done) return;
           stuck = target.getStackTrace();
           try {
-            state = dev.apksim.TimeoutDiagnostics.capture(target);
+            state = dev.apksim.TimeoutDiagnostics.captureBounded(target, 1500);
           } catch (Throwable t) {
             // diagnostics must never change the failure
           }

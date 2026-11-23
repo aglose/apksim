@@ -2040,6 +2040,10 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
   stays on the main thread and a watchdog interrupts it when the time is up (`TimeoutRuleTest`). A test still running
   10 s later, ignoring interrupts, ends the process with its stack (a device abandons its thread and goes on; here it
   holds the main thread): `instrument.py` reports that test failed and runs the rest in a new process.
+  The timeout failure carries a suppressed report (`TimeoutDiagnostics`, issue 604, read on a daemon thread waited for
+  at most 1.5 s so a lock cannot stall the watchdog; the halt message has it too): the main looper thread's stack when it
+  is not the timed-out one, each window root's has-window-focus and is-layout-requested, and the names of Espresso's
+  registered idling resources, not asked if idle (their code must not run off the test thread).
 - `UiAutomation.executeShellCommand` (UiDevice's too) runs apksim's adb shell (`AdbShell`) in the process, to the end,
   and returns what it printed: `getprop`, `settings put global animator_duration_scale 0` (as `animscale`: Views and
   Compose both follow it), `touch`/`ls`/`rm` in /sdcard, `logcat -c`/`-d` (the log is kept from the first `logcat` a

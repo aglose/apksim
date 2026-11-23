@@ -11,12 +11,26 @@ import java.util.List;
  * timed-out thread, often the test thread blocked in Espresso's result queue, does not say whether the window never
  * became ready for Espresso (RootViewPicker gives up after 10 s per attempt), an idling resource stayed busy or the
  * main looper was busy. This reads, without running anything on the main thread: the main looper thread's stack when
- * it is not the timed-out thread, each window root's focus and layout-requested flags, and the names of the idling
- * resources that are not idle. Every part is best effort (reflection, plain field reads from the watchdog's thread) and
+ * it is not the timed-out thread, each window root's focus and layout-requested flags, and the names of the registered idling
+ * resources (not asked: their code must not run here). Every part is best effort (reflection, plain field reads from the watchdog's thread) and
  * a part that fails is left out; it never throws.
  */
 public final class TimeoutDiagnostics {
   private TimeoutDiagnostics() {}
+
+  /** {@link #capture} on a daemon thread, waited for at most {@code maxMs}: a lock or a call that blocks must not stall the caller. */
+  public static Throwable captureBounded(Thread timedOut, long maxMs) {
+    Throwable[] out = new Throwable[1];
+    Thread t = new Thread(() -> out[0] = capture(timedOut), "apksim-timeout-diagnostics");
+    t.setDaemon(true);
+    t.start();
+    try {
+      t.join(maxMs);
+    } catch (InterruptedException e) {
+      // report what there is
+    }
+    return out[0];
+  }
 
   /** A throwable to add as suppressed to the timeout failure: its message and stack carry the report; null if nothing was read. */
   public static Throwable capture(Thread timedOut) {
@@ -36,8 +50,8 @@ public final class TimeoutDiagnostics {
       // not available: leave it out
     }
     for (String s : roots()) b.append("\n  ").append(s);
-    List<String> busy = busyIdlingResources();
-    if (busy != null) b.append("\n  idling resources not idle: ").append(busy.isEmpty() ? "none" : String.join(", ", busy));
+    List<String> names = registeredIdlingResources();
+    if (names != null) b.append("\n  idling resources registered (not asked if idle): ").append(names.isEmpty() ? "none" : String.join(", ", names));
     Throwable t = new Throwable(b.toString());
     t.setStackTrace(mainStack != null ? mainStack : new StackTraceElement[0]);
     return t;
@@ -74,22 +88,26 @@ public final class TimeoutDiagnostics {
     return out;
   }
 
-  /** Names of the idling resources that are not idle, or null when Espresso is not there. */
-  private static List<String> busyIdlingResources() {
+  /**
+   * Names of the idling resources registered with Espresso, or null when Espresso is not there. They are not asked
+   * whether they are idle: isIdleNow runs the resource's own code (Compose's moves the rule's clock), which must not
+   * happen off the test thread while it is stuck.
+   */
+  private static List<String> registeredIdlingResources() {
     try {
       Class<?> reg = Class.forName("androidx.test.espresso.IdlingRegistry");
+      Class<?> iface = Class.forName("androidx.test.espresso.IdlingResource");
       Object inst = reg.getMethod("getInstance").invoke(null);
       Iterable<?> resources = (Iterable<?>) reg.getMethod("getResources").invoke(inst);
-      List<String> busy = new ArrayList<>();
+      List<String> names = new ArrayList<>();
       for (Object r : resources) {
         try {
-          boolean idle = (Boolean) r.getClass().getMethod("isIdleNow").invoke(r);
-          if (!idle) busy.add((String) r.getClass().getMethod("getName").invoke(r));
+          names.add((String) iface.getMethod("getName").invoke(r));
         } catch (Throwable t) {
-          // a resource that cannot be asked
+          names.add("unreadable: " + r.getClass().getName());
         }
       }
-      return busy;
+      return names;
     } catch (Throwable t) {
       return null;
     }
