@@ -62,7 +62,7 @@ public class ShadowSimWindowManagerImpl extends ShadowWindowManagerImpl {
    * it went while it was still hidden): the topmost visible focusable window gets the focus, if it lacks it.
    */
   static void focusTop() {
-    List<View> roots = roots();
+    List<View> roots = dev.apksim.Host.rootViews();  // stack order: a popup sits under a dialog added after its parent
     View top = null;
     for (int i = roots.size() - 1; i >= 0 && top == null; i--) {
       View v = roots.get(i);

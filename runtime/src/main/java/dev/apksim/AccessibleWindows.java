@@ -64,7 +64,8 @@ final class AccessibleWindows {
 
   /**
    * The shown windows' root views, bottom to top in the stack Host draws them in and sends touches down
-   * (WindowManagerGlobal's order, in which they were added), each with its window's layout params as its own. Every
+   * (WindowManagerGlobal's order, in which they were added, with each sub-window such as a PopupWindow moved to just
+   * above its parent: `Host.rootViews`), each with its window's layout params as its own. Every
    * list of windows (UiAutomation, uiautomator dump, `nodes`, failure bundles) is in this order, so what accessibility
    * reports as covered is what the screen shows covered: sorting by window type put a popup opened before a dialog
    * above the dialog, where it is neither drawn nor touched.
