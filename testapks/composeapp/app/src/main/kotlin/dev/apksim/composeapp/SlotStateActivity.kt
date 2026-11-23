@@ -47,6 +47,7 @@ class SlotStateActivity : ComponentActivity() {
       Text("storage: ${storage()}")
       // Where the app is told its external storage is, as a device answers (not the host folder that backs it).
       Text("paths: ${Environment.getExternalStorageDirectory().path} ${getExternalFilesDir(null)?.canonicalPath}")
+      Text("fileops: ${fileOps()}")
       // A hardware state node read straight from /sys, as a camera privacy cover's app does (--sysfs, `sysfs` command).
       Text("sysfs: $sysfs")
       Button(onClick = { sysfs = sysfs() }, Modifier.testTag("reread")) { Text("Reread") }
@@ -71,6 +72,33 @@ class SlotStateActivity : ComponentActivity() {
         now = describe(this@SlotStateActivity)
       }, Modifier.padding(top = 24.dp).testTag("write")) { Text("Write") }
     }
+  }
+
+  /**
+   * What apps do in their external storage, through java.io and java.nio: make a folder, write, rename, list, copy,
+   * read a canonical path, delete (File.delete is libc's remove, which apksim maps separately), remove the folder.
+   * "ok", or the first step that failed. On apksim these go through native/devicepaths.c's mapping of the device path.
+   */
+  private fun fileOps(): String = try {
+    val root = Environment.getExternalStorageDirectory()
+    val d = File(root, "apksim-fileops")
+    d.deleteRecursively()
+    check(d.mkdirs()) { "mkdirs" }
+    val a = File(d, "a.txt")
+    a.writeText("x")
+    val b = File(d, "b.txt")
+    check(a.renameTo(b)) { "rename" }
+    check(b.readText() == "x") { "read" }
+    check(d.list()?.toList() == listOf("b.txt")) { "list" }
+    check(b.canonicalPath == File(root.canonicalPath, "apksim-fileops/b.txt").path) { "canonical ${b.canonicalPath}" }
+    val c = File(d, "c.txt")
+    java.nio.file.Files.copy(b.toPath(), c.toPath())
+    check(c.length() == 1L) { "copy" }
+    check(b.delete() && c.delete()) { "delete" }
+    check(d.delete() && !d.exists()) { "rmdir" }
+    "ok"
+  } catch (e: Throwable) {
+    "failed: ${e.message}"
   }
 
   /** The first line of /sys/devices/apksim-test/state through FileReader, "missing" without it. */

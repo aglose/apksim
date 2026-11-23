@@ -590,18 +590,18 @@ Read README.md for results and limits; this file covers how to work on the code.
     (`/Users/NAME/.apksim/cache/data/PKG/crawl-0.device/sdcard`), which an app shows (a "data folder" setting): it
     differed between instances and named the host's user. Now `SlotDevice.take` tells the framework
     `/storage/emulated/0` (Environment's directory and public directory, `UserEnvironment.getExternalDirs`, the storage
-    state tables), and the library, put in front of libc in every JVM by the launcher (`DYLD_INSERT_LIBRARIES` after
+    state tables), and the library, put in front of libc in each instance's JVM by the launcher (`DYLD_INSERT_LIBRARIES` after
     `sandbox-exec` on macOS, beside libloopback; `LD_PRELOAD` on Linux, the image builds it), rewrites a path under
     `/storage/emulated/0`, `/storage/self/primary`, `/sdcard` or `/mnt/sdcard` to the slot's `sdcard` folder in every
-    file call the process makes (`open`, `stat`, `opendir`, `rename`, `mkdir`, `fopen`, xattrs, the `*at` and 64-bit
-    variants...), so the JDK, Robolectric's SQLite and the app's ELF code all reach it; `realpath` of a device path
+    file call the process makes (`open`, `stat`, `opendir`, `rename`, `mkdir`, `remove`, `fopen`, `mkstemp`, xattrs, the
+    `*at` and 64-bit variants; glibc's old `__xstat` family through `stat`; `copyfile` on the Mac...), so the JDK, Robolectric's SQLite and the app's ELF code all reach it; `realpath` of a device path
     answers a device path, so `getCanonicalPath` shows nothing of the host. Java names the folder once the slot is
     taken (`DevicePaths.map`) and checks a probe through the JDK finds it; without the library in the process (an old
     standby, `APKSIM_DEVICE_PATHS=0`, `-Dapksim.devicePaths=false`) the app is told the host folder, as before.
     apksim's own code (adb's `/sdcard`, a tab's pushes, seeds) reaches it either way. Not mapped: relative paths, a
     symlink's target read back, `getcwd`, `/storage` and `/storage/emulated` themselves. `getExternalFilesDir(null)` is
-    Robolectric's `.../Android/data/PKG` (a device adds `/files`), before and after. `apksim://slot`'s "paths:" line,
-    `scripts/slot-check.sh`.
+    Robolectric's `.../Android/data/PKG` (a device adds `/files`), before and after. `apksim://slot`'s "paths:" and "fileops:" lines (mkdir, write, rename, list, copy, canonical path, delete in
+    external storage), `scripts/slot-check.sh`.
   - `SysFiles`: hardware state files under `/sys` an app reads itself (a camera privacy cover's `cam_privacy_state`;
     issue 376). `--sysfs /sys/PATH=VALUE` (repeatable, `-Dapksim.sysfs.N`, warm launches too) and the `sysfs` command
     (`sysfs`, `sysfs PATH`, `sysfs PATH VALUE...`, `sysfs clear PATH|all`; chain `key CAMERA` for the app to re-read) back a path with a file in the

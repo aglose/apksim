@@ -5,7 +5,7 @@ import java.nio.file.Path;
 
 /**
  * External storage at a device's path: the app is told /storage/emulated/0 (Environment, the app's external folders),
- * and native/devicepaths.c, in front of libc in every apksim JVM (the launcher's DYLD_INSERT_LIBRARIES or LD_PRELOAD),
+ * and native/devicepaths.c, in front of libc in an instance's JVM (the launcher's DYLD_INSERT_LIBRARIES or LD_PRELOAD),
  * sends every file call on that path, or /sdcard, to the data slot's sdcard folder on the host. Before, the app was
  * told that host folder (/Users/NAME/.apksim/cache/data/PKG/crawl-0.device/sdcard), and showed it: a "data folder"
  * setting differed between instances and named the host's user.
@@ -18,8 +18,6 @@ public final class DevicePaths {
   /** What the app sees as its external storage. */
   public static final String ROOT = "/storage/emulated/0";
 
-  private static volatile boolean on;
-
   private DevicePaths() {}
 
   private static native boolean nativePreloaded();
@@ -31,7 +29,6 @@ public final class DevicePaths {
    * may be told {@link #ROOT}: file calls on it now reach [sdcard].
    */
   static synchronized boolean map(Path sdcard) {
-    on = false;
     if ("false".equals(System.getProperty("apksim.devicePaths")) || "0".equals(System.getenv("APKSIM_DEVICE_PATHS"))) {
       return false;
     }
@@ -50,19 +47,6 @@ public final class DevicePaths {
       }
       return false;
     }
-    on = true;
     return true;
-  }
-
-  /** Whether the app sees {@link #ROOT} for external storage in this process. */
-  public static boolean on() {
-    return on;
-  }
-
-  /** [p] as the app sees it: a path in [sdcard] under {@link #ROOT} while mapped, else unchanged. */
-  public static String forApp(Path sdcard, Path p) {
-    if (!on) return p.toString();
-    Path rel = sdcard.toAbsolutePath().relativize(p.toAbsolutePath());
-    return rel.toString().isEmpty() ? ROOT : ROOT + "/" + rel;
   }
 }

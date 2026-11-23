@@ -3,7 +3,7 @@
 // hands it to libraries: it used to be the host folder of the instance's data slot
 // (/Users/NAME/.apksim/cache/data/PKG/crawl-0.device/sdcard), which differs between instances and names the host's
 // user. Now the framework answers /storage/emulated/0, as on a device, and this library, in every apksim JVM
-// (DYLD_INSERT_LIBRARIES on macOS, LD_PRELOAD on Linux: the launcher), rewrites a path under /storage/emulated/0,
+// (DYLD_INSERT_LIBRARIES on macOS, LD_PRELOAD on Linux, for an instance's JVM: the launcher), rewrites a path under /storage/emulated/0,
 // /storage/self/primary, /sdcard or /mnt/sdcard to that host folder in each file call the process makes, whoever makes
 // it (the JDK's java.io and java.nio, Robolectric's SQLite, the ELF loader's bionic shim for the app's own native code).
 // realpath given a device path answers a device path, so getCanonicalPath shows nothing of the host either.
@@ -29,6 +29,7 @@
 #include <sys/attr.h>
 #include <sys/mount.h>
 #include <sys/clonefile.h>
+#include <copyfile.h>
 #include <sys/xattr.h>
 #else
 #include <dlfcn.h>
@@ -168,6 +169,11 @@ static char *dp_realpath(const char *p, char *out) {
   char b[PATH_MAX];
   int device = active && device_prefix(p) > 0;
   char *r = realpath(map(p, b), out);
+  if (r && device && !out) {
+    char *big = realloc(r, PATH_MAX);  // allocated to fit the host path: room for the device one
+    if (!big) return r;
+    r = big;
+  }
   if (r && device) unmap(r);
   return r;
 }
@@ -223,6 +229,30 @@ static int dp_renameat(int f1, const char *p, int f2, const char *q) {
   return renameat(f1, map(p, b1), f2, map(q, b2));
 }
 INTERPOSE(dp_renameat, renameat)
+WRAP1(int, remove, (const char *p), (p))
+static int dp_copyfile(const char *p, const char *q, copyfile_state_t st, copyfile_flags_t f) {
+  char b1[PATH_MAX], b2[PATH_MAX];
+  return copyfile(map(p, b1), map(q, b2), st, f);
+}
+INTERPOSE(dp_copyfile, copyfile)
+static int dp_mkstemp(char *t) {
+  char b[PATH_MAX];
+  const char *m = map(t, b);
+  if (m == t) return mkstemp(t);
+  int fd = mkstemp(b);
+  if (fd >= 0) memcpy(t + strlen(t) - 6, b + strlen(b) - 6, 6);  // the X's filled in
+  return fd;
+}
+INTERPOSE(dp_mkstemp, mkstemp)
+static char *dp_mkdtemp(char *t) {
+  char b[PATH_MAX];
+  const char *m = map(t, b);
+  if (m == t) return mkdtemp(t);
+  if (!mkdtemp(b)) return NULL;
+  memcpy(t + strlen(t) - 6, b + strlen(b) - 6, 6);
+  return t;
+}
+INTERPOSE(dp_mkdtemp, mkdtemp)
 static int dp_clonefile(const char *p, const char *q, uint32_t f) {
   char b1[PATH_MAX], b2[PATH_MAX];
   return clonefile(map(p, b1), map(q, b2), f);
@@ -233,7 +263,7 @@ INTERPOSE(dp_clonefile, clonefile)
 NEXT(int, open, const char *, int, ...)
 int open(const char *p, int flags, ...) {
   mode_t mode = 0;
-  if (flags & (O_CREAT | O_TMPFILE)) {
+  if ((flags & O_CREAT) || (flags & O_TMPFILE) == O_TMPFILE) {
     va_list ap;
     va_start(ap, flags);
     mode = (mode_t)va_arg(ap, int);
@@ -245,7 +275,7 @@ int open(const char *p, int flags, ...) {
 NEXT(int, open64, const char *, int, ...)
 int open64(const char *p, int flags, ...) {
   mode_t mode = 0;
-  if (flags & (O_CREAT | O_TMPFILE)) {
+  if ((flags & O_CREAT) || (flags & O_TMPFILE) == O_TMPFILE) {
     va_list ap;
     va_start(ap, flags);
     mode = (mode_t)va_arg(ap, int);
@@ -257,7 +287,7 @@ int open64(const char *p, int flags, ...) {
 NEXT(int, openat, int, const char *, int, ...)
 int openat(int fd, const char *p, int flags, ...) {
   mode_t mode = 0;
-  if (flags & (O_CREAT | O_TMPFILE)) {
+  if ((flags & O_CREAT) || (flags & O_TMPFILE) == O_TMPFILE) {
     va_list ap;
     va_start(ap, flags);
     mode = (mode_t)va_arg(ap, int);
@@ -269,7 +299,7 @@ int openat(int fd, const char *p, int flags, ...) {
 NEXT(int, openat64, int, const char *, int, ...)
 int openat64(int fd, const char *p, int flags, ...) {
   mode_t mode = 0;
-  if (flags & (O_CREAT | O_TMPFILE)) {
+  if ((flags & O_CREAT) || (flags & O_TMPFILE) == O_TMPFILE) {
     va_list ap;
     va_start(ap, flags);
     mode = (mode_t)va_arg(ap, int);
@@ -291,6 +321,11 @@ char *realpath(const char *p, char *out) {
   char b[PATH_MAX];
   int device = active && device_prefix(p) > 0;
   char *r = real_realpath()(map(p, b), out);
+  if (r && device && !out) {
+    char *big = realloc(r, PATH_MAX);  // allocated to fit the host path: room for the device one
+    if (!big) return r;
+    r = big;
+  }
   if (r && device) unmap(r);
   return r;
 }
@@ -309,22 +344,18 @@ WRAP1(int, stat, (const char *p, struct stat *s), (p, s), const char *, struct s
 WRAP1(int, lstat, (const char *p, struct stat *s), (p, s), const char *, struct stat *)
 WRAP1(int, stat64, (const char *p, struct stat64 *s), (p, s), const char *, struct stat64 *)
 WRAP1(int, lstat64, (const char *p, struct stat64 *s), (p, s), const char *, struct stat64 *)
-NEXT(int, __xstat, int, const char *, struct stat *)
-int __xstat(int v, const char *p, struct stat *s) { char b[PATH_MAX]; return real___xstat()(v, map(p, b), s); }
-NEXT(int, __lxstat, int, const char *, struct stat *)
-int __lxstat(int v, const char *p, struct stat *s) { char b[PATH_MAX]; return real___lxstat()(v, map(p, b), s); }
-NEXT(int, __xstat64, int, const char *, struct stat64 *)
-int __xstat64(int v, const char *p, struct stat64 *s) { char b[PATH_MAX]; return real___xstat64()(v, map(p, b), s); }
-NEXT(int, __lxstat64, int, const char *, struct stat64 *)
-int __lxstat64(int v, const char *p, struct stat64 *s) { char b[PATH_MAX]; return real___lxstat64()(v, map(p, b), s); }
+// glibc before 2.33 called stat through these; since, they are compat symbols dlsym may not hand out, so they go through
+// the exported calls (which map) rather than the next definition.
+int __xstat(int v, const char *p, struct stat *s) { (void)v; return stat(p, s); }
+int __lxstat(int v, const char *p, struct stat *s) { (void)v; return lstat(p, s); }
+int __xstat64(int v, const char *p, struct stat64 *s) { (void)v; return stat64(p, s); }
+int __lxstat64(int v, const char *p, struct stat64 *s) { (void)v; return lstat64(p, s); }
 NEXT(int, fstatat, int, const char *, struct stat *, int)
 int fstatat(int fd, const char *p, struct stat *s, int f) { char b[PATH_MAX]; return real_fstatat()(fd, map(p, b), s, f); }
 NEXT(int, fstatat64, int, const char *, struct stat64 *, int)
 int fstatat64(int fd, const char *p, struct stat64 *s, int f) { char b[PATH_MAX]; return real_fstatat64()(fd, map(p, b), s, f); }
-NEXT(int, __fxstatat, int, int, const char *, struct stat *, int)
-int __fxstatat(int v, int fd, const char *p, struct stat *s, int f) { char b[PATH_MAX]; return real___fxstatat()(v, fd, map(p, b), s, f); }
-NEXT(int, __fxstatat64, int, int, const char *, struct stat64 *, int)
-int __fxstatat64(int v, int fd, const char *p, struct stat64 *s, int f) { char b[PATH_MAX]; return real___fxstatat64()(v, fd, map(p, b), s, f); }
+int __fxstatat(int v, int fd, const char *p, struct stat *s, int f) { (void)v; return fstatat(fd, p, s, f); }
+int __fxstatat64(int v, int fd, const char *p, struct stat64 *s, int f) { (void)v; return fstatat64(fd, p, s, f); }
 NEXT(int, statx, int, const char *, int, unsigned int, struct statx *)
 int statx(int fd, const char *p, int f, unsigned int m, struct statx *s) { char b[PATH_MAX]; return real_statx()(fd, map(p, b), f, m, s); }
 WRAP1(int, access, (const char *p, int m), (p, m), const char *, int)
@@ -378,6 +409,25 @@ WRAP1(int, removexattr, (const char *p, const char *k), (p, k), const char *, co
 WRAP1(int, lremovexattr, (const char *p, const char *k), (p, k), const char *, const char *)
 WRAP1(ssize_t, listxattr, (const char *p, char *k, size_t n), (p, k, n), const char *, char *, size_t)
 WRAP1(ssize_t, llistxattr, (const char *p, char *k, size_t n), (p, k, n), const char *, char *, size_t)
+WRAP1(int, remove, (const char *p), (p), const char *)
+NEXT(int, mkstemp, char *)
+int mkstemp(char *t) {
+  char b[PATH_MAX];
+  const char *m = map(t, b);
+  if (m == t) return real_mkstemp()(t);
+  int fd = real_mkstemp()(b);
+  if (fd >= 0) memcpy(t + strlen(t) - 6, b + strlen(b) - 6, 6);  // the X's filled in
+  return fd;
+}
+NEXT(char *, mkdtemp, char *)
+char *mkdtemp(char *t) {
+  char b[PATH_MAX];
+  const char *m = map(t, b);
+  if (m == t) return real_mkdtemp()(t);
+  if (!real_mkdtemp()(b)) return NULL;
+  memcpy(t + strlen(t) - 6, b + strlen(b) - 6, 6);
+  return t;
+}
 WRAP2(int, rename, (const char *p, const char *q), (p, q), const char *, const char *)
 WRAP2(int, link, (const char *p, const char *q), (p, q), const char *, const char *)
 WRAP2(int, symlink, (const char *p, const char *q), (p, q), const char *, const char *)
