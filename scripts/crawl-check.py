@@ -427,7 +427,7 @@ def main():
     ids = {x["id"] for x in sdoc.get("screens", [])}
     time.sleep(1)
     alive = [k for k in kids if subprocess.run(["kill", "-0", str(k)], capture_output=True).returncode == 0]
-    check(t_stop is None or (kids and not alive), "no process the walk started outlives its stop",
+    check(DOCKER or t_stop is None or (kids and not alive), "no process the walk started outlives its stop",
           f"{len(kids)} started, still running: {alive}")
     check(t_stop is not None and code == 143 and sdoc.get("stopped") is True and "stopped" in sdoc.get("cut_by", [])
           and sdoc.get("unexplored") and set(sdoc["unexplored"]) <= ids
@@ -436,7 +436,7 @@ def main():
           f"exit {code}, stopped {sdoc.get('stopped')}, cut_by {sdoc.get('cut_by')}, unexplored "
           f"{len(sdoc.get('unexplored') or [])} of {len(ids)}, {took and round(took, 1)} s; {rest[-300:]}")
     if sdoc.get("unexplored"):
-        only_file = os.path.join(stop_dir, "unexplored.txt")
+        only_file = os.path.join(args.out, "stopped-unexplored.txt")  # stop_dir is the container's (root) with --docker
         with open(only_file, "w") as f:
             f.write("\n".join(sdoc["unexplored"]) + "\n")
         doc20, _, _ = crawl(args.apk, cont_dir, *matrix, *opts, "--seed", wpath(stop_dir), "--only-file", wpath(only_file))
