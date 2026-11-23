@@ -82,6 +82,8 @@ start fresh.log --fresh --setting global:apksim_slot_seed=seeded --setting syste
   --setting system:font_scale=1.3
 expect "onCreate saw" "$(text 'at app start:')" '^at app start: setting=null seed=seeded sdcard=missing$'
 expect "external storage" "$(text 'storage:')" '^storage: mounted, Download inside /sdcard, app folder mounted emulated, manager false$'
+# The app is told a device's path (DevicePaths, native/devicepaths.c), not the host folder of the slot that backs it.
+expect "external storage path" "$(text 'paths:')" '^paths: /storage/emulated/0 /storage/emulated/0/Android/data/dev\.apksim\.composeapp$'
 # A seed of a key a device control owns does what the control does (fontscale; the last one given wins, also after
 # Host.run's setQualifiers), and is not kept for the next launch.
 expect "seeded font scale" "$(text 'font scale:')" '^font scale: 1.3$'

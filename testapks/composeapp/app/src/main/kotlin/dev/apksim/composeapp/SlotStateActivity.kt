@@ -45,6 +45,8 @@ class SlotStateActivity : ComponentActivity() {
       Text("now: $now")
       Text("typed: $typed")
       Text("storage: ${storage()}")
+      // Where the app is told its external storage is, as a device answers (not the host folder that backs it).
+      Text("paths: ${Environment.getExternalStorageDirectory().path} ${getExternalFilesDir(null)?.canonicalPath}")
       // A hardware state node read straight from /sys, as a camera privacy cover's app does (--sysfs, `sysfs` command).
       Text("sysfs: $sysfs")
       Button(onClick = { sysfs = sysfs() }, Modifier.testTag("reread")) { Text("Reread") }

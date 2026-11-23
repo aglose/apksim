@@ -28,6 +28,8 @@ clang -O2 -o "$ROOT/work/runtime/apksim-client.new" "$ROOT/native/apksim-client.
 clang -O2 -dynamiclib -I"$JDK/include" -I"$JDK/include/darwin" -o "$ROOT/work/runtime/libheaptrim.dylib.new" "$ROOT/native/heaptrim.c"
 # --no-network: Java's IPv4 loopback connects over IPv4 sockets, which the sandbox allows (loopback.c).
 clang -O2 -dynamiclib -o "$ROOT/work/runtime/libloopback.dylib.new" "$ROOT/native/loopback.c"
+# External storage at /storage/emulated/0 (DevicePaths): file calls on it reach the data slot's sdcard folder.
+clang -O2 -dynamiclib -I"$JDK/include" -I"$JDK/include/darwin" -o "$ROOT/work/runtime/libdevicepaths.dylib.new" "$ROOT/native/devicepaths.c"
 mv -f "$ROOT/work/runtime/apksim-client.new" "$ROOT/work/runtime/apksim-client"
 # Rename into place, so running instances keep the libraries they mapped.
-for l in libsimwindow libelfloader libgpushader libvtdecoder libh264enc libsimaudio libstandby libheaptrim libloopback; do mv -f "$ROOT/work/runtime/$l.dylib.new" "$ROOT/work/runtime/$l.dylib"; done
+for l in libsimwindow libelfloader libgpushader libvtdecoder libh264enc libsimaudio libstandby libheaptrim libloopback libdevicepaths; do mv -f "$ROOT/work/runtime/$l.dylib.new" "$ROOT/work/runtime/$l.dylib"; done

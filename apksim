@@ -789,10 +789,20 @@ fi
 # The JDK reaches 127.0.0.1 as ::ffff:127.0.0.1 on a dual-stack socket, which the rule above cannot allow, so under
 # --no-network libloopback moves those connects to IPv4 sockets. Set through env: dyld drops DYLD_* variables when
 # it starts sandbox-exec (a system binary), and so would not pass them on. A standby's instance inherits it.
+# libdevicepaths in every JVM (DevicePaths, native/devicepaths.c): the app sees its external storage at
+# /storage/emulated/0, and file calls on that path reach the data slot's sdcard folder (APKSIM_DEVICE_PATHS=0: the host
+# folder, as before). LD_PRELOAD on Linux, ahead of any the caller set.
 ENVP=()
-if [[ "$OS" == Darwin && -n "${NO_NET:-}" && -z "${NO_SANDBOX:-}" && -f "$ROOT/work/runtime/libloopback.dylib" ]]; then
-  ENVP=(/usr/bin/env "DYLD_INSERT_LIBRARIES=$ROOT/work/runtime/libloopback.dylib")
+PRELOAD=""
+if [[ "${APKSIM_DEVICE_PATHS:-1}" != 0 ]]; then
+  if [[ "$OS" == Darwin && -f "$ROOT/work/runtime/libdevicepaths.dylib" ]]; then PRELOAD="$ROOT/work/runtime/libdevicepaths.dylib"
+  elif [[ "$OS" != Darwin && -f "$ROOT/work/runtime/libdevicepaths.so" ]]; then PRELOAD="$ROOT/work/runtime/libdevicepaths.so"; fi
 fi
+if [[ "$OS" == Darwin && -n "${NO_NET:-}" && -z "${NO_SANDBOX:-}" && -f "$ROOT/work/runtime/libloopback.dylib" ]]; then
+  PRELOAD="${PRELOAD:+$PRELOAD:}$ROOT/work/runtime/libloopback.dylib"
+fi
+if [[ -n "$PRELOAD" && "$OS" == Darwin ]]; then ENVP=(/usr/bin/env "DYLD_INSERT_LIBRARIES=$PRELOAD")
+elif [[ -n "$PRELOAD" ]]; then ENVP=(/usr/bin/env "LD_PRELOAD=$PRELOAD${LD_PRELOAD:+:$LD_PRELOAD}"); fi
 if [[ "$OS" != Darwin && -n "${NO_NET:-}" ]]; then
   echo "[apksim] --no-network is macOS-only; in a container use docker run --network none" >&2
 fi
