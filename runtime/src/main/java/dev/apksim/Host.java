@@ -420,6 +420,11 @@ public class Host {
     long quietSince;
     long framesAtQuiet;
     String reason = "";
+    /** Uptime (ms) from which a vsync has been pending with no frame drawn, 0 when none is (issue 612). */
+    long vsyncIdleSince;
+    long vsyncIdleFrames;
+    /** A frame loop that draws nothing was ignored (HORIZON_MS of pending vsyncs, no frame): said in the answer. */
+    boolean idleFrameLoop;
     /** The windows of the last loop turn, to name what wants a frame when the answer is given. */
     List<View> roots = List.of();
 
@@ -443,7 +448,8 @@ public class Host {
         framesAtQuiet = frames;
       } else if (now - quietSince >= quietNanos) {
         hw.withLatestFrame(b -> {});  // the last frame's raster has finished: `shot` reads it
-        pending.finish("settled in " + (now - start) / 1_000_000 + " ms" + (controls.hidden() ? " (app in background: `resume` brings it back)" : ""));
+        pending.finish("settled in " + (now - start) / 1_000_000 + " ms"
+            + (idleFrameLoop ? " (a frame loop runs that draws nothing: a Compose Popup polling its position, say)" : "") + (controls.hidden() ? " (app in background: `resume` brings it back)" : ""));
         return true;
       }
       if (now - start > maxNanos) {
@@ -463,7 +469,23 @@ public class Host {
   /** What keeps the UI from being quiet for a screenshot, or null. */
   private String busy(ShadowLooper looper, List<View> roots) {
     if (!pendingScript.isEmpty() || drag != null) return "input queued";
-    if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) return FRAME_WANTED;
+    if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) {
+      // A vsync pending is a frame wanted, unless vsyncs have kept coming for HORIZON_MS without drawing anything: a
+      // loop that asks every frame and draws nothing (Compose's Popup polls its anchor's position; a device renders
+      // 0 frames there too). A dirty window or a pending layout is still checked below (issue 612). An animation
+      // that draws resets the count; one whose start is more than HORIZON_MS away counts as quiet, as a due message does.
+      long up = SystemClock.uptimeMillis();
+      if (settle.vsyncIdleSince == 0 || frames != settle.vsyncIdleFrames) {
+        settle.vsyncIdleSince = up;
+        settle.vsyncIdleFrames = frames;
+        settle.idleFrameLoop = false;
+      }
+      if (up - settle.vsyncIdleSince < Math.max(1, settle.horizonMs)) return FRAME_WANTED;
+      settle.idleFrameLoop = true;
+    } else {
+      settle.vsyncIdleSince = 0;
+      settle.idleFrameLoop = false;
+    }
     // Behind the home screen nothing is drawn (the loop makes no frames), so a window that differs from the last
     // frame's would stay "needing drawing" until a `resume` (issue 489).
     if (!controls.hidden() && needsFrame(roots)) return "a window needs drawing";

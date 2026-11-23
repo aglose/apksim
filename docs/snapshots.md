@@ -116,7 +116,10 @@ what removes it:
 `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]` (defaults 10000, 200 and 1000; in `Host`) answers once the UI has been
 quiet for QUIET_MS of real time:
 
-- no frame wanted (no vsync requested from the Choreographer), no window dirty or awaiting layout;
+- no frame wanted (no vsync requested from the Choreographer), no window dirty or awaiting layout. A vsync that keeps
+  being requested but draws nothing for HORIZON_MS (a Compose `Popup` polling its anchor's position, issue 612) is
+  ignored, and the answer says `(a frame loop runs that draws nothing: ...)`; an animation that starts later than
+  HORIZON_MS counts as quiet until then, like a message due later;
 - no input queued (a `tap` or `type` queues events that the loop delivers 8 ms apart);
 - the main looper has nothing due now, and nothing due within HORIZON_MS of simulated time (a delayed message later
   than that, such as a 5 s auto-dismiss, does not hold it up). Some messages that never draw are skipped:

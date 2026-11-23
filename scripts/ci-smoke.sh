@@ -110,6 +110,9 @@ popup() { drive nodes | grep -oE 'text="(trace: begun twice [0-9]+ times|tooltip
 drive 'open apksim://popup-trace' 'wait 2000' 'tap 168 152' 'wait 500' 'tap 168 152' 'wait 500' \
   'swipe 200 392 500 392 300' 'wait 1000' >/dev/null
 shown="$(popup)"
+# The open Popup polls its position every frame and draws nothing: settle answers (issue 612).
+drive 'settle 5000 200' | tail -1 | grep -q 'settled in' \
+  || { echo "settle never answered with a Compose Popup open (its position-polling frame loop)" >&2; exit 1; }
 drive 'tap 143 632' 'wait 1000' >/dev/null
 tapped="$(popup)"
 # A full-screen FLAG_NOT_TOUCHABLE overlay above the activity takes no touch (issue 323): a tap on Settings lands.
@@ -382,6 +385,10 @@ drive 'back' >/dev/null  # leave the screen: the checks below expect the one und
 # answer, and must name it. Its render-thread animator stopped after ~250 ms, and settle said settled.
 drive 'open apksim://idle-zoo?on=progress' 'wait 1500' 'settle 1500 300' | tail -1 | grep -q 'not settled.*spinning ProgressBar' \
   || { echo "a screen with a spinning ProgressBar settled, or settle did not name it" >&2; exit 1; }
+drive 'back' >/dev/null
+# A ValueAnimator that draws keeps resetting settle's idle-frame-loop count: not settled (issue 612).
+drive 'open apksim://idle-zoo?on=animator' 'wait 1500' 'settle 2500 300' | tail -1 | grep -q 'not settled' \
+  || { echo "a screen with a running ValueAnimator settled" >&2; exit 1; }
 drive 'back' >/dev/null
 # Backgrounded (home, or Back on the root launcher activity) nothing draws, so settle must answer, and say so (issue 489).
 drive 'home' 'wait 500' 'settle 5000 300' | tail -1 | grep -q 'settled in .*app in background' \
