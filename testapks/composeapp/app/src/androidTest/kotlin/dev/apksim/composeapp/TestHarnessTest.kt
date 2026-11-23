@@ -67,6 +67,10 @@ class TimeoutRuleTest {
       fail("a 10 s statement under a 300 ms timeout finished")
     } catch (e: TestTimedOutException) {
       assertEquals(300L, e.timeout)
+      // apksim's FailOnTimeout adds what the test was waiting on (issue 604); a device's Timeout does not.
+      if (e.suppressed.isNotEmpty()) {
+        assertTrue(e.suppressed[0].message!!.startsWith("state when the test timed out:"))
+      }
     }
     val tookMs = (System.nanoTime() - startNanos) / 1_000_000
     assertTrue("the timeout took $tookMs ms to fire", tookMs < 5_000)
