@@ -91,6 +91,13 @@ final class ClassCache {
   private final java.util.concurrent.CompletableFuture<Map<Hash, String>> siblingIndex;
   private final Map<String, Map<String, Entry>> otherPacks = new HashMap<>();
   private final Map<Hash, String> indexAdds = new HashMap<>();
+  /**
+   * A test run (issue 602): many processes start together on an empty cache, and each hashed every class it had
+   * translated, on up to 6 threads for up to 1.5 s at its exit, for an index only a later build of the app reads.
+   * Test processes hash on one thread and for 150 ms at exit; what is left stays unindexed (a later build
+   * translates it again).
+   */
+  private static final boolean TEST_RUN = System.getProperty("apksim.instrument") != null;
   private volatile boolean exiting;
   private int hintsSaved;
   private int unsaved;
@@ -346,7 +353,7 @@ final class ClassCache {
         synchronized (cache) {
           if (cache.unsaved == 0) continue;
         }
-        cache.save(1_500_000_000L);
+        cache.save(TEST_RUN ? 150_000_000L : 1_500_000_000L);
       }
     }
   }
@@ -363,7 +370,7 @@ final class ClassCache {
     long deadline = hashBudgetNanos == Long.MAX_VALUE ? Long.MAX_VALUE : System.nanoTime() + hashBudgetNanos;
     Map<Fresh, byte[]> hashes = new IdentityHashMap<>();
     if (work.size() >= 64) {
-      int nThreads = Math.min(Math.max(2, Runtime.getRuntime().availableProcessors() / 2), 6);
+      int nThreads = TEST_RUN ? 1 : Math.min(Math.max(2, Runtime.getRuntime().availableProcessors() / 2), 6);
       byte[][] results = new byte[work.size()][];
       java.util.concurrent.atomic.AtomicInteger nextIdx = new java.util.concurrent.atomic.AtomicInteger();
       Thread[] pool = new Thread[nThreads];
