@@ -38,7 +38,7 @@ RUN mkdir -p /opt/apksim/work/runtime/icu && \
     # Unused heap pages given back while idle (HeapTrim.java).
     gcc -O2 -shared -fPIC -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
       -o /opt/apksim/work/runtime/libheaptrim.so native/heaptrim.c -ldl && \
-    gcc -O2 -Wall -shared -fPIC -D_GNU_SOURCE -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
+    gcc -O2 -Wall -shared -fPIC -D_GNU_SOURCE -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -fno-delete-null-pointer-checks -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
       -o /opt/apksim/work/runtime/libdevicepaths.so native/devicepaths.c -ldl && \
     # apksim serve's H.264 stream: OpenH264, opened at run time (libopenh264-7 below; without it the stream stays JPEG).
     gcc -O2 -shared -fPIC -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \

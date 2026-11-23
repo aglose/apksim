@@ -57,12 +57,12 @@ start() {
     exit 1
   fi
   if [[ -z "$IMAGE" ]]; then
-    (cd "$OUT" && "$ROOT/apksim" --headless --control "$PORT" ${ADB_ARGS[@]+"${ADB_ARGS[@]}"} --data-slots slotcheck "$@" app.apk \
+    (cd "$OUT" && env APKSIM_DEVICE_PATHS="${DEVICE_PATHS:-1}" "$ROOT/apksim" --headless --control "$PORT" ${ADB_ARGS[@]+"${ADB_ARGS[@]}"} --data-slots slotcheck "$@" app.apk \
       > "$OUT/$log" 2>&1 &)
   else
     docker rm -f "$NAME" >/dev/null 2>&1 || true
     docker run -d --name "$NAME" --platform "$PLATFORM" -p "127.0.0.1:$PORT:$PORT" ${ADB_PUBLISH[@]+"${ADB_PUBLISH[@]}"} \
-      -v "$OUT:/work" -v "$OUT/data:/opt/apksim/work/cache/data" "$IMAGE" \
+      -e APKSIM_DEVICE_PATHS="${DEVICE_PATHS:-1}" -v "$OUT:/work" -v "$OUT/data:/opt/apksim/work/cache/data" "$IMAGE" \
       --control "$PORT" --control-bind 0.0.0.0 ${ADB_ARGS[@]+"${ADB_ARGS[@]}"} --data-slots slotcheck "$@" app.apk >/dev/null
   fi
   LAUNCHED=1
@@ -113,6 +113,14 @@ echo "== --sdcard-file over the slot's file"
 start seeded.log --sdcard-file apksim-slot-check.txt=text:from-option
 expect "onCreate saw" "$(text 'at app start:')" '^at app start: setting=written seed=seeded sdcard=from-option$'
 stop seeded
+
+# Without the mapping (APKSIM_DEVICE_PATHS=0, a cold launch): the host folder, as before, and file calls still work.
+echo "== device paths off"
+DEVICE_PATHS=0 start nopaths.log
+expect "external storage path, host" "$(text 'paths:')" '^paths: /.*/slotcheck-[0-9]+\.device/sdcard /.*/Android/data/dev\.apksim\.composeapp$'
+expect "file calls, host path" "$(text 'fileops:')" '^fileops: ok$'
+grep -q 'device paths off' "$OUT/nopaths.log" && { echo "an asked-for APKSIM_DEVICE_PATHS=0 printed 'device paths off'" >&2; exit 1; }
+stop nopaths
 
 echo "== --fresh"
 start erased.log --fresh

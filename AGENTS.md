@@ -593,15 +593,31 @@ Read README.md for results and limits; this file covers how to work on the code.
     state tables), and the library, put in front of libc in each instance's JVM by the launcher (`DYLD_INSERT_LIBRARIES` after
     `sandbox-exec` on macOS, beside libloopback; `LD_PRELOAD` on Linux, the image builds it), rewrites a path under
     `/storage/emulated/0`, `/storage/self/primary`, `/sdcard` or `/mnt/sdcard` to the slot's `sdcard` folder in every
-    file call the process makes (`open`, `stat`, `opendir`, `rename`, `mkdir`, `remove`, `fopen`, `mkstemp`, xattrs, the
-    `*at` and 64-bit variants; glibc's old `__xstat` family through `stat`; `copyfile` on the Mac...), so the JDK, Robolectric's SQLite and the app's ELF code all reach it; `realpath` of a device path
-    answers a device path, so `getCanonicalPath` shows nothing of the host. Java names the folder once the slot is
-    taken (`DevicePaths.map`) and checks a probe through the JDK finds it; without the library in the process (an old
-    standby, `APKSIM_DEVICE_PATHS=0`, `-Dapksim.devicePaths=false`) the app is told the host folder, as before.
-    apksim's own code (adb's `/sdcard`, a tab's pushes, seeds) reaches it either way. Not mapped: relative paths, a
-    symlink's target read back, `getcwd`, `/storage` and `/storage/emulated` themselves. `getExternalFilesDir(null)` is
-    Robolectric's `.../Android/data/PKG` (a device adds `/files`), before and after. `apksim://slot`'s "paths:" and "fileops:" lines (mkdir, write, rename, list, copy, canonical path, delete in
-    external storage), `scripts/slot-check.sh`.
+    file call the process makes (`open`, `stat`, `opendir`, `rename`, `mkdir`, `remove`, `fopen`, `mkstemp` and its
+    variants, xattrs, the `*at` and 64-bit variants; glibc's old `__xstat` family through `stat`, and `__xstat` when an
+    old glibc has no `stat`; on the Mac `copyfile`, `renamex_np`, the plain `realpath` and UNIX03 `fopen` symbols that
+    `bionic_lookup`'s dlsym hands an app's native code; and calls libc makes inside itself, which a preload or dyld
+    interposing never sees, by wrapping their entry: `creat`, `scandir`, `glob` (matches unmapped back), `nftw`/`ftw`
+    (the callback sees device paths), `fts_open` (its root only), `inotify_add_watch` on Linux), so the JDK,
+    Robolectric's SQLite and the app's ELF code all reach it; `realpath` of a device path answers a device path (also
+    in its buffer when it fails), and so does `getcwd` inside it, so `getCanonicalPath` shows nothing of the host. A
+    device path is folded lexically first (`..` included: `/storage/emulated/0/..` is `/storage/emulated`, as the
+    device resolves it), and the rest of `/storage` (`/storage`, `/storage/emulated`, `/storage/self`) is a skeleton of
+    empty folders in the scratch folder (`STATE/tmp/PID/device-root`), so the parents exist and `toRealPath` and
+    `getFileStore`, which walk them, work. Java names the folders once the slot is taken (`DevicePaths.map`) and checks
+    that a marker written to the slot's folder is found through `/storage/emulated/0`; without the library in the
+    process (an old standby, `-Dapksim.devicePaths=false`) the app is told the host folder, as before, and stderr says
+    `[apksim] device paths off: REASON`. `APKSIM_DEVICE_PATHS=0` does the same without the line, and launches cold (a
+    standby's JVM has the library from its start; the standby that launch spawns does not inherit the variable). On
+    Linux the launcher puts the library in `LD_PRELOAD` once, whatever an inherited value holds. apksim's own code
+    (adb's `/sdcard`, a tab's pushes, seeds) reaches it either way. Not mapped: a relative path that climbs out after a
+    `chdir` into external storage, a symlink's target read back (an absolute device target is written as the host
+    path, which a moved slot leaves dangling), a descriptor's path (`fcntl F_GETPATH`, `/proc/self/fd`), the entries
+    `fts_read` walks, child processes (`ProcessBuilder.directory` in external storage fails), and test runs (they keep
+    Robolectric's temp folders). `getExternalFilesDir(null)` is Robolectric's `.../Android/data/PKG` (a device adds
+    `/files`), before and after. `apksim://slot`'s "paths:" and "fileops:" lines (mkdir, write, rename, list, copy,
+    canonical and real paths, the parent and `..`, a SQLite database, delete in external storage), `scripts/slot-check.sh`
+    (also with `APKSIM_DEVICE_PATHS=0`).
   - `SysFiles`: hardware state files under `/sys` an app reads itself (a camera privacy cover's `cam_privacy_state`;
     issue 376). `--sysfs /sys/PATH=VALUE` (repeatable, `-Dapksim.sysfs.N`, warm launches too) and the `sysfs` command
     (`sysfs`, `sysfs PATH`, `sysfs PATH VALUE...`, `sysfs clear PATH|all`; chain `key CAMERA` for the app to re-read) back a path with a file in the

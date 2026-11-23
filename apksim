@@ -178,6 +178,8 @@ if [[ "${1:-}" == --spawn-standby ]]; then
   # b+3000+8080: the loopback ports the agent's owner opened (issue 428), part of the name since the profile is fixed here.
   unset APKSIM_BEAM_LOOPBACK
   if [[ "$FLAGS" =~ b((\+[0-9]+)+) ]]; then LB="${BASH_REMATCH[1]//+/,}"; export APKSIM_BEAM_LOOPBACK="${LB#,}"; fi
+  # A standby always maps device paths: one launch's APKSIM_DEVICE_PATHS=0 (cold, below) must not reach later launches.
+  unset APKSIM_DEVICE_PATHS
   exec "$CLIENT" detach "$SOCK.log" "$ROOT/apksim" "${ARGS[@]}"
 fi
 if [[ "${1:-}" == --stop-standbys ]]; then
@@ -529,6 +531,8 @@ elif [[ "$OS" == Linux && ( "${APKSIM_STANDBY:-}" == 1 || "${APKSIM_STANDBY:-}" 
 WARM_OK="" COLD_OPT=""
 if [[ -n "$STANDBY_ON" && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSIM_SANDBOX_TEST:-}" && -z "$STANDBY_SOCK" ]]; then
   WARM_OK=1
+  # A standby's JVM has the device-path library in front of libc from its start: a launch without it goes cold.
+  [[ "${APKSIM_DEVICE_PATHS:-1}" == 0 ]] && { WARM_OK=""; COLD_OPT="APKSIM_DEVICE_PATHS=0"; }
   for e in "${EXTRA[@]+"${EXTRA[@]}"}"; do
     case "$e" in
       -Dapksim.activity=*|-Dapksim.screenshot=*|-Dapksim.exitAfterFirstFrame=*|-Dapksim.control=*|-Dapksim.controlBind=*|-Dapksim.controlTokenFile=*|-Dapksim.adb=*) ;;
@@ -791,7 +795,8 @@ fi
 # it starts sandbox-exec (a system binary), and so would not pass them on. A standby's instance inherits it.
 # libdevicepaths in every JVM (DevicePaths, native/devicepaths.c): the app sees its external storage at
 # /storage/emulated/0, and file calls on that path reach the data slot's sdcard folder (APKSIM_DEVICE_PATHS=0: the host
-# folder, as before). LD_PRELOAD on Linux, ahead of any the caller set.
+# folder, as before, and a cold launch). LD_PRELOAD on Linux, ahead of any the caller set, once: an instance's JVM has it
+# already, and the standby it spawns (the launcher again) would otherwise add it again each generation.
 ENVP=()
 PRELOAD=""
 if [[ "${APKSIM_DEVICE_PATHS:-1}" != 0 ]]; then
@@ -802,7 +807,12 @@ if [[ "$OS" == Darwin && -n "${NO_NET:-}" && -z "${NO_SANDBOX:-}" && -f "$ROOT/w
   PRELOAD="${PRELOAD:+$PRELOAD:}$ROOT/work/runtime/libloopback.dylib"
 fi
 if [[ -n "$PRELOAD" && "$OS" == Darwin ]]; then ENVP=(/usr/bin/env "DYLD_INSERT_LIBRARIES=$PRELOAD")
-elif [[ -n "$PRELOAD" ]]; then ENVP=(/usr/bin/env "LD_PRELOAD=$PRELOAD${LD_PRELOAD:+:$LD_PRELOAD}"); fi
+elif [[ -n "$PRELOAD" ]]; then
+  OLD_PRELOAD=""
+  IFS=: read -r -a PRE_PARTS <<< "${LD_PRELOAD:-}"
+  for P in "${PRE_PARTS[@]+"${PRE_PARTS[@]}"}"; do [[ -n "$P" && "$P" != */libdevicepaths.so ]] && OLD_PRELOAD="${OLD_PRELOAD:+$OLD_PRELOAD:}$P"; done
+  ENVP=(/usr/bin/env "LD_PRELOAD=$PRELOAD${OLD_PRELOAD:+:$OLD_PRELOAD}")
+fi
 if [[ "$OS" != Darwin && -n "${NO_NET:-}" ]]; then
   echo "[apksim] --no-network is macOS-only; in a container use docker run --network none" >&2
 fi
