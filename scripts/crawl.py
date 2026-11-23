@@ -16,14 +16,17 @@ the two are compared: screens new, gone and changed, with a difference image.
 
 Writes OUT/report.html (a clickable map and a card per screen), OUT/crawl.json (graph, paths, captures, findings),
 OUT/screens/ (captures) and OUT/logs/. Exit status: 0 when the walk finished, 1 when it found crashes (or, with --base,
-differences), 2 for bad arguments or an instance that never started.
+differences), 2 for bad arguments or an instance that never started, 143 when stopped (SIGTERM or SIGINT: the walk so
+far is written, `"stopped": true`, its instances killed). crawl.json's `unexplored` lists the screens found and not
+explored (or explored in part) and `cut_by` what cut the walk short (max-seconds, max-screens, max-depth, stopped):
+`--seed OUT --only-file IDS` with those ids goes on from there.
 
 --seed RUN with --only ID,... starts from an earlier walk's crawl.json and walks only the named screens again (and any
 new screen they lead to); the rest is carried over with its captures (docs/crawl.md "Seeded walks"). --events adds a
 line of JSON per finished screen and level on stdout.
 """
 import xml.etree.ElementTree as ET
-import argparse, base64, concurrent.futures, hashlib, html, itertools, json, os, re, shlex, shutil, subprocess, sys
+import argparse, base64, concurrent.futures, hashlib, html, itertools, json, os, re, shlex, shutil, signal, subprocess, sys
 import tempfile, threading, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -205,6 +208,11 @@ class Instance(snapshot.Worker):
         self.baseline = None  # what they held once this launch's app had started (see reach)
 
     def launch(self):
+        if self.ctx.get("restore"):
+            # --keep-data: this instance's copy of the prepared slot, made again from it (the data the app had at launch).
+            if self.proc is not None and self.proc.poll() is None:
+                self.quit()
+            self.own_options = self.ctx["restore"](self.i)
         self.generation += 1
         self.slot = self.baseline = None
         self.log = os.path.join(self.ctx["out"], "logs", f"{self.ctx['name']}-instance-{self.i}.{self.generation}.log")
@@ -367,7 +375,7 @@ class Instance(snapshot.Worker):
         new launch on an emptied slot. A case that sets state on the instance before replaying (`network offline`)
         calls this first and replays with relaunch=False, so the replay cannot replace the instance it set up."""
         self.ensure()
-        changed = self.changed_files() if self.ctx.get("fresh") and not self.ctx.get("keep_state") else []
+        changed = self.changed_files() if self.from_launch_data() else []
         if changed:
             self.quit()
             self.launch()
@@ -375,6 +383,11 @@ class Instance(snapshot.Worker):
                 self.ctx["relaunches"][0] += 1
                 for f in changed:
                     self.ctx["relaunch_files"][f] = self.ctx["relaunch_files"].get(f, 0) + 1
+
+    def from_launch_data(self):
+        """Whether replays start from the data the app had at its launch: an emptied slot (--fresh) or, with --keep-data,
+        a new copy of the prepared one. Not with --keep-app-state."""
+        return bool(self.ctx.get("fresh") or self.ctx.get("restore")) and not self.ctx.get("keep_state")
 
     def learn_defaults(self):
         """After a path's steps (navigation, before any control is tried): preference keys that appeared since the
@@ -394,19 +407,19 @@ class Instance(snapshot.Worker):
     def reach(self, path, extra=(), relaunch=True):
         """Back to a screen: the default configuration, a fresh start (at the path's deep link), the path's steps.
         From the data the app had at its start: a launch whose app has written to its data since is replaced by a
-        new one on an emptied slot (--fresh) first. Not with --keep-data, whose slot cannot be put back."""
+        new one on an emptied slot (--fresh) first, or with --keep-data on a new copy of the prepared slot."""
         self.fresh_start() if relaunch else self.ensure()
         self.configure(DEFAULT_COMBO)
         self.say(f"clock {CLOCK}")
         self.expect_ok("restart" + (f" {path['start']}" if path.get("start") else ""))
         self.settle()
-        if self.baseline is None and self.ctx.get("fresh") and not self.ctx.get("keep_state"):
+        if self.baseline is None and self.from_launch_data():
             # Once the app's start has written what it writes at every start (taken after a restart and a settle).
             self.baseline = self.data_state()
         for step in path["steps"]:
             self.expect_ok(step)
             self.settle()
-        if self.ctx.get("fresh") and not self.ctx.get("keep_state"):
+        if self.from_launch_data():
             self.learn_defaults()
         for step in extra:
             self.expect_ok(step)
@@ -566,6 +579,131 @@ def scroll_cmd(recs):
     return f"drag {x} {t + (b - t) * 3 // 4} {x} {t + (b - t) // 4} 300"  # no fling: the same scroll every run
 
 
+def apk_package(apk):
+    """The package an APK's binary manifest names (scripts/subsystem-audit.py's reader)."""
+    import importlib.util, zipfile
+    spec = importlib.util.spec_from_file_location("subsystem_audit", os.path.join(os.path.dirname(os.path.abspath(__file__)), "subsystem-audit.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    with zipfile.ZipFile(apk) as z:
+        return mod.manifest_info(z.read("AndroidManifest.xml"))["package"]
+
+
+def slot_serial(slot):
+    """The serial apksim gives a slot with no --serial (DeviceIdentity.defaultSerial)."""
+    h = hashlib.sha256(f"apksim-serial:{slot}".encode()).digest()
+    digits = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    out = [digits[b % 36] for b in h[:16]]
+    out[0], out[1] = chr(ord("A") + h[16] % 26), chr(ord("0") + h[17] % 10)
+    return "".join(out)
+
+
+def slot_android_id(slot):
+    """The ANDROID_ID apksim gives a slot whose settings have none (InstallState.slotAndroidId)."""
+    return hashlib.sha256(f"apksim-android-id:{slot}".encode()).digest()[:8].hex()
+
+
+class KeptSlot:
+    """--keep-data: the prepared data slot (the one the caller's own launch takes: `--data-slots NAME` gives NAME-0, else
+    `default`), never written by the walk. Each instance runs on a copy of its own (an APFS clone, or a reflink where the
+    file system has them), made again from the prepared slot at each of its launches, so every replay starts from the
+    data the app had at launch, as on an emptied slot without --keep-data; and any number of instances (-j) start
+    signed in. The copies are slots `kTOKENI-0` in the app's data folder, removed at the end. Each copy keeps the
+    prepared slot's device identity: its ANDROID_ID is in its settings (or is seeded as the prepared slot's), its serial
+    is passed as --serial (both come from a slot's name otherwise)."""
+
+    def __init__(self, apk, options):
+        opts, name, i = [], None, 0
+        while i < len(options):
+            if options[i] == "--data-slots" and i + 1 < len(options):
+                name = options[i + 1]
+                i += 2
+                continue
+            opts.append(options[i])
+            i += 1
+        self.source_name = f"{name}-0" if name else "default"
+        try:
+            pkg = apk_package(apk)
+        except Exception as e:  # noqa: BLE001
+            fail(f"--keep-data: could not read the APK's package: {e}")
+        state = os.environ.get("APKSIM_HOME") or (os.path.expanduser("~/.apksim") if os.path.exists(
+            os.path.join(ROOT, "work", "release")) else os.path.join(ROOT, "work"))
+        self.data = os.path.join(state, "cache", "data", pkg)
+        self.source = os.path.join(self.data, self.source_name)
+        if not os.path.isdir(self.source):
+            fail(f"--keep-data: no prepared data slot at {self.source} (prepare it with a launch of the same "
+                 f"--data-slots{' ' + name if name else ''} first)")
+        self.check_unheld()
+        self.token = os.urandom(4).hex()
+        if "--serial" not in opts:
+            opts += ["--serial", slot_serial(self.source_name)]
+        if not any(o.startswith("secure:android_id=") for o in opts) and not self.has_android_id():
+            opts += ["--setting", f"secure:android_id={slot_android_id(self.source_name)}"]
+        self.options = opts
+        self.made = set()
+        self.lock = threading.Lock()
+
+    def check_unheld(self):
+        """The prepared slot must not be in use (an instance holding it may be writing while it is copied)."""
+        import fcntl
+        lock = os.path.join(self.source, ".lock")
+        try:
+            fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o644)
+        except OSError:
+            return
+        try:
+            fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.lockf(fd, fcntl.LOCK_UN)
+        except OSError:
+            fail(f"--keep-data: the data slot {self.source} is in use by a running apksim: quit it first")
+        finally:
+            os.close(fd)
+
+    def has_android_id(self):
+        try:
+            with open(self.source + ".device/settings.properties", errors="replace") as f:
+                return any(ln.startswith("secure/android_id=") for ln in f)
+        except OSError:
+            return False
+
+    def slot(self, i):
+        return os.path.join(self.data, f"k{self.token}{i}-0")
+
+    def restore(self, i):
+        """Instance i's copy, made afresh from the prepared slot; the options that make its launch take it."""
+        dst = self.slot(i)
+        with self.lock:
+            self.made.add(i)
+        for d in (dst, dst + ".device"):
+            shutil.rmtree(d, ignore_errors=True)
+        for s, d in ((self.source, dst), (self.source + ".device", dst + ".device")):
+            if os.path.isdir(s):
+                copy_tree(s, d)
+        return ["--data-slots", f"k{self.token}{i}"]
+
+    def remove(self):
+        with self.lock:
+            made, self.made = sorted(self.made), set()
+        for i in made:
+            for d in (self.slot(i), self.slot(i) + ".device"):
+                shutil.rmtree(d, ignore_errors=True)
+
+
+def copy_tree(src, dst):
+    """A copy of a folder, cloned (APFS clonefile, a reflink) where the file system can, else copied."""
+    if sys.platform == "darwin":
+        r = subprocess.run(["cp", "-cR", src, dst], capture_output=True)
+        if r.returncode == 0:
+            return
+        shutil.rmtree(dst, ignore_errors=True)
+    elif shutil.which("cp"):
+        r = subprocess.run(["cp", "-a", "--reflink=auto", src, dst], capture_output=True)
+        if r.returncode == 0:
+            return
+        shutil.rmtree(dst, ignore_errors=True)
+    shutil.copytree(src, dst, symlinks=True)
+
+
 class Explorer:
     """One walk of one APK: the graph, the findings and the captures."""
 
@@ -573,17 +711,20 @@ class Explorer:
         self.name, self.apk, self.args, self.out, self.shots = name, apk, args, out, shots
         self.options = list(args.apksim) + list(extra_options)
         # Never the owner's saved sign-ins, and a slot namespace of the crawler's own: --fresh would empty an ordinary
-        # launch's `default` slot (--keep-data takes the slot as it is, and an option of the caller's own wins).
+        # launch's `default` slot (--keep-data walks copies of a prepared slot: KeptSlot; an option of the caller's own wins).
         self.options += ["--no-autofill"]
         # One device identity for every instance (the serial and ANDROID_ID come from the slot's name otherwise, and a
         # screen that shows one would differ between instances, and between builds walked on other slots).
-        # Not with --keep-data: the slot's own identity is what its sign-in was made under (a seed would be written into it).
+        # Not with --keep-data: the prepared slot's own identity is what its sign-in was made under (KeptSlot passes it on).
         if not args.keep_data and "--serial" not in self.options:
             self.options += ["--serial", "CRAWL0000000000"]
         if not args.keep_data and not any(o.startswith("secure:android_id=") for o in self.options):
             self.options += ["--setting", "secure:android_id=00c0ffee00c0ffee"]
         if not args.keep_data and "--data-slots" not in self.options:
             self.options += ["--data-slots", "crawl"]
+        self.kept = KeptSlot(apk, self.options) if args.keep_data else None
+        if self.kept:
+            self.options = self.kept.options
         self.screens = {}      # id -> screen
         self.order = []        # ids in discovery order
         self.edges = []        # {from, action, to, ...}
@@ -594,6 +735,10 @@ class Explorer:
         self.budget = Budget(args)
         self.t_explore = self.t_capture = 0.0
         self.explored = set()   # ids whose controls were tried in this run
+        self.partial = set()    # ids whose controls were tried only in part (the time ran out on them)
+        self.seed_unexplored = set()  # a seeded walk: the seed's own unexplored screens (carried as they were)
+        self.cut_by = set()     # what left screens unexplored: max-seconds, max-screens, max-depth, stopped
+        self.captured_now = set()  # a seeded walk: carried screens captured in this run (the seed, stopped, had none)
         self.announced = set()  # ids --events has told
         os.makedirs(os.path.join(out, "logs"), exist_ok=True)
         self.stage = tempfile.mkdtemp(prefix="apksim-crawl-")
@@ -602,7 +747,7 @@ class Explorer:
         self.ctx = {"spec": {"timezone": "UTC", "clock": CLOCK}, "apk": apk, "apksim": self.options, "out": out,
                     "stage": self.stage, "snapshot": True, "fresh": not args.keep_data, "screens": [],
                     "record": lambda r: None, "crashes": self.findings, "stable_ms": args.stable_ms, "name": name,
-                    "keep_state": args.keep_app_state, "relaunches": [0], "relaunch_files": {}, "first_values": {}, "lock": threading.Lock()}
+                    "keep_state": args.keep_app_state, "restore": self.kept.restore if self.kept else None, "relaunches": [0], "relaunch_files": {}, "first_values": {}, "lock": threading.Lock()}
         self.instances = []
         self.deps_map = None     # --record-deps: DepsMap, once the probed packages are known
         self.start_deps = None   # --record-deps: the app-start span, read from the first instance
@@ -648,6 +793,8 @@ class Explorer:
     def close(self):
         for inst in self.instances:
             inst.quit()
+        if self.kept:
+            self.kept.remove()
         shutil.rmtree(self.stage, ignore_errors=True)
 
     def run_on_pool(self, tasks, fn):
@@ -711,6 +858,7 @@ class Explorer:
             if obs["id"] not in self.screens:
                 if self.budget.max_screens is not None and len(self.screens) >= self.budget.max_screens:
                     self.incomplete.append(f"--max-screens {self.budget.max_screens}: start {start or 'the launcher activity'} not added")
+                    self.cut_by.add("max-screens")
                     continue
                 level.append(self.add_screen(obs, {"start": start, "steps": []}, None, 0))
         self.walk(level)
@@ -728,6 +876,7 @@ class Explorer:
                 deep = [s for s in level if s["depth"] >= self.budget.max_depth]
                 if deep:
                     self.incomplete.append(f"--max-depth {self.budget.max_depth}: {', '.join(s['id'] for s in deep)} not explored")
+                    self.cut_by.add("max-depth")
                     level = [s for s in level if s["depth"] < self.budget.max_depth]
                     if not level:
                         break
@@ -741,6 +890,8 @@ class Explorer:
                 if res is None:
                     continue
                 self.explored.add(screen["id"])
+                if res.get("truncated"):
+                    self.partial.add(screen["id"])
                 screen["actions"] = res["actions"]
                 screen["flaky"] = res.get("flaky")
                 if res.get("deps") is not None:
@@ -758,6 +909,7 @@ class Explorer:
                             edge["to"] = None
                         elif self.budget.max_screens is not None and len(self.screens) >= self.budget.max_screens:
                             self.incomplete.append(f"--max-screens {self.budget.max_screens}")
+                            self.cut_by.add("max-screens")
                             edge["note"] = "not followed: --max-screens"
                             edge["to"] = None
                         else:
@@ -768,6 +920,7 @@ class Explorer:
                 self.screen_event(screen)
             level = nxt
         if (level or cut) and self.budget.out_of_time():
+            self.cut_by.add("max-seconds")
             self.incomplete.append(f"--max-seconds {self.args.max_seconds}: {len(level)} screen(s) not explored"
                                    + (", and some controls of the last level not tried" if cut else ""))
         for sid in self.order:  # found and never explored (a budget): said too, so a reader has every screen
@@ -794,6 +947,7 @@ class Explorer:
         self.findings.extend(f for f in seed.get("findings", []) if f.get("kind") not in ("sweep", "compare")
                              and not any(under(f.get("path"), t) for t in targets))
         self.incomplete += [f"seed: {x}" for x in seed.get("incomplete", [])]
+        self.seed_unexplored = set(seed.get("unexplored", [])) - set(only)
         for sid in self.order:
             if sid not in only:
                 self.screen_event(self.screens[sid])
@@ -861,6 +1015,7 @@ class Explorer:
         left = [now[o] for o in only if now[o] in self.screens and now[o] not in self.explored]
         if left:
             self.incomplete.append(f"--max-seconds {self.args.max_seconds}: --only screen(s) not explored: {', '.join(left)}")
+            self.cut_by.add("max-seconds")
         self.t_explore = time.time() - t0
 
     def observe_at(self, inst, screen):
@@ -886,7 +1041,7 @@ class Explorer:
         """The carried screens' captures, linked (else copied) from the seed into OUT."""
         for sid in self.order:
             s = self.screens[sid]
-            if s.get("origin") != "carried":
+            if s.get("origin") != "carried" or sid in self.captured_now:
                 continue
             caps = {}
             for name, rel in (s.get("captures") or {}).items():
@@ -1090,10 +1245,27 @@ class Explorer:
             except ReplayFailed as e:
                 self.finding("capture", f"{screen['id']} {name}: {e}", screen["path"])
 
+    def unexplored(self):
+        out = []
+        for sid in self.order:
+            s = self.screens.get(sid) or {}
+            if s.get("origin") == "carried":
+                if sid in self.seed_unexplored:
+                    out.append(sid)
+            elif sid not in self.explored or sid in self.partial:
+                out.append(sid)
+        return out
+
     def doc(self):
         d = {"build": self.name, "apk": os.path.basename(self.apk), "screens": [self.screens[i] for i in self.order],
              "edges": self.edges, "findings": self.findings, "incomplete": self.incomplete,
              "seconds": {"explore": round(self.t_explore, 1), "capture": round(self.t_capture, 1)}}
+        # Screens found and never explored (or explored in part: the time ran out on them), in discovery order, and what
+        # cut the walk short: `--seed RUN --only-file` with these ids goes on from where it stopped.
+        d["unexplored"] = self.unexplored()
+        if self.partial:
+            d["partly_explored"] = [i for i in self.order if i in self.partial]
+        d["cut_by"] = sorted(self.cut_by)
         # Launches that replaced an instance whose app had written to its data (Instance.reach).
         d["relaunches"] = self.ctx["relaunches"][0]
         if self.ctx["relaunch_files"]:
@@ -1791,7 +1963,7 @@ def parse(argv):
     p.add_argument("--no-captures", action="store_true")
     p.add_argument("--setting", action="append", default=[])
     p.add_argument("--sdcard-file", action="append", default=[])
-    p.add_argument("--keep-data", action="store_true", help="use the data slot as it is (one instance, no --fresh)")
+    p.add_argument("--keep-data", action="store_true", help="start from a prepared data slot (the one this run's --data-slots names, else default): each instance runs on a copy of it, made again at each relaunch, and the slot itself is not written")
     p.add_argument("--keep-app-state", action="store_true",
                    help="replay on an instance whose app has written to its data since its launch (faster; walks can "
                         "then differ: by default such an instance is launched again on an emptied slot first)")
@@ -1817,7 +1989,6 @@ def parse(argv):
     for s in args.sdcard_file:
         args.apksim += ["--sdcard-file", s]
     if args.keep_data:
-        args.jobs = 1
         if args.base or args.base_option:
             fail("--keep-data cannot be used with --base: two walks cannot start from one prepared data slot")
     if args.jobs < 1:
@@ -1833,7 +2004,9 @@ def parse(argv):
     if args.deps_packages and not args.record_deps:
         fail("--deps-packages goes with --record-deps")
     if args.seed:
-        if not args.only_ids:
+        # An --only-file with no ids is allowed: a walk stopped during its captures has every screen explored, and its
+        # continuation only takes the captures it lacks.
+        if not args.only_ids and not args.only_file:
             fail("--seed needs --only or --only-file: a seeded walk walks only the screens named, and with none it would "
                  "walk nothing (to walk everything again, leave out --seed)")
         if args.base or args.base_option:
@@ -1896,6 +2069,61 @@ def matrix_of(args):
     return snapshot.expand_matrix(matrix, exclude)
 
 
+STOP = {"walk": None, "out": None, "t0": None, "combos": [], "base": None}  # base: the base build's walk, once started
+
+
+def on_stop(signum, frame):
+    """SIGTERM or SIGINT (Greenroom's Stop): the walk so far is written as a walk cut short, the instances end, exit 143.
+    Fast, as a caller gives a few seconds before it kills the process tree: what is known is written as it is (the
+    screens found, the transitions merged, the captures taken), with no replay or capture of more."""
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    walk = STOP["walk"]
+    if walk is None:
+        os._exit(143)
+    for inst in walk.instances + (STOP["base"].instances if STOP["base"] else []):
+        try:
+            if inst.proc is not None and inst.proc.poll() is None:
+                inst.proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        if walk.t_explore == 0:
+            walk.t_explore = time.time() - STOP["t0"]
+        walk.cut_by.add("stopped")
+        doc = None
+        for _ in range(5):  # the pool's threads may still be appending
+            try:
+                doc = json.loads(json.dumps(walk.doc()))
+                break
+            except RuntimeError:
+                time.sleep(0.05)
+        if doc is not None:
+            sig = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
+            doc["incomplete"].append(f"stopped ({sig}) after {time.time() - STOP['t0']:.0f} s"
+                                     + (" during the base build's walk" if STOP["base"] else "")
+                                     + f": {len(doc['unexplored'])} screen(s) not explored")
+            doc["stopped"] = True
+            doc["combos"] = [snapshot.combo_name(c) for c in STOP["combos"]]
+            doc["seconds"]["total"] = round(time.time() - STOP["t0"], 1)
+            with open(os.path.join(STOP["out"], "crawl.json.part"), "w") as f:
+                json.dump(doc, f, indent=1)
+            os.replace(os.path.join(STOP["out"], "crawl.json.part"), os.path.join(STOP["out"], "crawl.json"))
+            try:
+                html_report(STOP["out"], doc)
+            except Exception:  # noqa: BLE001
+                pass
+            log(f"stopped: {len(doc['screens'])} screens, {len(doc['unexplored'])} not explored, written to "
+                f"{os.path.join(STOP['out'], 'crawl.json')}")
+    finally:
+        try:
+            if walk.kept:
+                walk.kept.remove()
+            shutil.rmtree(walk.stage, ignore_errors=True)
+        finally:
+            os._exit(143)
+
+
 def main():
     args = parse(sys.argv[1:])
     global TITLES_ARE_IDENTITY
@@ -1919,6 +2147,9 @@ def main():
     t0 = time.time()
     new = Explorer("new", apk, args, out, [])
     base = None
+    STOP.update(walk=new, out=out, t0=t0, combos=combos)
+    signal.signal(signal.SIGTERM, on_stop)
+    signal.signal(signal.SIGINT, on_stop)
     try:
         new.pool(args.jobs)
         if seed is not None:
@@ -1927,7 +2158,14 @@ def main():
             new.explore()
         log(f"[new] {len(new.screens)} screens, {len(new.edges)} transitions in {new.t_explore:.1f} s")
         if combos:
-            new.capture(combos, None if seed is None else [i for i in new.order if new.screens[i]["origin"] == "walked"])
+            ids = None
+            if seed is not None:
+                # The --only screens, and carried ones the seed has no captures for (a walk stopped before its captures).
+                missing = [i for i in new.order if new.screens[i]["origin"] == "carried"
+                           and any(snapshot.combo_name(c) not in (new.screens[i].get("captures") or {}) for c in combos)]
+                new.captured_now = set(missing)
+                ids = [i for i in new.order if new.screens[i]["origin"] == "walked"] + missing
+            new.capture(combos, ids)
             log(f"[new] {len(combos)} combination(s) captured in {new.t_capture:.1f} s")
         if seed is not None:
             new.carry_captures(lambda rel: os.path.join(src_dir, rel))
@@ -1954,6 +2192,7 @@ def main():
             # ones (another device identity), and twice the JVMs would be alive.
             new.close()
             base = Explorer("base", base_apk, args, out, shlex.split(args.base_option), shots="base-screens")
+            STOP.update(base=base)
             base.pool(args.jobs)
             base.explore()
             log(f"[base] {len(base.screens)} screens in {base.t_explore:.1f} s")

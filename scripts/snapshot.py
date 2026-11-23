@@ -165,7 +165,8 @@ class Worker:
                "--timezone", spec.get("timezone", "UTC")]
         if spec.get("clock"):
             cmd += ["--clock", spec["clock"]]
-        cmd += ["--device", self.combos[0]["device"], *self.ctx["apksim"], self.ctx["apk"]]
+        # own_options: an instance's own (crawl.py's --keep-data gives each its own copy of the prepared data slot).
+        cmd += ["--device", self.combos[0]["device"], *self.ctx["apksim"], *getattr(self, "own_options", ()), self.ctx["apk"]]
         with open(self.log, "w") as log:
             # Cold launches: a standby has read the GPU switches --snapshot sets before the launch.
             self.proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,

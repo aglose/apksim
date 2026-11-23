@@ -33,8 +33,12 @@ scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] 
   `https` link the app handles). Every start is a root; screens reached from several are merged.
 - Apps behind a sign-in: start where the app is signed in. `--setting global|secure|system:KEY=V`, `--sdcard-file
   PATH=text:TEXT` and any apksim option after `--` (`--feature`, `--locale`, `--network replay FILE`...) go to every
-  launch; a deep link past the sign-in screen is a `--start`; `--keep-data` uses the data slot as it is (no `--fresh`, one
-  instance, since only one slot is prepared) for an app whose session lives in its data. The crawler never types a
+  launch; a deep link past the sign-in screen is a `--start`; `--keep-data` starts from a prepared data slot (the one a
+  launch with the same `--data-slots NAME` after `--` takes, `NAME-0`, else `default`) for an app whose session lives
+  in its data: each instance (`-j N` as without it) runs on a copy of its own (an APFS clone, or a reflink), made
+  again from the prepared slot at each of its launches, so replays start from the prepared data as they would from an
+  emptied slot, and the prepared slot is never written. The copies keep its serial and ANDROID_ID (a slot's name
+  gives them otherwise) and are removed at the end; a prepared slot in use by a running instance stops the walk. The crawler never types a
   password: text fields are left alone unless `--fill TEXT` is given, which types it into the fields of each screen
   before its controls are tried.
 - Safety: a control whose label (its text, description or the text inside it) matches the skip list is never tapped and
@@ -111,8 +115,8 @@ So each replay starts from the data the app had at its launch:
   preferences). Each costs a cold launch (one or two seconds); an app that writes on its own at every turn (a log
   file, a timer's record) costs one per replay. On a podcast app's settings (38 screens, ~300 transitions) comparing
   files alone relaunched 207 times, all for preference defaults, and explored in 850 s against 455-590 s before.
-- `--keep-app-state` replays on the instance as it is (faster; the old behaviour). `--keep-data` never relaunches: its
-  slot cannot be put back.
+- `--keep-app-state` replays on the instance as it is (faster; the old behaviour). With `--keep-data` a relaunch is on a new
+  copy of the prepared slot.
 
 What it does not cover: state an app keeps in memory only (a static that a tap changed and nothing writes) outlives a
 `restart`, as before. External storage is at a device's path, `/storage/emulated/0`, in every instance
@@ -147,8 +151,8 @@ The crawler does not decide what is affected; it is told.
    `flaky` and no transitions. If the structure it reaches is already a screen of the seed, that screen is walked again
    (and `replaces` the old id) and the old entry is dropped.
 5. `--start` is not used (every screen's path has its start). The matrix must be the seed's (`combos` in its
-   `crawl.json`, so the carried captures fit; a different one is refused). `--seed` without `--only` would walk nothing
-   and is refused (leave out `--seed` to walk everything again); `--seed` with `--base` or `--base-option`, and with
+   `crawl.json`, so the carried captures fit; a different one is refused). `--seed` with neither `--only` nor `--only-file` would walk
+   nothing and is refused (leave out `--seed` to walk everything again); `--seed` with `--base` or `--base-option`, and with
    `--sweep`, are refused. The seed may be OUT itself: its captures are moved aside first.
 
 `crawl.json` is as before, with two keys per screen: `origin`, `"walked"` (explored or found in this run; every screen
@@ -169,6 +173,31 @@ with `"explored": false`. A `level` line comes with each `[BUILD] depth N:` line
 walk's first level is the named screens at their own depths). Captures follow the walk, so a screen's line comes before
 its captures are taken. `build` is `new`, or `base` for the other build of a `--base` walk. Every event is one line
 starting with `{`; the human lines never do.
+
+### Stopping and continuing a walk
+
+A walk cut short says what it left. `crawl.json` has, in every walk:
+
+- `unexplored`: the ids of the screens found and never explored, and of those explored only in part (the time ran out
+  while their controls were tried; those are also in `partly_explored`), in discovery order. Carried screens count as
+  the seed left them (the seed's own `unexplored`, less the ones named again).
+- `cut_by`: what cut the walk short, any of `max-seconds`, `max-screens`, `max-depth` and `stopped`; `[]` for a walk
+  that finished.
+
+SIGTERM or SIGINT (a Stop button) stops a walk: the instances are killed, and `crawl.json` and `report.html` are
+written with what is known at that moment (the screens found, the transitions of every level merged so far, the
+captures taken), `"stopped": true` and an `incomplete` line `stopped (SIGTERM) after N s: M screen(s) not explored`;
+the exit status is 143. The screens of the level being explored when the stop came are unexplored (a level is merged
+when all its screens are done), and captures follow the whole walk, so a walk stopped while exploring has none. The
+instances are killed, not quit, and nothing is captured: the test app's walk (11 screens) exits under 10 ms after
+SIGTERM, so a caller's 4 s before it kills the process tree is ample.
+
+`--seed STOPPED_OUT --only-file IDS` with `unexplored` written one per line goes on from there: those screens are
+explored and every new screen they lead to is walked, breadth-first, within the budgets given again (`--max-screens`
+counts the carried screens; raise it for a walk it cut). The carried screens the seed has no captures for (all of a
+walk stopped before its captures) are captured in this run. An `--only-file` with no ids is allowed: that run only
+takes the missing captures (a walk stopped during its captures). Repeated, a walk stopped any number of times ends
+with the graph one uninterrupted walk finds (`scripts/crawl-check.py` step 13).
 
 ## Per-screen dependencies
 
