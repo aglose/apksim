@@ -872,8 +872,13 @@ repo): read it before working with that app.
 
 Control commands: `tap x y`, `swipe x1 y1 x2 y2 [ms]` (a finger moving over ms of real time, 300 by default as `input swipe`, lifting at the end point so the release
 velocity flings as on a device; Host's `Drag` follows the clock, not a count of queued events; before 2026-11-13 it held
-120 ms before every lift, so a timed swipe never flung), `drag x1 y1 x2 y2 [ms]` (the same, still for 120 ms before lifting:
-no fling, so a scroll by the same distance every time; what screenshot specs, crawl.py and the MCP swipe tool send),
+120 ms before every lift, so a timed swipe never flung), `drag x1 y1 x2 y2 [ms]` (the same path, then still at the end for 120 ms and 24 moves, or 250 ms, before lifting:
+no fling, so a scroll by the same distance every time; what screenshot specs, crawl.py and the MCP swipe tool send. Its
+moves are a fixed series of points, one per 8.3 ms of MS, one per loop turn, not read off the clock: a list that takes
+a touch over at the slop starts from the first sample past it, which the clock put anywhere within a step; and
+Robolectric's VelocityTracker reads its last 20 samples in 200 ms, so a 120 ms hold of ~16 moves still flung. The same
+drag landed up to ~50 px apart before. On a screen slower than 120 fps the moves take longer than MS (a turn each: a
+300 ms drag at 20 fps ~1.8 s), and a drag under the touch slop stays down ~0.5 s, near a long press; `scripts/drag-check.py`, in ci-smoke.sh),
 `wheel x y amount`, `type text`, `key NAME [count] [ctrl|shift|alt|meta]` (e.g. `key A 1 ctrl`, `key DEL 5`), `back`,
 `paste`, `shot file.png` (app pixels), `shot --skin file.png` (in the skin's frame), `wshot file.ppm` (the real window, captured in-process), `activity`, `windows`
 (each window's position, size, focus, visibility and owning activity with its lifecycle flags, e.g.
