@@ -602,7 +602,7 @@ public class Host {
     ActivityController<? extends Activity> top = stack.peek();
     Crashes.app(() -> {
       if (top != null) top.pause().stop();
-      while (!stack.isEmpty()) stack.pop().destroy();
+      while (!stack.isEmpty()) destroyActivity(stack.pop());
     });
     controls.results().clear();
     pendingScript.clear();
@@ -1295,7 +1295,7 @@ public class Host {
         if (!above.get().isFinishing()) above.get().finish();
         lastFinished = above.get();
         moveTo(above, 0);
-        above.destroy();
+        destroyActivity(above);
         results.finished(above.get());
       }
       // As ActivityThread: a resumed one is paused around onNewIntent; a stopped one gets it before onRestart.
@@ -1342,7 +1342,7 @@ public class Host {
     while (!stack.isEmpty() && stack.peek().get().isFinishing()) {
       ActivityController<? extends Activity> done = stack.pop();
       lastFinished = done.get();
-      done.pause().stop().destroy();
+      destroyActivity(done.pause().stop());
       results.finished(done.get());  // its setResult, delivered before the requester resumes
       ActivityController<? extends Activity> below = stack.peek();
       if (below != null) arrange(new ArrayList<>(stack), false);
@@ -1355,7 +1355,7 @@ public class Host {
       if (c == stack.peek() || !c.get().isFinishing()) continue;
       it.remove();
       moveTo(c, 0);  // onStop first: arrange leaves a finishing one as it was (paused, in a hand-off)
-      c.destroy();
+      destroyActivity(c);
       results.finished(c.get());
       removed = true;
     }
@@ -1433,6 +1433,28 @@ public class Host {
       out.addAll(above);
     }
     return out;
+  }
+
+  /**
+   * ActivityThread.handleDestroyActivity: destroy, then `WindowManagerGlobal.closeAll(token)` removes the windows the
+   * activity leaked (a Dialog or PopupWindow still showing). Robolectric does neither, so they stayed in `windows`,
+   * drawn and touchable, after a `restart` or a finish (issue 614). A window is the activity's when its view's context
+   * unwraps to it (dialogs and popups are made with the activity as their context).
+   */
+  static void destroyActivity(ActivityController<? extends Activity> c) {
+    Activity activity = c.get();
+    c.destroy();
+    WindowManagerGlobal wmg = WindowManagerGlobal.getInstance();
+    for (View v : rootViews()) {
+      android.content.Context ctx = v.getContext();
+      while (ctx instanceof android.content.ContextWrapper w && ctx != activity) ctx = w.getBaseContext();
+      if (ctx != activity) continue;
+      try {
+        wmg.removeView(v, true);
+      } catch (IllegalArgumentException e) {
+        // already gone (its parent's removal took it)
+      }
+    }
   }
 
   /** WindowManagerGlobal.mViews, looked up once: rootViews() runs on every loop turn. */
