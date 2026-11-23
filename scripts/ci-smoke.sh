@@ -110,6 +110,9 @@ popup() { drive nodes | grep -oE 'text="(trace: begun twice [0-9]+ times|tooltip
 drive 'open apksim://popup-trace' 'wait 2000' 'tap 168 152' 'wait 500' 'tap 168 152' 'wait 500' \
   'swipe 200 392 500 392 300' 'wait 1000' >/dev/null
 shown="$(popup)"
+# The open Popup polls its position every frame and draws nothing: settle answers (issue 612).
+drive 'settle 5000 200' | tail -1 | grep -q 'settled in' \
+  || { echo "settle never answered with a Compose Popup open (its position-polling frame loop)" >&2; exit 1; }
 drive 'tap 143 632' 'wait 1000' >/dev/null
 tapped="$(popup)"
 # A full-screen FLAG_NOT_TOUCHABLE overlay above the activity takes no touch (issue 323): a tap on Settings lands.
