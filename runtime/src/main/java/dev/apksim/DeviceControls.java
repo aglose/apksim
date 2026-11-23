@@ -1206,7 +1206,7 @@ final class DeviceControls {
     }
     ActivityController<? extends Activity> top = stack.peek();
     if (top != null && hiddenBy == null) top.pause().stop();
-    for (ActivityController<? extends Activity> c : old) c.destroy();
+    for (ActivityController<? extends Activity> c : old) Host.destroyActivity(c);
     stack.clear();
     for (int i = 0; i < old.size(); i++) {
       Activity was = old.get(i).get();

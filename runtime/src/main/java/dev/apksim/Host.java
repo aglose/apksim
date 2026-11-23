@@ -1359,7 +1359,7 @@ public class Host {
    * drawn and touchable, after a `restart` or a finish (issue 614). A window is the activity's when its view's context
    * unwraps to it (dialogs and popups are made with the activity as their context).
    */
-  private static void destroyActivity(ActivityController<? extends Activity> c) {
+  static void destroyActivity(ActivityController<? extends Activity> c) {
     Activity activity = c.get();
     c.destroy();
     WindowManagerGlobal wmg = WindowManagerGlobal.getInstance();
@@ -1369,7 +1369,7 @@ public class Host {
       if (ctx != activity) continue;
       try {
         wmg.removeView(v, true);
-      } catch (RuntimeException e) {
+      } catch (IllegalArgumentException e) {
         // already gone (its parent's removal took it)
       }
     }
