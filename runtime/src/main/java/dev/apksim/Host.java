@@ -846,6 +846,14 @@ public class Host {
   private static final int DRAG = 100;
   /** How long a `drag` stays still at its end before lifting, so it does not fling. */
   private static final long HOLD_NANOS = 120_000_000L;
+  /**
+   * And at least this many moves at the end point: Robolectric's VelocityTracker (ShadowVelocityTracker) takes its
+   * velocity from its last 20 samples within 200 ms, not a device's 100 ms, so a 120 ms hold of 15-16 moves (one per
+   * loop turn) still had a few moving ones in its window and the list flung by a different amount each time (a crawl's
+   * same path landed up to 54 px apart). Once more than 20 samples at one point are in, its velocity is 0, as a
+   * device's would be after 120 ms still.
+   */
+  private static final int HOLD_MOVES = 24;
   private final ArrayDeque<Drag> drags = new ArrayDeque<>();
   /** The timed drag in progress, or null. Scripted and window input wait for it to end. */
   private Drag drag;
@@ -855,7 +863,8 @@ public class Host {
    * first point to the second over MS of real time, then up, as InputShellCommand's swipe follows the clock. A swipe
    * lifts at the end point with no still tail, as a device's, so the velocity tracker reads its speed and a list
    * flings in proportion (issue 346: it held 120 ms first, and never flung). A drag stays still for
-   * {@link #HOLD_NANOS} before lifting, so it does not fling and scrolls by the same distance every time. Not a fixed
+   * {@link #HOLD_NANOS}, and for at least {@link #HOLD_MOVES} moves, before lifting, so it does not fling and scrolls by
+   * the same distance every time. Not a fixed
    * number of queued events: input goes out at most once a loop turn, and a turn takes as long as a frame, so on a
    * screen drawing at 20 fps a 1.5 s hold of ~200 events would lift only after ~10 s.
    */
@@ -870,6 +879,8 @@ public class Host {
     long start;
     /** When the move to the end point went out (0 before): the hold counts from there, not from the deadline. */
     long atEnd;
+    /** Moves sent at the end point so far (see HOLD_MOVES). */
+    int heldMoves;
 
     Drag(float x1, float y1, float x2, float y2, long ms, boolean hold) {
       this.x1 = x1;
@@ -880,16 +891,33 @@ public class Host {
       this.hold = hold;
     }
 
-    /** The event due at {@code now}: a move along the way, one at the end, then the lift (null once done). */
+    /** Moves sent along the way so far (a `drag`'s steps). */
+    int steps;
+
+    /**
+     * The event due at {@code now}: a move along the way, one at the end, then the lift (null once done). A swipe's
+     * moves are where the finger is at that time, as a device samples it. A drag's are the next of a fixed series of
+     * points, one per 8.3 ms of its duration, whenever its turn comes: a list starts scrolling from the first sample
+     * past the touch slop (RecyclerView intercepting a touch that began on an item), and a sample read off the clock
+     * crossed it anywhere within one step, so the same drag scrolled up to a step's length (10-20 px) less or more.
+     */
     SimWindow.Event next(long now) {
-      long t = now - start;
-      if (t < nanos) {
-        float f = (float) t / nanos;
+      if (hold) {
+        int n = (int) Math.max(1, Math.round(nanos / 8_333_333.0));
+        if (steps < n - 1) {
+          float f = (float) ++steps / n;
+          return new SimWindow.Event(SimWindow.MOVE, x1 + (x2 - x1) * f, y1 + (y2 - y1) * f, 0);
+        }
+      } else if (now - start < nanos) {
+        float f = (float) (now - start) / nanos;
         return new SimWindow.Event(SimWindow.MOVE, x1 + (x2 - x1) * f, y1 + (y2 - y1) * f, 0);
       }
       boolean first = atEnd == 0;
       if (first) atEnd = now;
-      if (first || hold && now - atEnd < HOLD_NANOS) return new SimWindow.Event(SimWindow.MOVE, x2, y2, 0);
+      if (first || hold && (now - atEnd < HOLD_NANOS || heldMoves < HOLD_MOVES)) {
+        heldMoves++;
+        return new SimWindow.Event(SimWindow.MOVE, x2, y2, 0);
+      }
       return new SimWindow.Event(SimWindow.UP, x2, y2, 0);
     }
   }

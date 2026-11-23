@@ -65,6 +65,8 @@ drive ping | grep -q pong || { echo "the app never answered on the control chann
 # A timed swipe flings in proportion to its speed and a press held in place does not scroll (issue 346).
 drive 'wait 3000' >/dev/null
 python3 "$ROOT/scripts/swipe-check.py" "$PORT"
+# A drag (screenshot specs, the crawler) scrolls a framework list by the same distance every time.
+python3 "$ROOT/scripts/drag-check.py" "$PORT"
 # Touch moves and wheel events that queue up are merged at dispatch; downs, ups and typed text are not (issue 450).
 python3 "$ROOT/scripts/input-merge-check.py" "$PORT"
 # The stream is encoded at the size a tab says it shows it at, and back at full size (issue 499).
