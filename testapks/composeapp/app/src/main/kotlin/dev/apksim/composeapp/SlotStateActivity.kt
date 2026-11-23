@@ -45,6 +45,9 @@ class SlotStateActivity : ComponentActivity() {
       Text("now: $now")
       Text("typed: $typed")
       Text("storage: ${storage()}")
+      // Where the app is told its external storage is, as a device answers (not the host folder that backs it).
+      Text("paths: ${Environment.getExternalStorageDirectory().path} ${getExternalFilesDir(null)?.canonicalPath}")
+      Text("fileops: ${fileOps()}")
       // A hardware state node read straight from /sys, as a camera privacy cover's app does (--sysfs, `sysfs` command).
       Text("sysfs: $sysfs")
       Button(onClick = { sysfs = sysfs() }, Modifier.testTag("reread")) { Text("Reread") }
@@ -69,6 +72,45 @@ class SlotStateActivity : ComponentActivity() {
         now = describe(this@SlotStateActivity)
       }, Modifier.padding(top = 24.dp).testTag("write")) { Text("Write") }
     }
+  }
+
+  /**
+   * What apps do in their external storage, through java.io, java.nio and SQLite: make a folder, write, rename, list,
+   * copy, read canonical and real paths (also above the root), a database, delete (File.delete is libc's remove, which apksim maps separately), remove the folder.
+   * "ok", or the first step that failed. On apksim these go through native/devicepaths.c's mapping of the device path.
+   */
+  private fun fileOps(): String = try {
+    val root = Environment.getExternalStorageDirectory()
+    val d = File(root, "apksim-fileops")
+    d.deleteRecursively()
+    check(d.mkdirs()) { "mkdirs" }
+    val a = File(d, "a.txt")
+    a.writeText("x")
+    val b = File(d, "b.txt")
+    check(a.renameTo(b)) { "rename" }
+    check(b.readText() == "x") { "read" }
+    check(d.list()?.toList() == listOf("b.txt")) { "list" }
+    check(b.canonicalPath == File(root.canonicalPath, "apksim-fileops/b.txt").path) { "canonical ${b.canonicalPath}" }
+    val c = File(d, "c.txt")
+    java.nio.file.Files.copy(b.toPath(), c.toPath())
+    check(c.length() == 1L) { "copy" }
+    // A device's /storage/emulated/0 has parents, and ".." above it resolves among them, not on the host.
+    check(root.parentFile?.isDirectory == true) { "parent ${root.parent}" }
+    check(File(root, "..").canonicalPath == root.canonicalFile.parent) { "dotdot ${File(root, "..").canonicalPath}" }
+    check(b.toPath().toRealPath(java.nio.file.LinkOption.NOFOLLOW_LINKS).toString() == b.canonicalPath) { "toRealPath" }
+    // SQLite (Robolectric's native library) on a database in external storage, as apps with an export feature do.
+    val db = android.database.sqlite.SQLiteDatabase.openOrCreateDatabase(File(d, "e.db"), null)
+    db.execSQL("create table t(x)")
+    db.execSQL("insert into t values (7)")
+    val seven = db.rawQuery("select x from t", null).use { it.moveToFirst(); it.getInt(0) }
+    db.close()
+    check(seven == 7) { "sqlite" }
+    check(android.database.sqlite.SQLiteDatabase.deleteDatabase(File(d, "e.db"))) { "sqlite delete" }
+    check(b.delete() && c.delete()) { "delete" }
+    check(d.delete() && !d.exists()) { "rmdir" }
+    "ok"
+  } catch (e: Throwable) {
+    "failed: ${e.message}"
   }
 
   /** The first line of /sys/devices/apksim-test/state through FileReader, "missing" without it. */

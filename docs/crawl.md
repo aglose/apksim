@@ -115,10 +115,10 @@ So each replay starts from the data the app had at its launch:
   slot cannot be put back.
 
 What it does not cover: state an app keeps in memory only (a static that a tap changed and nothing writes) outlives a
-`restart`, as before. And external storage's path is the host folder of the instance's slot
-(`.../cache/data/PKG/crawl-0.device/sdcard`), so a screen that prints it differs between instances and shows the host's
-home folder: the app reads it from `Environment`, and a device path (`/storage/emulated/0`) would need every file
-access to be translated, which is not done.
+`restart`, as before. External storage is at a device's path, `/storage/emulated/0`, in every instance
+(`DevicePaths` in AGENTS.md), so a screen that prints it is the same in each. The app's internal folders
+(`getFilesDir`, `getCacheDir`, databases) are still host folders of the instance's slot, so a screen that prints one
+of those still differs between instances.
 
 ## Seeded walks
 

@@ -71,10 +71,13 @@ final class SlotDevice {
     if (fresh && Files.isDirectory(d)) Storage.clearDataDir(d);
     Path sd = d.resolve("sdcard");
     Files.createDirectories(sd);
+    // What the app is told: /storage/emulated/0, as on a device, while native/devicepaths.c sends file calls on it to sd
+    // (DevicePaths); else sd itself, as before. Everything below the app reads uses it; seeds are written to sd.
+    Path shown = DevicePaths.map(sd) ? Path.of(DevicePaths.ROOT) : sd;
     // /sdcard and its public folders (Download, Pictures...) are one tree, mounted, as on a device's emulated storage.
     // Robolectric's are two temp folders that start "removed".
-    ShadowEnvironment.setExternalStorageDirectory(sd);
-    ShadowEnvironment.setExternalStoragePublicDirectory(sd);
+    ShadowEnvironment.setExternalStorageDirectory(shown);
+    ShadowEnvironment.setExternalStoragePublicDirectory(shown);
     ShadowEnvironment.setExternalStorageState(Environment.MEDIA_MOUNTED);
     ShadowEnvironment.setIsExternalStorageEmulated(true);
     // The framework's own list of external storage folders (Environment.UserEnvironment.getExternalDirs, Robolectric's
@@ -83,7 +86,7 @@ final class SlotDevice {
     // screen), and getExternalMediaDirs/getObbDirs were empty.
     java.util.List<java.io.File> dirs = org.robolectric.util.ReflectionHelpers.getStaticField(ShadowEnvironment.class, "externalDirs");
     dirs.clear();
-    dirs.add(sd.toFile());
+    dirs.add(shown.toFile());
     // All-files access is an app op that starts at its default, which isExternalStorageManager() then decides by the
     // MANAGE_EXTERNAL_STORAGE permission (not granted at install): false, as on a device. Robolectric answers
     // MODE_ALLOWED for an op nobody set, which made every app a storage manager.
@@ -94,9 +97,9 @@ final class SlotDevice {
     }
     // The File overloads (getExternalStorageState(File) and the rest) read their own tables: a state covers a folder's
     // children, emulated and removable only the folder named, so the app's own external folder is named too.
-    ShadowEnvironment.setExternalStorageState(sd.toFile(), Environment.MEDIA_MOUNTED);
+    ShadowEnvironment.setExternalStorageState(shown.toFile(), Environment.MEDIA_MOUNTED);
     String pkg = System.getProperty("apksim.package");
-    for (Path p : pkg == null ? java.util.List.of(sd) : java.util.List.of(sd, sd.resolve("Android/data/" + pkg))) {
+    for (Path p : pkg == null ? java.util.List.of(shown) : java.util.List.of(shown, shown.resolve("Android/data/" + pkg))) {
       ShadowEnvironment.setExternalStorageEmulated(p.toFile(), true);
       ShadowEnvironment.setExternalStorageRemovable(p.toFile(), false);
     }
