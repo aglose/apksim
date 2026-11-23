@@ -24,14 +24,14 @@ Usage: crawl-check.py [--apk APK] [--out DIR] [--quick] [--docker IMAGE] [-j N] 
    `start_deps` has the Application's file, a walk without the flag has no `deps`, and a seeded walk carries `deps`.
    Both walk times are printed.
 11. One instance on the slot screen, whose Write button writes a Settings value and an /sdcard file the screen shows:
-   every screen's path replays (the screen before Write too, which needs the app's data as it was at launch: the
-   instance is launched again on an emptied slot, `relaunches`), and with `--keep-app-state` the screen before Write no
-   longer replays (what a walk did before: later captures and replays saw what earlier taps had written).
+   after a walk that tapped Write, the screen's capture is the picture a walk that tapped nothing takes (the instance
+   was launched again on an emptied slot, `relaunches`, for those two files), and with `--keep-app-state` it is not
+   (what a walk did before: later captures saw what earlier taps had written).
 
 --quick (CI, where the image is slow) walks to depth 2. --docker IMAGE runs crawl.py in the Linux image
 (`--entrypoint crawl.py`, OUT mounted at /work) as scripts/ci-smoke.sh does. Exit status 1 on any failed expectation.
 """
-import argparse, json, os, subprocess, sys, time
+import argparse, hashlib, json, os, subprocess, sys, time
 import xml.etree.ElementTree as ET
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -343,21 +343,33 @@ def main():
           str([s["id"] for s in carried if s.get("deps") != seed_deps.get(s["id"])][:3]))
     print(f"     walk with --record-deps {secs_deps:.0f} s, without {secs_plain:.0f} s ({len(dscreens)} screens)")
 
-    # 11: replays from the data the app started with
-    slot_walk = ["--start", "apksim://slot", "--max-depth", "1", "-j", "1", "--matrix", "appearance=light"]
-    doc16, secs_h, _ = crawl(args.apk, os.path.join(args.out, "state"), *slot_walk)
-    written = [s for s in doc16["screens"] if s["path"]["steps"] == ["tap-text Write"]]
-    bad = [f for f in doc16["findings"] if f["kind"] in ("replay", "capture", "flaky")]
+    # 11: replays from the data the app started with. The slot screen's structure does not change when Write is
+    # tapped (only its texts), so the leak shows in its capture: after a walk that tapped Write it must be the same
+    # picture as from a walk that tapped nothing (depth 0), and with --keep-app-state it is not.
+    slot_walk = ["--start", "apksim://slot", "-j", "1", "--matrix", "appearance=light"]
+
+    def root_capture(doc, out):
+        root = [s for s in doc["screens"] if s["path"] == {"start": "apksim://slot", "steps": []}]
+        caps = list((root[0].get("captures") or {}).values()) if root else []
+        if not caps:
+            return None
+        with open(os.path.join(out, caps[0]), "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    ref_dir, state_dir, kept_dir = (os.path.join(args.out, n) for n in ("state-ref", "state", "state-kept"))
+    doc18, _, _ = crawl(args.apk, ref_dir, *slot_walk, "--max-depth", "0")
+    doc16, secs_h, _ = crawl(args.apk, state_dir, *slot_walk, "--max-depth", "1")
+    doc17, _, _ = crawl(args.apk, kept_dir, *slot_walk, "--max-depth", "1", "--keep-app-state")
+    ref, fresh, kept = root_capture(doc18, ref_dir), root_capture(doc16, state_dir), root_capture(doc17, kept_dir)
     why = doc16.get("relaunch_files", {})
-    check(bool(written) and not bad and doc16.get("relaunches", 0) >= 1
-          and ("settings.properties" in why or "sdcard/apksim-slot-check.txt" in why)
-          and all(s.get("captures") for s in doc16["screens"]),
-          "a tap that writes the app's data leaves later replays and captures alone (the instance is launched again)",
-          f"relaunches {doc16.get('relaunches')} ({why}), findings {[f['detail'][:80] for f in bad]}")
-    doc17, _, _ = crawl(args.apk, os.path.join(args.out, "state-kept"), *slot_walk, "--keep-app-state")
-    check(any(f["kind"] in ("replay", "capture", "flaky") for f in doc17["findings"]) and doc17.get("relaunches") == 0,
-          "with --keep-app-state the screen before Write does not replay (the check sees the leak)",
-          str([f["detail"][:80] for f in doc17["findings"]]))
+    bad = [f for f in doc16["findings"] if f["kind"] in ("replay", "capture", "flaky")]
+    check(ref is not None and fresh == ref and not bad and doc16.get("relaunches", 0) >= 1
+          and ("settings.properties" in why or "sdcard/apksim-slot-check.txt" in why),
+          "a tap that writes the app's data leaves later captures alone (the instance is launched again)",
+          f"same picture as a walk that tapped nothing: {fresh == ref}, relaunches {doc16.get('relaunches')} ({why}), "
+          f"findings {[f['detail'][:80] for f in bad]}")
+    check(kept is not None and kept != ref and doc17.get("relaunches") == 0,
+          "with --keep-app-state the slot screen is captured as Write left it (the check sees the leak)",
+          f"differs: {kept != ref}, relaunches {doc17.get('relaunches')}")
 
     print(f"timings: walk+captures {secs_a:.0f} s ({len(screens)} screens, {len(doc['edges'])} transitions), repeat walk {secs_b:.0f} s, "
           f"compare {secs_c:.0f} s, prepared {secs_d:.0f} s, sweep {secs_e:.0f} s ({secs_f:.0f} s with an allow-list), "
