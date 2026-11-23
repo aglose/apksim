@@ -66,7 +66,7 @@ public final class FrameworkFlattener {
   private static final String RI = "org/robolectric/internal/bytecode/RobolectricInternals";
   private static final String IMPLEMENTS_DESC = "Lorg/robolectric/annotation/Implements;";
   private static final String IMPLEMENTATION_DESC = "Lorg/robolectric/annotation/Implementation;";
-  private static final String VERSION = "b2-v3";
+  private static final String VERSION = "b2-v4";
   /** Sentinel set meaning every method of a shadowed target class must stay untouched. */
   private static final Set<String> OPAQUE = Set.of("<OPAQUE>");
 
@@ -344,7 +344,10 @@ public final class FrameworkFlattener {
         || name.startsWith("icu/")
         || name.startsWith("fonts/")
         || name.startsWith("hyphen-data/")
-        || name.startsWith("res/")
+        // res/ is the framework's compiled resources, read from the original jar; but the files directly in res/
+        // (android/debian/vendor.mime.types) are read as class resources by MimeMap's DefaultMimeMapFactory
+        // (issue 599), so they stay in the flat jar.
+        || (name.startsWith("res/") && name.indexOf('/', 4) >= 0)
         || name.equals("resources.arsc");
   }
 
