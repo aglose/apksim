@@ -854,19 +854,22 @@ public class Host {
    * device's would be after 120 ms still.
    */
   private static final int HOLD_MOVES = 24;
+  /** Or this long still, whichever comes first: past the tracker's 200 ms, its window holds no moving sample either. */
+  private static final long HOLD_MAX_NANOS = 250_000_000L;
   private final ArrayDeque<Drag> drags = new ArrayDeque<>();
   /** The timed drag in progress, or null. Scripted and window input wait for it to end. */
   private Drag drag;
 
   /**
    * `swipe X1 Y1 X2 Y2 [MS]` (and adb's `input swipe`) and `drag X1 Y1 X2 Y2 [MS]`: one finger down, moving from the
-   * first point to the second over MS of real time, then up, as InputShellCommand's swipe follows the clock. A swipe
-   * lifts at the end point with no still tail, as a device's, so the velocity tracker reads its speed and a list
-   * flings in proportion (issue 346: it held 120 ms first, and never flung). A drag stays still for
-   * {@link #HOLD_NANOS}, and for at least {@link #HOLD_MOVES} moves, before lifting, so it does not fling and scrolls by
-   * the same distance every time. Not a fixed
-   * number of queued events: input goes out at most once a loop turn, and a turn takes as long as a frame, so on a
-   * screen drawing at 20 fps a 1.5 s hold of ~200 events would lift only after ~10 s.
+   * first point to the second, then up. A swipe moves over MS of real time, as InputShellCommand's swipe follows the
+   * clock, and lifts at the end point with no still tail, as a device's, so the velocity tracker reads its speed and a
+   * list flings in proportion (issue 346: it held 120 ms first, and never flung). A drag scrolls by the same distance
+   * every time: its moves are a fixed series of points, one per 8.3 ms of MS, one per loop turn (so on a screen slower
+   * than 120 fps its moving part takes longer than MS: a 300 ms drag at 20 fps ~1.8 s; skipping points would bring the
+   * variance back), then it stays still at the end for {@link #HOLD_NANOS} and until either {@link #HOLD_MOVES} moves or
+   * {@link #HOLD_MAX_NANOS} have passed, so it does not fling. The hold is not a fixed number of events alone: input
+   * goes out at most once a loop turn, and a turn takes as long as a frame.
    */
   private static final class Drag {
     final float x1;
@@ -914,7 +917,7 @@ public class Host {
       }
       boolean first = atEnd == 0;
       if (first) atEnd = now;
-      if (first || hold && (now - atEnd < HOLD_NANOS || heldMoves < HOLD_MOVES)) {
+      if (first || hold && (now - atEnd < HOLD_NANOS || heldMoves < HOLD_MOVES && now - atEnd < HOLD_MAX_NANOS)) {
         heldMoves++;
         return new SimWindow.Event(SimWindow.MOVE, x2, y2, 0);
       }
@@ -2079,7 +2082,8 @@ public class Host {
       case "swipe", "drag" -> {
         // swipe X1 Y1 X2 Y2 [MS]: a finger moving over that much real time (300 ms by default, as `input swipe`) and
         // lifting at the end point as a device does, so the release velocity flings in proportion. drag: the same,
-        // still for 120 ms before lifting, so it never flings: a scroll by a fixed distance (Drag).
+        // a fixed series of points, then still for 120 ms and 24 moves (or 250 ms) before lifting, so it never flings: a
+        // scroll by a fixed distance (Drag).
         long ms = a.length > 5 ? Long.parseLong(a[5]) : 300;
         drags.add(new Drag(Float.parseFloat(a[1]), Float.parseFloat(a[2]), Float.parseFloat(a[3]), Float.parseFloat(a[4]), ms, a[0].equals("drag")));
         pendingScript.add(new SimWindow.Event(DRAG, Float.parseFloat(a[1]), Float.parseFloat(a[2]), 0));

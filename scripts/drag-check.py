@@ -38,15 +38,25 @@ def tops():
     return out[:8]
 
 
-say("animscale 0")
+def ok(cmd):
+    reply = say(cmd)
+    if reply.startswith("error"):
+        print(f"drag-check: {cmd!r}: {reply}", file=sys.stderr)
+        sys.exit(1)
+    return reply
+
+
 seen = []
-for i in range(args.runs):
-    say(f"restart {args.url}")
-    say("settle 1500 100")
-    say("drag 411 1300 411 1000 300")
-    say("settle 3000 100")
-    seen.append(tops())
-    print(f"run {i + 1}: {' '.join(seen[-1][:3])}")
+try:
+    for i in range(args.runs):
+        ok(f"restart {args.url}")
+        ok("settle 15000 100")
+        ok("drag 411 1300 411 1000 300")
+        ok("settle 15000 100")
+        seen.append(tops())
+        print(f"run {i + 1}: {' '.join(seen[-1][:3])}")
+finally:
+    say("restart")  # the launcher screen again, for the checks that follow on this instance
 if any(s != seen[0] for s in seen) or not seen[0]:
     print("drag-check: the same drag ended in different places", file=sys.stderr)
     sys.exit(1)
