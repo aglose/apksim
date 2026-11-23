@@ -14,7 +14,7 @@ Status: item 1 of the roadmap, checked on the test app (`scripts/crawl-check.py`
 scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] [--max-seconds S] [--max-depth N]
                  [--skip-text REGEX]... [--tap-unlabeled] [--fill TEXT] [--matrix AXIS=V,V]... [--matrix-file SPEC.json]
                  [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--keep-data] [--keep-app-state]
-                 [--base-option "APKSIM OPTIONS"] [--seed RUN (--only ID,ID... | --only-file PATH)] [--events]
+                 [--base-option "APKSIM OPTIONS"] [--seed RUN (--only ID,ID... | --only-file PATH)] [--events] [--screen-titles]
                  [--record-deps [--deps-packages PKG,PKG]]
                  [-- APKSIM_OPTION...]
 ```
@@ -28,7 +28,7 @@ scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] 
   is listed under `incomplete`), `--max-depth N` (screens more than N actions from a start are found but not explored;
   `--max-depth 0` only observes the starts), `--max-actions N` (controls tried on one screen, default 40), `--stable-ms N` (see "Measured", default 200),
   `--max-scrolls N` (scroll-downs looking for more controls, default 4), `--max-repeat N` (a screen reached by N
-  identical steps in a row is not followed, default 4: a counter, a stack of dialogs).
+  identical steps in a row is not followed, default 4: a counter, a stack of dialogs), `--screen-titles` (the title is part of a screen's id: see "Where it takes two for one").
 - Starting points: the launcher activity, or each `--start URL` (a deep link, as `restart URL`: `apksim://stack`, an
   `https` link the app handles). Every start is a root; screens reached from several are merged.
 - Apps behind a sign-in: start where the app is signed in. `--setting global|secure|system:KEY=V`, `--sdcard-file
@@ -270,7 +270,7 @@ Where it takes two for one:
   the wrong section; the replay was right). `--screen-titles` puts the screen's title (the first text that is not a
   number) into its id: ids then differ from a walk without it (do not seed one with the other), and a title that
   changes with state (a counter in the top bar) makes a new screen each time, bounded by `--max-repeat` and
-  `--max-screens`.
+  `--max-screens`. A seed must be walked with the same setting (`--seed` refuses a mix); under `--base` and `--sweep` a changed title shows as another screen, not as changed text.
 - A visual difference with the same structure (a colour, a text): the same screen; `--base` still reports it as
   changed by its capture.
 

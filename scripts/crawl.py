@@ -5,7 +5,7 @@ Usage: crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] [
                 [--skip-text REGEX]... [--tap-unlabeled] [--fill TEXT] [--matrix AXIS=V,V]... [--matrix-file SPEC.json]
                 [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--keep-data] [--keep-app-state]
                 [--base-option "APKSIM OPTIONS"] [--sweep LIST ...] [--seed RUN (--only ID,... | --only-file PATH)]
-                [--events] [-- APKSIM_OPTION...]
+                [--events] [--screen-titles] [-- APKSIM_OPTION...]
 
 Starts N headless instances (`apksim --headless --snapshot`, as scripts/snapshot.py does) and walks the app level by
 level: each screen reached is replayed from a fresh start, every control on it is tried in turn, and where it leads
@@ -1861,6 +1861,9 @@ def load_seed(args, out, combos):
     if list(seed.get("combos", [])) != names:
         fail(f"--seed: the seed was captured in {seed.get('combos', [])} and this walk captures {names}: give the seed's "
              "matrix, or walk in full (carried screens keep the seed's captures)")
+    if bool(seed.get("screen_titles", False)) != bool(args.screen_titles):
+        fail("--seed: the seed and this walk differ in --screen-titles, so their screen ids do not match: give both the "
+             "same setting")
     src_dir = seed_dir
     stranded = os.path.join(seed_dir, ".seed", "screens")
     if os.path.isdir(stranded) and not os.path.isdir(os.path.join(seed_dir, "screens")):
@@ -1932,6 +1935,7 @@ def main():
                 shutil.rmtree(src_dir, ignore_errors=True)
         doc = new.doc()
         doc["combos"] = [snapshot.combo_name(c) for c in combos]
+        doc["screen_titles"] = bool(args.screen_titles)
         sweep = None
         if args.sweep:
             sweep = Sweep(new, parse_sweep(args.sweep), args, read_allow(args.allow))
