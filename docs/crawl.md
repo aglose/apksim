@@ -13,7 +13,7 @@ Status: item 1 of the roadmap, checked on the test app (`scripts/crawl-check.py`
 ```bash
 scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] [--max-seconds S] [--max-depth N]
                  [--skip-text REGEX]... [--tap-unlabeled] [--fill TEXT] [--matrix AXIS=V,V]... [--matrix-file SPEC.json]
-                 [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--keep-data]
+                 [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--keep-data] [--keep-app-state]
                  [--base-option "APKSIM OPTIONS"] [--seed RUN (--only ID,ID... | --only-file PATH)] [--events]
                  [--record-deps [--deps-packages PKG,PKG]]
                  [-- APKSIM_OPTION...]
@@ -83,6 +83,42 @@ scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] 
    the same structure and a capture that differs from the base's by more than `--diff-delta` in more than `--diff-pixels` of
    its pixels in any combination; `crawl.json`'s `diffs` and `diff/` have the maps), `new` (the path does not reach a
    screen there) and `gone` (a screen of the base no path of the new build reaches).
+
+## Repeatable walks
+
+`restart` begins a replay with no activity, no saved state and no ViewModel, but the app's own data stays: its files,
+preferences, databases, /sdcard and Settings values. A walk that tapped "Dynamic colors" or a theme option captured
+every later screen of that instance in another colour, and paths that ran through a toggle replayed onto other screens,
+so two walks of one build gave different maps (36 and 38 screens of one app's settings, 17 screens' captures apart).
+So each replay starts from the data the app had at its launch:
+
+- After the first replay of a launch (`restart`, settle), the instance notes what its data slot holds: every file of
+  the slot and of its device folder with its size and modification time, and each SharedPreferences file by its
+  values (`Instance.data_state`). Left out, as no screen reads them: the app's caches, AndroidX's profile installer
+  (it writes once some seconds after every start, so each new launch would call for another), WorkManager's own
+  database, SQLite's `-shm` index (readers write it too) and the slot's lock. Also what the instance itself keeps
+  across a `restart`: a permission request nobody answered (the walk never answers one) and runtime grants
+  (`permission`), so a replay after a tap on "Camera" is not a replay with a request still waiting.
+- Before each replay (explore, capture, sweep), it compares: when the app has written anything since, the instance is
+  quit and launched again on an emptied slot (`--fresh`, as at the walk's start) before the replay goes on.
+  Preferences count key by key: a value that changed or went is a write, and so is a key that appears, unless it
+  appeared with that value while a path was being replayed (navigation, before any control is tried). Opening a
+  settings screen writes its defaults (a fresh slot has none), which every replay through it repeats; a toggle tried on
+  a screen is not on a path, so its first write counts.
+- A sweep case that sets the instance up before its replay (`network offline`) relaunches first, so its replay runs
+  on the instance it set up.
+- `crawl.json` counts these launches (`relaunches`) and what caused them (`relaunch_files`: files, `file#key` for
+  preferences). Each costs a cold launch (one or two seconds); an app that writes on its own at every turn (a log
+  file, a timer's record) costs one per replay. On a podcast app's settings (38 screens, ~300 transitions) comparing
+  files alone relaunched 207 times, all for preference defaults, and explored in 850 s against 455-590 s before.
+- `--keep-app-state` replays on the instance as it is (faster; the old behaviour). `--keep-data` never relaunches: its
+  slot cannot be put back.
+
+What it does not cover: state an app keeps in memory only (a static that a tap changed and nothing writes) outlives a
+`restart`, as before. And external storage's path is the host folder of the instance's slot
+(`.../cache/data/PKG/crawl-0.device/sdcard`), so a screen that prints it differs between instances and shows the host's
+home folder: the app reads it from `Environment`, and a device path (`/storage/emulated/0`) would need every file
+access to be translated, which is not done.
 
 ## Seeded walks
 
