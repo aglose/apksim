@@ -147,7 +147,8 @@ Read README.md for results and limits; this file covers how to work on the code.
     stopped with their windows hidden, so only what a device shows draws and takes touches. A visible activity with
     no window (recreated or rebuilt while stopped: Robolectric's recreate leaves it detached, and resumed whatever it
     was) gets one, windows are put in the stack's order, and in test runs the top has the focus. An activity's dialogs
-    and popups hide with it, and a hidden window is FLAG_NOT_TOUCHABLE meanwhile (Robolectric's UiAutomation injection
+    and popups hide with it (a destroyed activity's leaked ones are removed: `Host.destroyActivity`, as
+    `WindowManagerGlobal.closeAll`, issue 614; not for configuration-change recreates), and a hidden window is FLAG_NOT_TOUCHABLE meanwhile (Robolectric's UiAutomation injection
     reads only that, and ranks dialogs above every activity window). Before, a rotation left the whole stack resumed,
     and finishing the top of a recreated stack left nothing on screen. In test runs a finish only brings activities
     up (a test may have launched several side by side), and UiDevice rotation restores each activity's own state
