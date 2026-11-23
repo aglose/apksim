@@ -17,6 +17,7 @@ OUT/golden, OUT/diff, OUT/logs. --update writes the captures as the new goldens.
 or differed from its golden beyond the screen's tolerance (or had none), 2 for a bad spec or an instance that never
 started, else 0.
 """
+import contextlib
 import html, itertools, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -167,7 +168,11 @@ class Worker:
             cmd += ["--clock", spec["clock"]]
         # own_options: an instance's own (crawl.py's --keep-data gives each its own copy of the prepared data slot).
         cmd += ["--device", self.combos[0]["device"], *self.ctx["apksim"], *getattr(self, "own_options", ()), self.ctx["apk"]]
-        with open(self.log, "w") as log:
+        # ctx "spawn": crawl.py's lock and stop flag, so a stop's kill never misses an instance being started.
+        lock, stopping = self.ctx.get("spawn") or (contextlib.nullcontext(), None)
+        with lock, open(self.log, "w") as log:
+            if stopping is not None and stopping.is_set():
+                raise Closed(f"instance {self.i}: the run is being stopped")
             # Cold launches: a standby has read the GPU switches --snapshot sets before the launch.
             self.proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                          env=dict(os.environ, APKSIM_STANDBY="0"))

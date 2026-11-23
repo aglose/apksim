@@ -37,8 +37,11 @@ scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] 
   launch with the same `--data-slots NAME` after `--` takes, `NAME-0`, else `default`) for an app whose session lives
   in its data: each instance (`-j N` as without it) runs on a copy of its own (an APFS clone, or a reflink), made
   again from the prepared slot at each of its launches, so replays start from the prepared data as they would from an
-  emptied slot, and the prepared slot is never written. The copies keep its serial and ANDROID_ID (a slot's name
-  gives them otherwise) and are removed at the end; a prepared slot in use by a running instance stops the walk. The crawler never types a
+  emptied slot, and the prepared slot's data is never written (only its `.lock` file, to see it is not in use). The
+  copies keep its serial and ANDROID_ID (a slot's name gives them otherwise) and are removed at the end, a stop
+  included; copies a crawl killed outright left (`kTOKENI-0` and their `.device`, unused for 6 hours) are removed by the
+  next `--keep-data` walk of that app. A prepared slot in use by a running instance stops the walk. An app that stored
+  absolute paths into its data folder in its own files reads the prepared slot through them, from the copy. The crawler never types a
   password: text fields are left alone unless `--fill TEXT` is given, which types it into the fields of each screen
   before its controls are tried.
 - Safety: a control whose label (its text, description or the text inside it) matches the skip list is never tapped and
@@ -180,7 +183,7 @@ A walk cut short says what it left. `crawl.json` has, in every walk:
 
 - `unexplored`: the ids of the screens found and never explored, and of those explored only in part (the time ran out
   while their controls were tried; those are also in `partly_explored`), in discovery order. Carried screens count as
-  the seed left them (the seed's own `unexplored`, less the ones named again).
+  the seed left them (the seed's own `unexplored`), and the `--only` ones until they are walked again.
 - `cut_by`: what cut the walk short, any of `max-seconds`, `max-screens`, `max-depth` and `stopped`; `[]` for a walk
   that finished.
 
@@ -190,12 +193,16 @@ captures taken), `"stopped": true` and an `incomplete` line `stopped (SIGTERM) a
 the exit status is 143. The screens of the level being explored when the stop came are unexplored (a level is merged
 when all its screens are done), and captures follow the whole walk, so a walk stopped while exploring has none. The
 instances are killed, not quit, and nothing is captured: the test app's walk (11 screens) exits under 10 ms after
-SIGTERM, so a caller's 4 s before it kills the process tree is ample.
+SIGTERM, so a caller's 4 s before it kills the process tree is ample. No instance is started once the stop has begun
+(the pool's threads may still be replaying), the walk is read before the instances are killed, so their ends are not
+findings, and no `--events` `done` event is written. A stop during a `--base` walk writes the new build's walk.
 
 `--seed STOPPED_OUT --only-file IDS` with `unexplored` written one per line goes on from there: those screens are
 explored and every new screen they lead to is walked, breadth-first, within the budgets given again (`--max-screens`
 counts the carried screens; raise it for a walk it cut). The carried screens the seed has no captures for (all of a
-walk stopped before its captures) are captured in this run. An `--only-file` with no ids is allowed: that run only
+walk stopped before its captures) are captured in this run, when the seed was stopped; a finished seed's carried
+screens keep the captures it has. The seed's `stopped (...)` line is not carried into `incomplete`: the continuation
+says itself whether it was cut short. An `--only-file` with no ids is allowed: that run only
 takes the missing captures (a walk stopped during its captures). Repeated, a walk stopped any number of times ends
 with the graph one uninterrupted walk finds (`scripts/crawl-check.py` step 13).
 

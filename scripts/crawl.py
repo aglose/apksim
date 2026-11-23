@@ -208,6 +208,8 @@ class Instance(snapshot.Worker):
         self.baseline = None  # what they held once this launch's app had started (see reach)
 
     def launch(self):
+        if STOPPING.is_set():  # the walk is being stopped: no instance is started again, no copy made again
+            raise Gone({"detail": "the walk was stopped"})
         if self.ctx.get("restore"):
             # --keep-data: this instance's copy of the prepared slot, made again from it (the data the app had at launch).
             if self.proc is not None and self.proc.poll() is None:
@@ -634,6 +636,7 @@ class KeptSlot:
             fail(f"--keep-data: no prepared data slot at {self.source} (prepare it with a launch of the same "
                  f"--data-slots{' ' + name if name else ''} first)")
         self.check_unheld()
+        self.sweep_stale()
         self.token = os.urandom(4).hex()
         if "--serial" not in opts:
             opts += ["--serial", slot_serial(self.source_name)]
@@ -658,6 +661,35 @@ class KeptSlot:
             fail(f"--keep-data: the data slot {self.source} is in use by a running apksim: quit it first")
         finally:
             os.close(fd)
+
+    def sweep_stale(self):
+        """Copies a crawl that was killed outright (SIGKILL, a crash) left: clones of the prepared data, which nothing
+        else removes. Only copies unused for 6 hours and not held by a running instance."""
+        import fcntl
+        try:
+            names = os.listdir(self.data)
+        except OSError:
+            return
+        for n in names:
+            if not re.fullmatch(r"k[0-9a-f]{8}\d+-0", n):
+                continue
+            d = os.path.join(self.data, n)
+            try:
+                if time.time() - max(os.path.getmtime(d), os.path.getmtime(os.path.join(d, ".lock"))
+                                     if os.path.exists(os.path.join(d, ".lock")) else 0) < 6 * 3600:
+                    continue
+                fd = os.open(os.path.join(d, ".lock"), os.O_RDWR | os.O_CREAT, 0o644)
+            except OSError:
+                continue
+            try:
+                fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                continue  # in use
+            finally:
+                os.close(fd)
+            shutil.rmtree(d, ignore_errors=True)
+            shutil.rmtree(d + ".device", ignore_errors=True)
+            log(f"--keep-data: removed {n}, a copy an earlier crawl left")
 
     def has_android_id(self):
         try:
@@ -747,7 +779,8 @@ class Explorer:
         self.ctx = {"spec": {"timezone": "UTC", "clock": CLOCK}, "apk": apk, "apksim": self.options, "out": out,
                     "stage": self.stage, "snapshot": True, "fresh": not args.keep_data, "screens": [],
                     "record": lambda r: None, "crashes": self.findings, "stable_ms": args.stable_ms, "name": name,
-                    "keep_state": args.keep_app_state, "restore": self.kept.restore if self.kept else None, "relaunches": [0], "relaunch_files": {}, "first_values": {}, "lock": threading.Lock()}
+                    "keep_state": args.keep_app_state, "restore": self.kept.restore if self.kept else None, "relaunches": [0], "relaunch_files": {}, "first_values": {}, "lock": threading.Lock(),
+                    "spawn": (SPAWN, STOPPING)}
         self.instances = []
         self.deps_map = None     # --record-deps: DepsMap, once the probed packages are known
         self.start_deps = None   # --record-deps: the app-start span, read from the first instance
@@ -889,9 +922,6 @@ class Explorer:
                     cut = True
                 if res is None:
                     continue
-                self.explored.add(screen["id"])
-                if res.get("truncated"):
-                    self.partial.add(screen["id"])
                 screen["actions"] = res["actions"]
                 screen["flaky"] = res.get("flaky")
                 if res.get("deps") is not None:
@@ -917,6 +947,11 @@ class Explorer:
                     self.edges.append(edge)
                 for f in res["findings"]:
                     self.findings.append(f)
+                # Explored only now: a stop that comes in the middle of this merge lists the screen as unexplored, and a
+                # continuation walks it again (its edges merged so far are dropped then, as for any --only screen).
+                self.explored.add(screen["id"])
+                if res.get("truncated"):
+                    self.partial.add(screen["id"])
                 self.screen_event(screen)
             level = nxt
         if (level or cut) and self.budget.out_of_time():
@@ -946,8 +981,11 @@ class Explorer:
         # The seed's findings on screens carried over stand; those on or past a screen walked again are found again.
         self.findings.extend(f for f in seed.get("findings", []) if f.get("kind") not in ("sweep", "compare")
                              and not any(under(f.get("path"), t) for t in targets))
-        self.incomplete += [f"seed: {x}" for x in seed.get("incomplete", [])]
-        self.seed_unexplored = set(seed.get("unexplored", [])) - set(only)
+        # A stop of the seed is not carried: this walk goes on from it, and says itself whether it is cut short.
+        self.incomplete += [f"seed: {x}" for x in seed.get("incomplete", []) if not x.startswith("stopped (")]
+        # Carried screens still to do: the seed's unexplored ones, and the --only ones until they are walked again (their
+        # edges are dropped above, so a stop before then must name them).
+        self.seed_unexplored = set(seed.get("unexplored", [])) | set(only)
         for sid in self.order:
             if sid not in only:
                 self.screen_event(self.screens[sid])
@@ -2039,9 +2077,17 @@ def load_seed(args, out, combos):
              "same setting")
     src_dir = seed_dir
     stranded = os.path.join(seed_dir, ".seed", "screens")
-    if os.path.isdir(stranded) and not os.path.isdir(os.path.join(seed_dir, "screens")):
-        # A seeded run on OUT itself that ended early (an instance never started) left the captures aside: back first.
-        os.rename(stranded, os.path.join(seed_dir, "screens"))
+    if os.path.isdir(stranded):
+        # A seeded run on OUT itself that ended early (an instance never started, or a stop during its captures) left the
+        # seed's captures aside: back first, beside any the stopped run took (those are newer and kept).
+        here = os.path.join(seed_dir, "screens")
+        if not os.path.isdir(here):
+            os.rename(stranded, here)
+        else:
+            for name in os.listdir(stranded):
+                if not os.path.exists(os.path.join(here, name)):
+                    os.rename(os.path.join(stranded, name), os.path.join(here, name))
+            shutil.rmtree(os.path.join(seed_dir, ".seed"), ignore_errors=True)
     if os.path.realpath(seed_dir) == os.path.realpath(out):
         # The seed is OUT itself: its captures are moved aside before OUT's screens/ is emptied, and read from there.
         src_dir = os.path.join(out, ".seed")
@@ -2070,23 +2116,34 @@ def matrix_of(args):
 
 
 STOP = {"walk": None, "out": None, "t0": None, "combos": [], "base": None}  # base: the base build's walk, once started
+STOPPING = threading.Event()  # set by on_stop: Instance.launch refuses from then on
+SPAWN = threading.RLock()      # held around an instance's Popen (snapshot.Worker.start) and on_stop's kills
+
+
+def kill_instances(walks):
+    with SPAWN:
+        for w in walks:
+            for inst in w.instances:
+                try:
+                    if inst.proc is not None and inst.proc.poll() is None:
+                        inst.proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
 
 
 def on_stop(signum, frame):
     """SIGTERM or SIGINT (Greenroom's Stop): the walk so far is written as a walk cut short, the instances end, exit 143.
     Fast, as a caller gives a few seconds before it kills the process tree: what is known is written as it is (the
-    screens found, the transitions merged, the captures taken), with no replay or capture of more."""
+    screens found, the transitions merged, the captures taken), with no replay or capture of more. No instance starts
+    once it has begun (STOPPING), the document is read before the instances are killed (so their deaths are not
+    findings), and the kill is made again last, for one a pool thread had in Popen meanwhile."""
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    STOPPING.set()
     walk = STOP["walk"]
     if walk is None:
         os._exit(143)
-    for inst in walk.instances + (STOP["base"].instances if STOP["base"] else []):
-        try:
-            if inst.proc is not None and inst.proc.poll() is None:
-                inst.proc.kill()
-        except Exception:  # noqa: BLE001
-            pass
+    walks = [walk] + ([STOP["base"]] if STOP["base"] else [])
     try:
         if walk.t_explore == 0:
             walk.t_explore = time.time() - STOP["t0"]
@@ -2098,10 +2155,13 @@ def on_stop(signum, frame):
                 break
             except RuntimeError:
                 time.sleep(0.05)
-        if doc is not None:
+        kill_instances(walks)
+        if doc is None:
+            log("stopped: the walk could not be read while its threads ran: crawl.json not written")
+        else:
             sig = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
             doc["incomplete"].append(f"stopped ({sig}) after {time.time() - STOP['t0']:.0f} s"
-                                     + (" during the base build's walk" if STOP["base"] else "")
+                                     + (" during the base build's walk (this is the new build's)" if STOP["base"] else "")
                                      + f": {len(doc['unexplored'])} screen(s) not explored")
             doc["stopped"] = True
             doc["combos"] = [snapshot.combo_name(c) for c in STOP["combos"]]
@@ -2117,9 +2177,11 @@ def on_stop(signum, frame):
                 f"{os.path.join(STOP['out'], 'crawl.json')}")
     finally:
         try:
-            if walk.kept:
-                walk.kept.remove()
-            shutil.rmtree(walk.stage, ignore_errors=True)
+            kill_instances(walks)
+            for w in walks:
+                if w.kept:
+                    w.kept.remove()
+                shutil.rmtree(w.stage, ignore_errors=True)
         finally:
             os._exit(143)
 
@@ -2161,7 +2223,7 @@ def main():
             ids = None
             if seed is not None:
                 # The --only screens, and carried ones the seed has no captures for (a walk stopped before its captures).
-                missing = [i for i in new.order if new.screens[i]["origin"] == "carried"
+                missing = [i for i in new.order if seed.get("stopped") and new.screens[i]["origin"] == "carried"
                            and any(snapshot.combo_name(c) not in (new.screens[i].get("captures") or {}) for c in combos)]
                 new.captured_now = set(missing)
                 ids = [i for i in new.order if new.screens[i]["origin"] == "walked"] + missing

@@ -27,11 +27,11 @@ Usage: crawl-check.py [--apk APK] [--out DIR] [--quick] [--docker IMAGE] [-j N] 
    after a walk that tapped Write, the screen's capture is the picture a walk that tapped nothing takes (the instance
    was launched again on an emptied slot, `relaunches`, for those two files), and with `--keep-app-state` it is not
    (what a walk did before: later captures saw what earlier taps had written).
+12. `--keep-data -j 2` from a slot prepared by a launch that tapped Write: the slot screen shows the prepared values,
+   the second instance is used, the prepared slot's files are unchanged and no copy is left (not with --docker).
 13. A walk stopped with SIGTERM while it explores depth 1 exits 143 within 4 s with crawl.json written (`stopped`,
    `cut_by`, `unexplored` ids); `--seed` on it with `--only-file` of those ids ends with walk 1's screens and
    transitions, every screen captured.
-12. `--keep-data -j 2` from a slot prepared by a launch that tapped Write: the slot screen shows the prepared values,
-   the second instance is used, the prepared slot's files are unchanged and no copy is left (not with --docker).
 
 --quick (CI, where the image is slow) walks to depth 2. --docker IMAGE runs crawl.py in the Linux image
 (`--entrypoint crawl.py`, OUT mounted at /work) as scripts/ci-smoke.sh does. Exit status 1 on any failed expectation.
@@ -44,6 +44,19 @@ CRAWL = os.path.join(ROOT, "scripts", "crawl.py")
 DEFAULT_APK = os.path.join(ROOT, "testapks/composeapp/app/build/outputs/apk/debug/app-debug.apk")
 failures = []
 
+
+
+def descendants(pid):
+    """Every process below pid (pgrep -P, level by level)."""
+    out, level = [], [pid]
+    while level:
+        nxt = []
+        for p in level:
+            r = subprocess.run(["pgrep", "-P", str(p)], capture_output=True, text=True)
+            nxt += [int(x) for x in r.stdout.split()]
+        out += nxt
+        level = nxt
+    return out
 
 def check(ok, what, detail=""):
     print(("ok   " if ok else "FAIL ") + what + (f": {detail}" if detail and not ok else ""), flush=True)
@@ -395,10 +408,11 @@ def main():
     else:
         cmd = [sys.executable, CRAWL, args.apk, "--out", stop_dir]
     proc = subprocess.Popen(cmd + [*starts, *matrix, *opts], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    t_stop = None
+    t_stop, kids = None, []
     for line in proc.stdout:
         if line.startswith("[new] depth 1:"):
             time.sleep(3)
+            kids = [] if DOCKER else descendants(proc.pid)  # the instances: none may outlive the stop
             t_stop = time.time()
             proc.send_signal(signal.SIGTERM)
             break
@@ -411,6 +425,10 @@ def main():
     except (OSError, ValueError):
         sdoc = {}
     ids = {x["id"] for x in sdoc.get("screens", [])}
+    time.sleep(1)
+    alive = [k for k in kids if subprocess.run(["kill", "-0", str(k)], capture_output=True).returncode == 0]
+    check(t_stop is None or (kids and not alive), "no process the walk started outlives its stop",
+          f"{len(kids)} started, still running: {alive}")
     check(t_stop is not None and code == 143 and sdoc.get("stopped") is True and "stopped" in sdoc.get("cut_by", [])
           and sdoc.get("unexplored") and set(sdoc["unexplored"]) <= ids
           and any("stopped (SIGTERM)" in x for x in sdoc.get("incomplete", [])) and took is not None and took < 4,
