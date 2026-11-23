@@ -732,7 +732,7 @@ Read README.md for results and limits; this file covers how to work on the code.
   refusals, and a recording saved and downloaded, against a running `apksim serve --allow-rec`), `kept-check.py` (kept
   sessions on a running `apksim serve --keep-max N`),
   `crawl.py` (explores an APK's screens breadth-first over the control channel: graph, replayable paths, a capture per
-  screen per matrix combination, crashes, `--base` comparison of two builds, `--seed`/`--only` walks, `--record-deps` per-screen classes, sources and resources; docs/crawl.md; `crawl-check.py` checks it),
+  screen per matrix combination, crashes, `--base` comparison of two builds, `--seed`/`--only` walks, `--record-deps` per-screen classes, sources and resources; each replay from the data the app had at its launch: an instance whose app wrote since is launched again on an emptied slot, `relaunches` in crawl.json, `--keep-app-state` for the old way; docs/crawl.md; `crawl-check.py` checks it),
   `serve-check.py` (a running `apksim serve` driven as a browser tab, see
   "apksim serve"), `slot-check.sh` (a data slot's /sdcard and Settings across launches, `SlotDevice`), `relaunch.sh`,
   `both.py`/`vshift.py` (emulator comparison),

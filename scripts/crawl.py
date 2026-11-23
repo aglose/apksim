@@ -3,7 +3,7 @@
 
 Usage: crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] [--max-seconds S] [--max-depth N]
                 [--skip-text REGEX]... [--tap-unlabeled] [--fill TEXT] [--matrix AXIS=V,V]... [--matrix-file SPEC.json]
-                [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--keep-data]
+                [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--keep-data] [--keep-app-state]
                 [--base-option "APKSIM OPTIONS"] [--sweep LIST ...] [--seed RUN (--only ID,... | --only-file PATH)]
                 [--events] [-- APKSIM_OPTION...]
 
@@ -156,6 +156,9 @@ BOOKKEEPING = re.compile(r"(^|/)(cache|code_cache)/|^files/profileInstalled$|^no
                          r"(^|/)\.lock$")
 
 
+_MISSING = object()
+
+
 def shared_prefs(path):
     """A SharedPreferences file's values, {name: (type, value)}, or None when it is not one (or cannot be read)."""
     try:
@@ -287,6 +290,11 @@ class Instance(snapshot.Worker):
             except OSError:
                 m = None
             if not m:
+                if not getattr(self, "warned_slot", False):
+                    self.warned_slot = True
+                    log(f"instance {self.i}: no `data slot` line in {self.log}: its replays are not checked for data "
+                        "the app wrote (as with --keep-app-state)")
+                self.slot = []
                 return []
             self.slot = [m[1], m[1] + ".device"]
         return self.slot
@@ -319,9 +327,9 @@ class Instance(snapshot.Worker):
 
     def changed_files(self):
         """What was written since the baseline (see reach): files added, removed or written, and for preferences the
-        keys whose value changed (`file#key`). A preference key that appears is a change only when its value is not the
-        one that key first appeared with in this walk: opening a settings screen writes its defaults (a fresh slot has
-        none), which every replay through it repeats, while a toggle writes another value."""
+        keys whose value changed (`file#key`). A preference key that appears is a change unless it appeared with that
+        value while a path was replayed (learn_defaults): opening a settings screen writes its defaults (a fresh slot
+        has none), which every replay through it repeats, while a control tried on a screen (a toggle) is not on a path."""
         if self.baseline is None:
             return []
         before, now = self.baseline, self.data_state()
@@ -334,20 +342,20 @@ class Instance(snapshot.Worker):
                 for k in sorted((a or {}).keys() | b.keys()):
                     if (a or {}).get(k) == b.get(k):
                         continue
-                    if k not in (a or {}):
+                    if k not in (a or {}) and k in b:
                         with self.ctx["lock"]:
-                            first = self.ctx["first_values"].setdefault((f, k), b[k])
-                        if first == b[k]:
+                            known = self.ctx["first_values"].get((f, k), _MISSING)
+                        if known == b[k]:
                             continue
                     out.append(f"{f}#{k}")
                 continue
             out.append(f)
         return out
 
-    def reach(self, path, extra=()):
-        """Back to a screen: the default configuration, a fresh start (at the path's deep link), the path's steps.
-        From the data the app had at its start: a launch whose app has written to its data since is replaced by a
-        new one on an emptied slot (--fresh) first. Not with --keep-data, whose slot cannot be put back."""
+    def fresh_start(self):
+        """A running instance whose app has not written to its data since its launch's first replay: this one, or a
+        new launch on an emptied slot. A case that sets state on the instance before replaying (`network offline`)
+        calls this first and replays with relaunch=False, so the replay cannot replace the instance it set up."""
         self.ensure()
         changed = self.changed_files() if self.ctx.get("fresh") and not self.ctx.get("keep_state") else []
         if changed:
@@ -357,6 +365,27 @@ class Instance(snapshot.Worker):
                 self.ctx["relaunches"][0] += 1
                 for f in changed:
                     self.ctx["relaunch_files"][f] = self.ctx["relaunch_files"].get(f, 0) + 1
+
+    def learn_defaults(self):
+        """After a path's steps (navigation, before any control is tried): preference keys that appeared since the
+        baseline are the defaults the screens on the way wrote, which every replay through them writes again; their
+        values are kept as the walk's own for those keys (changed_files)."""
+        if self.baseline is None:
+            return
+        now = self.data_state()
+        with self.ctx["lock"]:
+            for f, b in now.items():
+                a = self.baseline.get(f)
+                if isinstance(b, dict) and (a is None or isinstance(a, dict)):
+                    for k, v in b.items():
+                        if k not in (a or {}):
+                            self.ctx["first_values"].setdefault((f, k), v)
+
+    def reach(self, path, extra=(), relaunch=True):
+        """Back to a screen: the default configuration, a fresh start (at the path's deep link), the path's steps.
+        From the data the app had at its start: a launch whose app has written to its data since is replaced by a
+        new one on an emptied slot (--fresh) first. Not with --keep-data, whose slot cannot be put back."""
+        self.fresh_start() if relaunch else self.ensure()
         self.configure(DEFAULT_COMBO)
         self.say(f"clock {CLOCK}")
         self.expect_ok("restart" + (f" {path['start']}" if path.get("start") else ""))
@@ -364,7 +393,12 @@ class Instance(snapshot.Worker):
         if self.baseline is None and self.ctx.get("fresh") and not self.ctx.get("keep_state"):
             # Once the app's start has written what it writes at every start (taken after a restart and a settle).
             self.baseline = self.data_state()
-        for step in list(path["steps"]) + list(extra):
+        for step in path["steps"]:
+            self.expect_ok(step)
+            self.settle()
+        if self.ctx.get("fresh") and not self.ctx.get("keep_state"):
+            self.learn_defaults()
+        for step in extra:
             self.expect_ok(step)
             self.settle()
         self.say("pick cancel")
@@ -1329,11 +1363,11 @@ class Sweep:
             return
         inst.case = []
         self.case("offline", screen, "as reached")
-        inst.ensure()  # an earlier case may have ended the app
+        inst.fresh_start()  # an earlier case may have ended the app, or left data written: a relaunch now, not below
         inst.net_changed = True
         inst.say("network offline")
         inst.cmds.append("network offline")
-        inst.reach(screen["path"])  # the path with no network, from a fresh start
+        inst.reach(screen["path"], relaunch=False)  # the path with no network, from a fresh start
         up = self.spinner(inst)
         if up is None:
             self.omit("offline", screen)

@@ -348,10 +348,12 @@ def main():
     doc16, secs_h, _ = crawl(args.apk, os.path.join(args.out, "state"), *slot_walk)
     written = [s for s in doc16["screens"] if s["path"]["steps"] == ["tap-text Write"]]
     bad = [f for f in doc16["findings"] if f["kind"] in ("replay", "capture", "flaky")]
+    why = doc16.get("relaunch_files", {})
     check(bool(written) and not bad and doc16.get("relaunches", 0) >= 1
+          and ("settings.properties" in why or "sdcard/apksim-slot-check.txt" in why)
           and all(s.get("captures") for s in doc16["screens"]),
           "a tap that writes the app's data leaves later replays and captures alone (the instance is launched again)",
-          f"relaunches {doc16.get('relaunches')}, findings {[f['detail'][:80] for f in bad]}")
+          f"relaunches {doc16.get('relaunches')} ({why}), findings {[f['detail'][:80] for f in bad]}")
     doc17, _, _ = crawl(args.apk, os.path.join(args.out, "state-kept"), *slot_walk, "--keep-app-state")
     check(any(f["kind"] in ("replay", "capture", "flaky") for f in doc17["findings"]) and doc17.get("relaunches") == 0,
           "with --keep-app-state the screen before Write does not replay (the check sees the leak)",

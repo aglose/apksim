@@ -13,7 +13,7 @@ Status: item 1 of the roadmap, checked on the test app (`scripts/crawl-check.py`
 ```bash
 scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] [--max-seconds S] [--max-depth N]
                  [--skip-text REGEX]... [--tap-unlabeled] [--fill TEXT] [--matrix AXIS=V,V]... [--matrix-file SPEC.json]
-                 [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--keep-data]
+                 [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--keep-data] [--keep-app-state]
                  [--base-option "APKSIM OPTIONS"] [--seed RUN (--only ID,ID... | --only-file PATH)] [--events]
                  [--record-deps [--deps-packages PKG,PKG]]
                  [-- APKSIM_OPTION...]
@@ -99,9 +99,12 @@ So each replay starts from the data the app had at its launch:
   database, SQLite's `-shm` index (readers write it too) and the slot's lock.
 - Before each replay (explore, capture, sweep), it compares: when the app has written anything since, the instance is
   quit and launched again on an emptied slot (`--fresh`, as at the walk's start) before the replay goes on.
-  Preferences count key by key: a value that changed or went is a write, and so is a key that appears with another
-  value than it first appeared with in the walk. Opening a settings screen writes its defaults (a fresh slot has none),
-  which every replay through it repeats; a toggle writes the other value.
+  Preferences count key by key: a value that changed or went is a write, and so is a key that appears, unless it
+  appeared with that value while a path was being replayed (navigation, before any control is tried). Opening a
+  settings screen writes its defaults (a fresh slot has none), which every replay through it repeats; a toggle tried on
+  a screen is not on a path, so its first write counts.
+- A sweep case that sets the instance up before its replay (`network offline`) relaunches first, so its replay runs
+  on the instance it set up.
 - `crawl.json` counts these launches (`relaunches`) and what caused them (`relaunch_files`: files, `file#key` for
   preferences). Each costs a cold launch (one or two seconds); an app that writes on its own at every turn (a log
   file, a timer's record) costs one per replay. On a podcast app's settings (38 screens, ~300 transitions) comparing
