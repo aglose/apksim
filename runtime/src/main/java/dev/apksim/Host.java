@@ -480,7 +480,7 @@ public class Host {
         settle.vsyncIdleFrames = frames;
         settle.idleFrameLoop = false;
       }
-      if (up - settle.vsyncIdleSince < settle.horizonMs) return FRAME_WANTED;
+      if (up - settle.vsyncIdleSince < Math.max(1, settle.horizonMs)) return FRAME_WANTED;
       settle.idleFrameLoop = true;
     } else {
       settle.vsyncIdleSince = 0;
