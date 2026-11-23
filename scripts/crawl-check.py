@@ -112,7 +112,12 @@ def main():
                                               stdout=subprocess.PIPE, text=True, check=True).stdout.strip()
         subprocess.run(["cp", args.apk, os.path.join(args.out, "app.apk")], check=True)
         DOCKER = (args.docker, platform, args.out)
-    opts = ["-j", str(args.j)] + (["--max-depth", "2"] if args.quick else []) + rest
+    # The default skip list, and the Settings tab's "Play clip": a 3 s clip whose screen changes with how far it has
+    # played, so what a tap after it reaches depends on timing (a freshly launched instance plays later than a warm one).
+    sys.path.insert(0, os.path.dirname(CRAWL))
+    from crawl import DEFAULT_SKIP
+    skip = ["--skip-text", DEFAULT_SKIP, "--skip-text", r"\bplay clip\b"]
+    opts = ["-j", str(args.j)] + (["--max-depth", "2"] if args.quick else []) + skip + rest
     starts = ["--start", "apksim://composeapp/home", "--start", "apksim://stack", "--start", "apksim://dialogs"]
     matrix = ["--matrix", "appearance=light,dark"]
     a_dir, b_dir, c_dir, d_dir = (os.path.join(args.out, n) for n in ("a", "b", "base", "prepared"))
