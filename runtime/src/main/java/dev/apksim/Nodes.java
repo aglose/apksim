@@ -71,7 +71,7 @@ final class Nodes {
   /**
    * A ListView or GridView row as a device describes it: clickable when enabled and holding no focusable of its own
    * (AbsListView.onInitializeAccessibilityNodeInfoForItem). On a device the list puts that on each row through an
-   * accessibility delegate it sets only while accessibility is on, which it never is in a running instance, so a
+   * accessibility delegate it sets only while accessibility is on, which it normally never is in a running instance, so a
    * popup menu's rows (PopupMenu, a toolbar's overflow, a ListPopupWindow sheet) had no clickable flag, and the
    * crawler found nothing to tap in them. Only nodes read here change: the app's views are left as they are.
    */

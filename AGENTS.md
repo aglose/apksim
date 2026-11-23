@@ -1275,7 +1275,7 @@ that reaches the wrong window fails it (`keyTarget` in `Host`: keys go to the to
 its slider leaves a non-focusable value Popup up, which a tap on "Tap me" outside it must not reach (`ci-smoke.sh`
 drives it; `PopupTouchTest` in a test run). The tap also gives the popup ACTION_OUTSIDE, so its `onDismissRequest` runs once ("outside: 1"). "Open menu" shows a framework PopupMenu, whose rows
 must read as clickable nodes ("menu: beta" once chosen; `ci-smoke.sh`): a ListView marks its rows clickable for
-accessibility only through a delegate it sets while accessibility is on, never in a running instance, so `Nodes.listItem`
+accessibility only through a delegate it sets while accessibility is on, normally never in a running instance, so `Nodes.listItem`
 fills each row's node as `AbsListView.onInitializeAccessibilityNodeInfoForItem` does (`nodes`, `nodes tree`, `tap-text`,
 `crawl.py`); before, an overflow menu's or a ListPopupWindow sheet's rows gave the crawler no actions. `uiautomator dump`
 and UiAutomation read the framework's own nodes and still show such rows unclickable.
