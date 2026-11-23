@@ -137,10 +137,17 @@ def canon(recs, kids, i, w, h, scrolling):
     return f"{r.cls.rsplit('.', 1)[-1]}:{r.rid}:{flags}:{col}{row}({body})"
 
 
+# --screen-titles: the screen's title (title_of) is part of its identity, so screens built from one layout but named
+# differently (a detail screen per item) are told apart. Off by default: text is not structure (docs/crawl.md).
+TITLES_ARE_IDENTITY = False
+
+
 def structure(activity, recs):
     kids = build(recs)
     w, h = screen_size(recs)
     c = "|".join(canon(recs, kids, i, w, h, False) for i in kids[-1])
+    if TITLES_ARE_IDENTITY:
+        c += "#title=" + title_of(recs)
     digest = hashlib.sha1((activity + "#" + c).encode()).hexdigest()[:8]
     return f"{activity.rsplit('.', 1)[-1]}-{digest}", len(recs)
 
@@ -1770,6 +1777,9 @@ def parse(argv):
     p.add_argument("--max-seconds", type=float)
     p.add_argument("--max-depth", type=int)
     p.add_argument("--stable-ms", type=int, default=200, help="a screen is read until two reads this far apart agree (loads that settle does not wait for)")
+    p.add_argument("--screen-titles", action="store_true",
+                   help="tell screens with the same layout apart by their title (the first text that is not a number): a "
+                        "walk of an app whose screens share templates otherwise records them as one screen")
     p.add_argument("--max-actions", type=int, default=40, help="controls tried on one screen")
     p.add_argument("--max-repeat", type=int, default=4, help="a screen reached by this many identical steps in a row is not followed")
     p.add_argument("--max-scrolls", type=int, default=4, help="scroll-downs looking for more controls on one screen")
@@ -1885,6 +1895,8 @@ def matrix_of(args):
 
 def main():
     args = parse(sys.argv[1:])
+    global TITLES_ARE_IDENTITY
+    TITLES_ARE_IDENTITY = args.screen_titles
     apk = os.path.abspath(args.apk)
     if not os.path.isfile(apk):
         fail(f"no APK {apk}")

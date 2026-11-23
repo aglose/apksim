@@ -264,6 +264,13 @@ Where it takes two for one:
 - Screens that differ only in text or data: the second item's detail page, "Stack 1" and "Stack 2", an article and
   another article. This is on purpose, and means the walk sees one example of each kind of screen, not every record.
 - Screens of the same shape with different meaning (two settings pages made of the same switch rows).
+- Screens built from one layout and told apart only by their text (a detail screen per item, a generated app's
+  pagers: two "pager" screens with other titles) are one screen, whatever their titles, so an edge to the second is
+  recorded as an edge to the first and the second is never walked (issue 607: it looked like a replay landing in
+  the wrong section; the replay was right). `--screen-titles` puts the screen's title (the first text that is not a
+  number) into its id: ids then differ from a walk without it (do not seed one with the other), and a title that
+  changes with state (a counter in the top bar) makes a new screen each time, bounded by `--max-repeat` and
+  `--max-screens`.
 - A visual difference with the same structure (a colour, a text): the same screen; `--base` still reports it as
   changed by its capture.
 
