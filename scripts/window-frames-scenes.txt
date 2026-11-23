@@ -9,6 +9,7 @@ dialog-modal	apksim://dialogs?open=modal
 dialog-nonmodal	apksim://dialogs?open=nonmodal
 dialog-compose	apksim://dialogs?open=compose
 dialog-popupfull	apksim://dialogs?open=popupfull
+dialog-fullpopup	apksim://dialogs?open=fullpopup
 floating	apksim://floating
 floating-popup	apksim://floating?popup=1
 floating-popup-offscreen	apksim://floating?popup=offscreen

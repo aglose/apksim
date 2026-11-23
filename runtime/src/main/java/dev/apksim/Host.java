@@ -1346,11 +1346,71 @@ public class Host {
 
   @SuppressWarnings("unchecked")
   static List<View> rootViews() {
+    List<View> added;
     try {
-      return new ArrayList<>((List<View>) Views.FIELD.get(WindowManagerGlobal.getInstance()));
+      added = new ArrayList<>((List<View>) Views.FIELD.get(WindowManagerGlobal.getInstance()));
     } catch (IllegalAccessException e) {
       throw new IllegalStateException(e);
     }
+    return stackSubWindows(added);
+  }
+
+  /** A sub-window's sublayer as WindowManagerPolicy gives it: media below its parent, panels above (0 = not a sub-window); types are the framework's TYPE_APPLICATION_MEDIA 1001, _MEDIA_OVERLAY 1004, _PANEL 1000, _ATTACHED_DIALOG 1003, _SUB_PANEL 1002, _ABOVE_SUB_PANEL 1005. */
+  private static int sublayer(View v) {
+    if (!(v.getLayoutParams() instanceof WindowManager.LayoutParams lp)) return 0;
+    return switch (lp.type) {
+      case 1001 -> -2;
+      case 1004 -> -1;
+      case 1000,
+           1003 -> 1;
+      case 1002 -> 2;
+      case 1005 -> 3;
+      default -> 0;
+    };
+  }
+
+  /**
+   * Windows in the order they were added, except that the window manager stacks a sub-window (a PopupWindow, an
+   * attached dialog) on its parent window: just above it (below it for the media types), under whatever was
+   * added on top of the parent later, and by sublayer among its siblings (issue 613). The parent is the window
+   * whose token the sub-window carries. A list with no sub-window is returned as it is.
+   */
+  static List<View> stackSubWindows(List<View> added) {
+    int n = added.size();
+    boolean any = false;
+    for (int i = 0; i < n && !any; i++) any = sublayer(added.get(i)) != 0;
+    if (!any) return added;
+    View[] parent = new View[n];
+    for (int i = 0; i < n; i++) {
+      View v = added.get(i);
+      if (sublayer(v) == 0) continue;
+      android.os.IBinder token = ((WindowManager.LayoutParams) v.getLayoutParams()).token;
+      if (token == null) continue;
+      for (View c : added) {
+        if (c != v && sublayer(c) == 0 && (c.getWindowToken() == token
+            || ((WindowManager.LayoutParams) c.getLayoutParams()).token == token)) {
+          parent[i] = c;
+          break;
+        }
+      }
+    }
+    List<View> out = new ArrayList<>(n);
+    for (int i = 0; i < n; i++) {
+      View v = added.get(i);
+      if (parent[i] != null) continue;  // placed with its parent
+      List<View> below = new ArrayList<>(), above = new ArrayList<>();
+      if (sublayer(v) == 0) {
+        for (int layer = -2; layer <= 3; layer++) {
+          for (int j = 0; j < n; j++) {
+            if (parent[j] == v && sublayer(added.get(j)) == layer) (layer < 0 ? below : above).add(added.get(j));
+          }
+        }
+      }
+      out.addAll(below);
+      out.add(v);
+      out.addAll(above);
+    }
+    return out;
   }
 
   /** WindowManagerGlobal.mViews, looked up once: rootViews() runs on every loop turn. */

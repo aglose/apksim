@@ -48,7 +48,7 @@ import androidx.savedstate.setViewTreeSavedStateRegistryOwner
  *   device: it is not reported either.
  * Each dialog counts the taps on its "Count" button ("dialog taps: N"): a centred dialog's nodes must report where the
  * dialog is on the screen, so that a tap at their bounds (`tap-text`, UiAutomator's click) lands on them.
- * `?open=full|modal|nonmodal|compose|popupfull` (or the "open" extra) opens one at start. Plain views but for the Compose dialog,
+ * `?open=full|modal|nonmodal|compose|popupfull|fullpopup` (or the "open" extra) opens one at start. Plain views but for the Compose dialog,
  * for `viewtree` and `nodes`.
  */
 class DialogsActivity : Activity() {
@@ -70,6 +70,7 @@ class DialogsActivity : Activity() {
       addView(button("Non-modal dialog") { open("nonmodal") })
       addView(button("Compose dialog") { open("compose") })
       addView(button("Popup, then dialog") { open("popupfull") })
+      addView(button("Dialog, then popup") { open("fullpopup") })
     }
     setContentView(root)
   }
@@ -98,6 +99,17 @@ class DialogsActivity : Activity() {
       }, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, false)
       popup.showAtLocation(window.decorView, android.view.Gravity.TOP or android.view.Gravity.START, 48, 1200)
       return open("full")
+    }
+    if (which == "fullpopup") {
+      // The reverse: the popup is a sub-window of the activity's window, so it stays under the dialog opened first.
+      open("full")
+      val popup = android.widget.PopupWindow(TextView(this).apply {
+        text = "Popup under the dialog"
+        setBackgroundColor(Color.rgb(200, 160, 40))
+        setPadding(24, 24, 24, 24)
+      }, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, false)
+      popup.showAtLocation(window.decorView, android.view.Gravity.TOP or android.view.Gravity.START, 48, 1200)
+      return
     }
     val dialog = Dialog(this)
     var dialogTaps = 0

@@ -18,6 +18,9 @@ dialog-compose	1	dialog	DialogsActivity	214	714	608	1068	1	1
 dialog-popupfull	0	activity	DialogsActivity	0	0	822	1782	0	0
 dialog-popupfull	1	panel	PopupWindow	48	1200	384	1286	0	0
 dialog-popupfull	2	dialog	DialogsActivity	0	48	822	1734	1	1
+dialog-fullpopup	0	activity	DialogsActivity	0	0	822	1782	0	0
+dialog-fullpopup	1	panel	PopupWindow	48	1200	384	1286	0	0
+dialog-fullpopup	2	dialog	DialogsActivity	0	48	822	1734	1	1
 floating	0	activity	FloatingActivity	91	733	731	1048	1	1
 floating-popup	0	activity	FloatingActivity	91	733	731	1048	1	1
 floating-popup	1	panel	PopupWindow	139	833	556	919	0	0

@@ -8,6 +8,7 @@ dialog-modal	1	focused	1	0	running instances give no window the focus (Host.focu
 dialog-nonmodal	1	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
 dialog-compose	1	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
 dialog-popupfull	2	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
+dialog-fullpopup	2	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
 floating	0	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
 floating-popup	0	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
 floating-popup-offscreen	0	focused	1	0	running instances give no window the focus (Host.focusTopWindow is --snapshot only); on the device the top focusable window has it
