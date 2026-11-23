@@ -333,7 +333,7 @@ final class ClassCache {
         }
         if (now > 0 && now == seen) {
           synchronized (saving) {
-            save(Long.MAX_VALUE);
+            save(TEST_RUN ? 150_000_000L : Long.MAX_VALUE);
           }
           seen = 0;
         } else {
