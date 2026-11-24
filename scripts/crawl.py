@@ -2578,10 +2578,13 @@ def lost_carried(new, seed):
         return {}
     walked_old = set()  # seed ids of screens walked again whose controls were all tried
     explored, partial = getattr(new, "explored", None), getattr(new, "partial", set())
+    # --diff-controls none reads only the first screenful and taps nothing: a control out of sight is not a control gone.
+    all_tried = getattr(new, "diff_controls", "all") != "none"
+    unfollowed = {e["from"] for e in new.edges if e.get("to") is None}  # a budget kept a transition from being followed
     for sid in ids:
         ns = new.screens[sid]
-        if ns.get("origin") == "walked" and not ns.get("flaky") and sid not in partial \
-                and (explored is None or sid in explored):
+        if all_tried and ns.get("origin") == "walked" and not ns.get("flaky") and sid not in partial \
+                and sid not in unfollowed and (explored is None or sid in explored):
             walked_old.add(sid)
             if ns.get("replaces"):
                 walked_old.add(ns["replaces"])
@@ -2633,6 +2636,9 @@ def compare_edges(new, seed):
         bto = replaced.get(b["to"], b["to"])
         if bto != e["to"]:
             res["retargeted"].append({"from": k[0], "action": k[1], "to": e["to"], "base_to": b["to"]})
+    if getattr(new, "diff_controls", "all") == "none":
+        res["note"] = "--diff-controls none: controls were not all read, so removed transitions are not listed"
+        return res
     for k, b in base.items():
         if k not in cur:
             res["removed"].append({"from": k[0], "action": k[1], "base_to": b["to"]})

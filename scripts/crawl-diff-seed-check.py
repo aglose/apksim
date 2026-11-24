@@ -50,4 +50,12 @@ new.explored = {"A", "G"}  # B was not explored
 assert crawl.lost_carried(new, seed).get("D") == "unknown"
 new.explored = {"A", "B", "G"}; new.partial = {"B"}
 assert crawl.lost_carried(new, seed).get("D") == "unknown"
+# --diff-controls none never reads every control: nothing is gone for sure, and removed edges are not listed.
+new.partial = set(); new.diff_controls = "none"
+assert set(crawl.lost_carried(new, seed).values()) == {"unknown"}
+ed = crawl.compare_edges(new, seed)
+assert ed["removed"] == [] and ed.get("note"), ed
+# A transition a budget kept from being followed: what that screen led to is unknown.
+new.diff_controls = "changed"; new.edges.append(edge("B", "z", None))
+assert crawl.lost_carried(new, seed).get("D") == "unknown"
 print("ok")

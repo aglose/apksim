@@ -215,7 +215,9 @@ in), as it may still exist. `doc["edge_changes"]` (`edges` stays the graph's own
 `added` (`from`, `action`, `to`), `removed` (`from`, `action`, `base_to`) and `retargeted` (`from`, `action`, `to`,
 `base_to`), with ids of screens replaced in the walk mapped to their new ids; skipped controls are ignored, and `removed` is
 unreliable when the walk was cut short. A screen walked again that crashed, was cut short or is `flaky` is unknown
-ground: what only it led to is `unknown`, not `gone`. `unknown` does not fail the exit status; `gone` does. Transitions of carried screens are the
+ground: what only it led to is `unknown`, not `gone`. `unknown` does not fail the exit status; `gone` does. With `--diff-controls none` (one screenful read, nothing
+tapped) no carried screen is ever `gone`, only `unknown`, and `removed` is left empty with a `note`; the same holds for
+what a screen led to when a budget kept one of its transitions from being followed. Transitions of carried screens are the
 seed's and are not listed. `scripts/crawl-diff-seed-check.py` (CI) checks this on a synthetic graph.
 
 `crawl.json` is as before, with two keys per screen: `origin`, `"walked"` (explored or found in this run; every screen
