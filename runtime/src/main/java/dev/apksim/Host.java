@@ -566,6 +566,8 @@ public class Host {
         // A focused EditText's caret blink (every 500 ms): it redraws the caret alone, and counting it kept `settle` from
         // ever answering on a screen with a focused field (issue 479). Espresso counts the main looper idle despite it too.
         if (m.getCallback() != null && m.getCallback().getClass().getName().equals("android.widget.Editor$Blink")) continue;
+        // AndroidX ProfileInstaller posts a delayed (~5 s) background write at startup; it never draws anything.
+        if (m.getCallback() != null && m.getCallback().getClass().getName().startsWith("androidx.profileinstaller.ProfileInstallerInitializer")) continue;
         if ((m.what == 39 || m.what == 40) && handler.equals("android.view.ViewRootImpl$ViewRootHandler")) continue;
         if (m.what == 2 && handler.equals("android.view.Choreographer$FrameHandler") && m.obj != null
             && m.obj.getClass().getName().startsWith("android.animation.AnimationHandler$$Lambda")) continue;
