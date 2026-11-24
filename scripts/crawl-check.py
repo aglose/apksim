@@ -203,6 +203,33 @@ def main():
     recs = crawl_mod.parse_tree("0\tandroid.view.View\t\tcv\t0,0,200,100\t\t\t\x1e1\tandroid.widget.TextView\t\tv\t0,0,100,100\t\xd7\tDelete item\t\x1e")
     acts = crawl_mod.candidates(recs, crawl_mod.re.compile(crawl_mod.DEFAULT_SKIP, crawl_mod.re.I), False)
     check(len(acts) == 1 and acts[0]["skipped"], "the skip list reads a descendant's description when it also has text", str(acts))
+    # Where a difference is (issue 630): bounds beside ui_diff's entries, regions of a difference map
+    ud = crawl_mod.ui_diff({"texts": ["a", "b"], "text_boxes": [[0, 0, 1, 1], [2, 2, 3, 3]], "actions": [], "size": [822, 1782]},
+                           {"texts": ["a", "c", "d"], "text_boxes": [[0, 0, 1, 1], [5, 5, 6, 6], [7, 7, 8, 8]], "actions": []})
+    check(ud["texts"]["bounds"] == {"replaced": [[[2, 2, 3, 3], [5, 5, 6, 6]]], "added": [[7, 7, 8, 8]]} and ud["size"] == [822, 1782],
+          "ui_diff gives each changed text its bounds in the build it exists in", str(ud))
+    check("bounds" not in crawl_mod.ui_diff({"texts": ["a"]}, {"texts": ["b"]}).get("texts", {}),
+          "ui_diff of a crawl with no recorded bounds has none", "")
+    import struct, zlib
+    mw, mh = 100, 60
+    rows = []
+    for y in range(mh):
+        row = bytearray(b"\xdc\xdc\xdc\xff" * mw)
+        if 10 <= y < 20:
+            row[8 * 4:30 * 4] = b"\xff\x00\x00\xff" * 22
+        if 40 <= y < 45:
+            row[70 * 4:80 * 4] = b"\xff\x00\x00\xff" * 10
+        rows.append(bytes([0]) + bytes(row))
+    def chunk(k, d):
+        return struct.pack(">I", len(d)) + k + d + struct.pack(">I", zlib.crc32(k + d))
+    mp = os.path.join(args.out, "regions-map.png")
+    os.makedirs(args.out, exist_ok=True)
+    with open(mp, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", mw, mh, 8, 6, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(b"".join(rows))) + chunk(b"IEND", b""))
+    reg = crawl_mod.diff_regions(mp)
+    check(reg == {"size": [100, 60], "regions": [[8, 10, 30, 20], [70, 40, 80, 45]], "more": 0},
+          "a difference map's red areas become boxes, largest first", str(reg))
     a5 = crawl_mod.parse(["x.apk", "--out", os.path.join(args.out, "unit")])
     ex = crawl_mod.Explorer("new", "x.apk", a5, os.path.join(args.out, "unit"), [])
     check("--serial" in ex.options and any(o.startswith("secure:android_id=") for o in ex.options),

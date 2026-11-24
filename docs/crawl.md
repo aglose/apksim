@@ -200,6 +200,14 @@ directly against the seed's `crawl.json` and `screens/` without re-walking the b
   when structure changed), diffed semantically on `title`, visible `texts` (clock ticks excluded) and `controls`
   (`ui_diff` in `crawl.json` and shown in `report.html`), and pixel-diffed against the seed's captures using the same
   renderer recorded in the seed (`"snapshot"` in `crawl.json`).
+- Where a difference is (issue 630). Each screen in `crawl.json` records `text_boxes` (the bounds `[l, t, r, b]` of
+  each entry of `texts`, in the capture's pixels) and `size` (`[w, h]`). A `ui_diff` `texts` or `controls` entry gets a
+  `bounds` object beside its lists, of the same shape: `added[i]` is the box of `added[i]` in the new build, `removed[i]`
+  its box in the base build, and `replaced[i]` is `[base box, new box]` (`null` where a box is not known, as for a seed
+  written before this); `ui_diff.size` is the display's size (the new build's; boxes assume both builds ran on the same display, and a control's box is where the walk found it, so it is only reliable above the fold). `diffs[id][combo]` gets `size` and `regions`: boxes of
+  the connected areas of the difference map's red pixels (differences over `--diff-delta`; areas a few cells (8 px each, a gap of up to 2) apart are one; only for a comparison that counts as different),
+  largest first, at most 8, with `regions_more` counting the rest. Read from the map by `diff_regions`, which needs no
+  imaging library; `scripts/crawl-check.py` checks it.
 - `--diff-controls` chooses how much control exploration runs on each `--only` screen whose structure did not change:
   `changed` (the default with `--diff-seed`) carries edges for untouched controls and taps only new or renamed controls;
   `none` skips scrolling and button taps for a pure screen UI + pixel diff; `all` re-explores every control.
