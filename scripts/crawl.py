@@ -1217,7 +1217,7 @@ class Explorer:
                 continue
             if obs["id"] == old:
                 screen.update(activity=obs["activity"], nodes=obs["nodes"], title=title_of(obs["recs"]),
-                              texts=texts_list(obs["recs"]))
+                              **view_of(obs["recs"]))
                 if screen not in level:
                     level.append(screen)
                 continue
@@ -1234,7 +1234,7 @@ class Explorer:
             else:
                 ns = {"id": new_id, "activity": obs["activity"], "nodes": obs["nodes"], "path": screen["path"],
                       "parent": screen["parent"], "depth": screen["depth"], "actions": [], "captures": {},
-                      "title": title_of(obs["recs"]), "texts": texts_list(obs["recs"]), "origin": "walked"}
+                      "title": title_of(obs["recs"]), **view_of(obs["recs"]), "origin": "walked"}
                 self.screens[new_id] = ns
                 self.order[self.order.index(old)] = new_id
             ns["replaces"] = old
@@ -1340,7 +1340,7 @@ class Explorer:
     def add_screen(self, obs, path, parent, depth, step_count=0):
         s = {"id": obs["id"], "activity": obs["activity"], "nodes": obs["nodes"], "path": path, "parent": parent,
              "depth": depth, "actions": [], "captures": {}, "title": title_of(obs["recs"]),
-             "texts": texts_list(obs["recs"]), "origin": "walked"}
+             **view_of(obs["recs"]), "origin": "walked"}
         self.screens[s["id"]] = s
         self.order.append(s["id"])
         self.first_recs[s["id"]] = obs.get("recs")
@@ -1905,6 +1905,17 @@ def texts_list(recs):
     return [r.text[:80] for r in recs if r.text and "v" in r.flags][:40]
 
 
+def text_boxes(recs):
+    """The bounds [l, t, r, b] of each entry of texts_list(recs), in the same order (issue 630)."""
+    return [list(r.box) for r in recs if r.text and "v" in r.flags][:40]
+
+
+def view_of(recs):
+    """A screen's texts with their bounds and the display's size in pixels (what a capture's pixels are)."""
+    w, h = screen_size(recs)
+    return {"texts": texts_list(recs), "text_boxes": text_boxes(recs), "size": [w, h]}
+
+
 def title_of(recs):
     """A name for the screen's card: its first text that is not a number."""
     for r in recs:
@@ -2381,10 +2392,17 @@ def pair_builds(new, base, args):
     return out
 
 
-def diff_seq(old, new):
-    """Sequence diff of two string lists -> {'replaced': [[a, b], ...], 'added': [...], 'removed': [...]}."""
+def diff_seq(old, new, old_boxes=None, new_boxes=None):
+    """Sequence diff of two string lists -> {'replaced': [[a, b], ...], 'added': [...], 'removed': [...]}.
+    With the lists' bounds (one box per entry), also 'bounds' (issue 630): the same shape holding each entry's box in
+    the build it exists in (a replaced pair has both: [old box, new box]); None where a box is not known."""
     sm = difflib.SequenceMatcher(None, old, new)
     replaced, added, removed = [], [], []
+    rb, ab, vb = [], [], []
+
+    def box(boxes, i):
+        return boxes[i] if boxes is not None and i < len(boxes) else None
+
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
         if tag == "equal":
             continue
@@ -2392,12 +2410,17 @@ def diff_seq(old, new):
             n = min(i2 - i1, j2 - j1)
             for k in range(n):
                 replaced.append([old[i1 + k], new[j1 + k]])
+                rb.append([box(old_boxes, i1 + k), box(new_boxes, j1 + k)])
             removed.extend(old[i1 + n:i2])
+            vb.extend(box(old_boxes, i) for i in range(i1 + n, i2))
             added.extend(new[j1 + n:j2])
+            ab.extend(box(new_boxes, j) for j in range(j1 + n, j2))
         elif tag == "delete":
             removed.extend(old[i1:i2])
+            vb.extend(box(old_boxes, i) for i in range(i1, i2))
         elif tag == "insert":
             added.extend(new[j1:j2])
+            ab.extend(box(new_boxes, j) for j in range(j1, j2))
     out = {}
     if replaced:
         out["replaced"] = replaced
@@ -2405,6 +2428,13 @@ def diff_seq(old, new):
         out["added"] = added
     if removed:
         out["removed"] = removed
+    if out and (old_boxes is not None or new_boxes is not None):
+        bounds = {}
+        for k, v in (("replaced", rb), ("added", ab), ("removed", vb)):
+            if v and any(b is not None and b != [None, None] for b in v):
+                bounds[k] = v
+        if bounds:
+            out["bounds"] = bounds
     return out
 
 
@@ -2414,20 +2444,31 @@ def ui_diff(base_s, new_s, above_fold_only=False):
     bt, nt = base_s.get("title") or "", new_s.get("title") or ""
     if bt != nt and not (TIME_RE.search(bt) and TIME_RE.search(nt)):
         out["title"] = {"from": bt, "to": nt}
-    b_texts = [t for t in (base_s.get("texts") or []) if not TIME_RE.search(t)]
-    n_texts = [t for t in (new_s.get("texts") or []) if not TIME_RE.search(t)]
-    td = diff_seq(b_texts, n_texts)
+    def keep_texts(sc):
+        texts, boxes = sc.get("texts") or [], sc.get("text_boxes")
+        idx = [i for i, t in enumerate(texts) if not TIME_RE.search(t)]
+        return [texts[i] for i in idx], ([boxes[i] if i < len(boxes) else None for i in idx] if boxes is not None else None)
+
+    b_texts, b_tb = keep_texts(base_s)
+    n_texts, n_tb = keep_texts(new_s)
+    td = diff_seq(b_texts, n_texts, b_tb, n_tb)
     if td:
         out["texts"] = td
-    b_acts = [a["label"] for a in (base_s.get("actions") or [])
-              if a.get("kind") == "control" and (not above_fold_only or a.get("scrolls", 0) == 0)
-              and not TIME_RE.search(a.get("label", ""))]
-    n_acts = [a["label"] for a in (new_s.get("actions") or [])
-              if a.get("kind") == "control" and (not above_fold_only or a.get("scrolls", 0) == 0)
-              and not TIME_RE.search(a.get("label", ""))]
-    ad = diff_seq(b_acts, n_acts)
+
+    def keep_acts(sc):
+        acts = [a for a in (sc.get("actions") or [])
+                if a.get("kind") == "control" and (not above_fold_only or a.get("scrolls", 0) == 0)
+                and not TIME_RE.search(a.get("label", ""))]
+        return [a["label"] for a in acts], [a.get("box") for a in acts]
+
+    b_acts, b_ab = keep_acts(base_s)
+    n_acts, n_ab = keep_acts(new_s)
+    ad = diff_seq(b_acts, n_acts, b_ab, n_ab)
     if ad:
         out["controls"] = ad
+    size = new_s.get("size") or base_s.get("size")
+    if out and size:
+        out["size"] = list(size)
     return out
 
 
@@ -2548,6 +2589,117 @@ def compare_with_seed(new, seed, src_dir, doc, args, out):
     doc["base_edges"] = seed.get("edges", [])
 
 
+def read_png_rgba(path):
+    """(width, height, rows) of an 8-bit RGB or RGBA PNG, each row as RGBA bytes; stdlib only (the crawler needs no
+    imaging library). None for any other PNG."""
+    import struct, zlib
+    with open(path, "rb") as f:
+        data = f.read()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    pos, idat, hdr = 8, [], None
+    while pos + 8 <= len(data):
+        n, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + n]
+        pos += 12 + n
+        if kind == b"IHDR":
+            hdr = struct.unpack(">IIBBBBB", body)
+        elif kind == b"IDAT":
+            idat.append(body)
+        elif kind == b"IEND":
+            break
+    if not hdr or hdr[2] != 8 or hdr[3] not in (2, 6) or hdr[6] != 0:
+        return None
+    w, h, ch = hdr[0], hdr[1], 4 if hdr[3] == 6 else 3
+    raw = zlib.decompress(b"".join(idat))
+    stride = w * ch
+    rows, prev = [], bytearray(stride)
+    for y in range(h):
+        base = y * (stride + 1)
+        ft = raw[base]
+        cur = bytearray(raw[base + 1:base + 1 + stride])
+        if ft == 1:
+            for i in range(ch, stride):
+                cur[i] = (cur[i] + cur[i - ch]) & 255
+        elif ft == 2:
+            for i in range(stride):
+                cur[i] = (cur[i] + prev[i]) & 255
+        elif ft == 3:
+            for i in range(stride):
+                cur[i] = (cur[i] + (((cur[i - ch] if i >= ch else 0) + prev[i]) >> 1)) & 255
+        elif ft == 4:
+            for i in range(stride):
+                a = cur[i - ch] if i >= ch else 0
+                b = prev[i]
+                c = prev[i - ch] if i >= ch else 0
+                pa, pb, pc = abs(b - c), abs(a - c), abs(a + b - 2 * c)
+                cur[i] = (cur[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        elif ft != 0:
+            return None
+        prev = cur
+        if ch == 3:
+            rgba = bytearray(w * 4)
+            rgba[0::4], rgba[1::4], rgba[2::4], rgba[3::4] = cur[0::3], cur[1::3], cur[2::3], b"\xff" * w
+            rows.append(bytes(rgba))
+        else:
+            rows.append(bytes(cur))
+    return w, h, rows
+
+
+REGION_CELL = 8      # pixels: differing pixels are grouped on a grid of this size before areas are merged
+REGION_GAP = 2       # cells: areas closer than this (16 px) are one region
+REGION_MAX = 8       # regions kept per capture, largest first; the rest are counted
+
+
+def diff_regions(map_path):
+    """Bounding boxes of the connected areas of a `diff` map's red pixels (differences over the delta): merged when
+    close, at most REGION_MAX, largest first, as {"size": [w, h], "regions": [[l, t, r, b], ...], "more": N}. The
+    boxes are in the capture's pixels (r and b exclusive)."""
+    png = read_png_rgba(map_path)
+    if not png:
+        return None
+    w, h, rows = png
+    red = b"\xff\x00\x00\xff"
+    cells = {}  # (cx, cy) -> [minx, miny, maxx, maxy] of the red pixels in the cell
+    for y, row in enumerate(rows):
+        i = row.find(red)
+        while i >= 0:
+            if i & 3:
+                i = row.find(red, i + 1)
+                continue
+            x = i >> 2
+            c = cells.setdefault((x // REGION_CELL, y // REGION_CELL), [x, y, x, y])
+            if x < c[0]: c[0] = x
+            if x > c[2]: c[2] = x
+            if y < c[1]: c[1] = y
+            if y > c[3]: c[3] = y
+            i = row.find(red, i + 4)
+    if not cells:
+        return None
+    parent = {k: k for k in cells}
+
+    def find(k):
+        while parent[k] != k:
+            parent[k] = parent[parent[k]]
+            k = parent[k]
+        return k
+
+    for (cx, cy) in cells:
+        for dx in range(-REGION_GAP, REGION_GAP + 1):
+            for dy in range(0, REGION_GAP + 1):
+                n = (cx + dx, cy + dy)
+                if n != (cx, cy) and n in cells:
+                    parent[find(n)] = find((cx, cy))
+    boxes = {}
+    for k, c in cells.items():
+        r = find(k)
+        b = boxes.setdefault(r, [c[0], c[1], c[2], c[3]])
+        b[0], b[1], b[2], b[3] = min(b[0], c[0]), min(b[1], c[1]), max(b[2], c[2]), max(b[3], c[3])
+    out = sorted(([b[0], b[1], b[2] + 1, b[3] + 1] for b in boxes.values()),
+                 key=lambda b: (-(b[2] - b[0]) * (b[3] - b[1]), b[1], b[0]))
+    return {"size": [w, h], "regions": out[:REGION_MAX], "more": max(0, len(out) - REGION_MAX)}
+
+
 def diff_images(inst, a_path, b_path, name, outdir, delta, pixels, root):
     """The control channel's `diff` of two PNGs: (differing pixels, total, map file or None, size changed)."""
     inst.ensure()  # a Gone earlier may have ended this instance
@@ -2565,6 +2717,14 @@ def diff_images(inst, a_path, b_path, name, outdir, delta, pixels, root):
     res = {"pixels": int(m[3]), "total": int(m[4]), "maxDelta": int(m[5]), "sizeChanged": bool(m[2])}
     res["differs"] = bool(m[2]) or res["pixels"] > (pixels * res["total"] if pixels < 1 else pixels)
     if os.path.exists(sm) and res["pixels"]:
+        try:
+            found = diff_regions(sm)
+        except Exception:  # a map that cannot be read gives no regions, never a failed comparison
+            found = None
+        if found:
+            res["size"], res["regions"] = found["size"], found["regions"]
+            if found["more"]:
+                res["regions_more"] = found["more"]
         os.makedirs(outdir, exist_ok=True)
         shutil.move(sm, os.path.join(outdir, name + ".png"))
         res["map"] = os.path.relpath(os.path.join(outdir, name + ".png"), root)
