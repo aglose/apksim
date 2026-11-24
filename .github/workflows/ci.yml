@@ -159,6 +159,8 @@ jobs:
         run: scripts/check-h2-tunnel.sh
       - name: journey.py check (its start, and steps' timing, against a stand-in apksim)
         run: python3 scripts/journey-start-check.py
+      - name: crawl.py replay check (flaky screens explored, steps retried; a stand-in app, no apksim)
+        run: python3 scripts/crawl-replay-check.py
       - name: Subsystem audit (what the test app refers to, against apksim's status table)
         run: python3 scripts/subsystem-audit-check.py
       - name: Launch options (every launcher option decided for serve, beam and mcp)

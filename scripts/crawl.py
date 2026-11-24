@@ -42,6 +42,10 @@ DEFAULT_SKIP = (r"\b(delete|remove|erase|clear( all| data| history)?|reset|sign[
                 r"purchase|buy|pay|checkout|order|subscribe|unsubscribe|send|submit|post|publish|share|"
                 r"uninstall|deactivate|close account|cancel (subscription|order)|confirm|transfer|withdraw|donate)\b")
 SETTLE = "settle 1500 100"
+# A replay step or screen that is not there yet (data from the network, a list that fills in late): wait this long, then
+# settle for longer, before trying again (Instance.wait_longer).
+SETTLE_LONG = "settle 6000 300"
+PATIENCE_S = 1.5
 PSEUDO = ("EXIT", "CRASH", "SKIPPED", "FAILED")  # where an edge leads when it does not lead to a screen
 
 
@@ -271,6 +275,27 @@ class Instance(snapshot.Worker):
         """Waits for the screen to be still, at most 2.5 s; a screen that animates for ever is read as it is."""
         return not self.say(SETTLE).startswith("error")
 
+    def wait_longer(self):
+        """More time for what a replay expects and does not find yet: a label that comes with the network's answer, a
+        screen still loading. A real wait first, as `settle` does not wait for a request or a coroutine's delay()."""
+        time.sleep(self.ctx.get("patience_s", PATIENCE_S))
+        self.say(SETTLE_LONG)
+
+    def step(self, cmd, alt=None):
+        """One replay step, tried again after wait_longer when it fails (a reply that failed did nothing), then as [alt]
+        (the same tap by its coordinates, for a label that live data changed) when given."""
+        try:
+            self.expect_ok(cmd)
+        except ReplayFailed:
+            self.wait_longer()
+            try:
+                self.expect_ok(cmd)
+            except ReplayFailed:
+                if not alt or alt == cmd:
+                    raise
+                self.expect_ok(alt)
+        self.settle()
+
     # --- reading
     def observe(self):
         """The screen as it is: read until two reads in a row agree (a list still composing, a transition ending)."""
@@ -406,26 +431,30 @@ class Instance(snapshot.Worker):
                         if k not in (a or {}):
                             self.ctx["first_values"].setdefault((f, k), v)
 
-    def reach(self, path, extra=(), relaunch=True):
+    def reach(self, path, extra=(), relaunch=True, patient=False, alt=None):
         """Back to a screen: the default configuration, a fresh start (at the path's deep link), the path's steps.
         From the data the app had at its start: a launch whose app has written to its data since is replaced by a
-        new one on an emptied slot (--fresh) first, or with --keep-data on a new copy of the prepared slot."""
+        new one on an emptied slot (--fresh) first, or with --keep-data on a new copy of the prepared slot.
+        [patient] waits longer for the start screen first; [alt] is the path's steps with text taps as coordinates,
+        each tried when its step fails twice (Explorer.alt_paths)."""
         self.fresh_start() if relaunch else self.ensure()
         self.configure(DEFAULT_COMBO)
         self.say(f"clock {CLOCK}")
         self.expect_ok("restart" + (f" {path['start']}" if path.get("start") else ""))
         self.settle()
+        if patient:
+            self.wait_longer()
         if self.baseline is None and self.from_launch_data():
             # Once the app's start has written what it writes at every start (taken after a restart and a settle).
             self.baseline = self.data_state()
-        for step in path["steps"]:
-            self.expect_ok(step)
-            self.settle()
+        steps = list(path["steps"])
+        alt = list(alt) if alt and len(alt) == len(steps) else [None] * len(steps)
+        for step, other in zip(steps, alt):
+            self.step(step, other)
         if self.from_launch_data():
             self.learn_defaults()
         for step in extra:
-            self.expect_ok(step)
-            self.settle()
+            self.step(step)
         self.say("pick cancel")
 
     def read_deps(self):
@@ -444,15 +473,21 @@ class Instance(snapshot.Worker):
         return {"classes": deps_list(reply), "resources": deps_list(self.say("deps start resources")),
                 "packages": self.say("deps")}
 
-    def reach_screen(self, screen, extra=()):
-        """Replays the screen's path and checks where it ended; [extra] steps (scrolls, a fill) follow the check."""
-        self.reach(screen["path"])
+    def reach_screen(self, screen, extra=(), patient=False, alt=None, lenient=False):
+        """Replays the screen's path and checks where it ended; [extra] steps (scrolls, a fill) follow the check.
+        A screen of another structure is read again after wait_longer. [lenient]: one of another structure in the
+        same activity will do (a screen whose content changes between launches), returned with "drift" set."""
+        self.reach(screen["path"], patient=patient, alt=alt)
         got = self.observe()
+        if got["id"] != screen["id"] and not lenient:
+            self.wait_longer()
+            got = self.observe()
         if got["id"] != screen["id"]:
-            raise ReplayFailed(f"replay reached {got['id']}, not {screen['id']}")
+            if not (lenient and got["activity"] == screen["activity"]):
+                raise ReplayFailed(f"replay reached {got['id']}, not {screen['id']}")
+            got["drift"] = True
         for step in extra:
-            self.expect_ok(step)
-            self.settle()
+            self.step(step)
         return got
 
 
@@ -772,6 +807,8 @@ class Explorer:
         self.cut_by = set()     # what left screens unexplored: max-seconds, max-screens, max-depth, stopped
         self.captured_now = set()  # a seeded walk: carried screens captured in this run (the seed, stopped, had none)
         self.announced = set()  # ids --events has told
+        self.first_recs = {}    # id -> the records the screen showed when it was found (a flaky screen's controls)
+        self.alt_paths = {}     # id -> its path's steps with every tap as coordinates (Instance.reach's alt)
         os.makedirs(os.path.join(out, "logs"), exist_ok=True)
         self.stage = tempfile.mkdtemp(prefix="apksim-crawl-")
         if re.search(r"\s", self.stage):
@@ -943,7 +980,11 @@ class Explorer:
                             edge["note"] = "not followed: --max-screens"
                             edge["to"] = None
                         else:
-                            nxt.append(self.add_screen(to, self.full_path(screen, e["steps"]), screen["id"], screen["depth"] + 1))
+                            new = self.add_screen(to, self.full_path(screen, e["steps"]), screen["id"], screen["depth"] + 1)
+                            if e.get("alt"):
+                                self.alt_paths[new["id"]] = list(self.alt_paths.get(screen["id"]) or screen["path"]["steps"]) \
+                                    + list(e["steps"][:-1]) + [e["alt"]]
+                            nxt.append(new)
                     self.edges.append(edge)
                 for f in res["findings"]:
                     self.findings.append(f)
@@ -1112,7 +1153,15 @@ class Explorer:
              "texts": texts_list(obs["recs"]), "origin": "walked"}
         self.screens[s["id"]] = s
         self.order.append(s["id"])
+        self.first_recs[s["id"]] = obs.get("recs")
         return s
+
+    def arrive(self, inst, screen, extra=(), lenient=False):
+        """At the screen, [extra] steps done. [lenient]: a flaky screen, which may now show another structure of the
+        same activity, or be behind a label that live data changed (its path's taps tried by their coordinates)."""
+        if not lenient:
+            return inst.reach_screen(screen, extra)
+        return inst.reach_screen(screen, extra, alt=self.alt_paths.get(screen["id"]), lenient=True)
 
     def explore_screen(self, inst, screen):
         """Tries every control of a screen. Returns its actions, edges (action -> observed screen) and findings."""
@@ -1122,17 +1171,35 @@ class Explorer:
         findings, edges = [], []
         truncated = False
         here = None
-        for attempt in range(2):
+        lenient = False  # the screen's path does not replay to it: its controls are tried where the path leads now
+        flaky = None
+        aliases = set()  # structures that are this screen: scrolled, or a flaky screen's other arrivals
+        for attempt in range(3):
             try:
-                here = inst.reach_screen(screen)
+                here = inst.reach_screen(screen, patient=attempt == 2)  # the last try waits longer for the start
                 break
             except ReplayFailed as e:
-                if attempt:
-                    findings.append({"kind": "flaky", "detail": f"{screen['id']}: {e}", "path": screen["path"], "build": self.name})
-                    return {"actions": [], "edges": [], "findings": findings, "flaky": str(e)}
+                flaky = str(e)
             except Gone as e:
                 findings.append(self.crash_finding(e.crash, screen["path"]))
                 return {"actions": [], "edges": [], "findings": findings, "flaky": "ended on arrival"}
+        if here is None:
+            # Not a dead end: the walk reached this screen once, so its controls (as it showed them then) are tried on
+            # what its path reaches now in the same activity, and what they lead to is followed. Still flaky.
+            findings.append({"kind": "flaky", "detail": f"{screen['id']}: {flaky}", "path": screen["path"], "build": self.name})
+            lenient = True
+            try:
+                here = self.arrive(inst, screen, lenient=True)
+            except ReplayFailed as e:
+                return {"actions": [], "edges": [], "findings": findings, "flaky": f"{flaky}; then {e}"}
+            except Gone as e:
+                findings.append(self.crash_finding(e.crash, screen["path"]))
+                return {"actions": [], "edges": [], "findings": findings, "flaky": flaky}
+            flaky += "; its controls were tried where its path leads now"
+            if here.get("drift"):
+                aliases.add(here["id"])
+            if self.first_recs.get(screen["id"]):
+                here = dict(here, recs=self.first_recs[screen["id"]])
         deps = None
         if args.record_deps:
             # The span from the `restart` that began this replay to the screen read as settled (docs/crawl.md).
@@ -1162,7 +1229,6 @@ class Explorer:
         acts = [a for a in candidates(recs, self.skip_re, args.tap_unlabeled) if a["kind"] == "control"]
         # Controls below the fold: scroll and read again, until nothing new shows.
         scrolls = []
-        aliases = set()  # the screen scrolled is still this screen
         seen = {a["label"] for a in acts}
         for k in range(1, args.max_scrolls + 1):
             sc = scroll_cmd(recs)
@@ -1199,17 +1265,32 @@ class Explorer:
                 truncated = True
                 break
             steps = prep + a["prefix"] + [a["cmd"]]
+            alt = f"tap {a['x']} {a['y']}"
+            note = None
             try:
-                inst.reach_screen(screen, prep + a["prefix"])
+                try:
+                    got = self.arrive(inst, screen, prep + a["prefix"], lenient)
+                except ReplayFailed:
+                    if lenient:
+                        raise
+                    # It replayed for the screen and not now: try this control where the path leads now.
+                    got = self.arrive(inst, screen, prep + a["prefix"], True)
+                if got.get("drift"):
+                    aliases.add(got["id"])
+                    note = "tried on another structure of this screen (its replay is flaky)"
                 try:
                     inst.expect_ok(a["cmd"])
                 except ReplayFailed as e:
                     # tap-text compares the label as the app has it; `nodes tree` flattens tabs and line breaks
                     if not a["cmd"].startswith("tap-text") or "not found" not in str(e):
                         raise
-                    a["cmd"] = f"tap {a['x']} {a['y']}"
-                    steps = prep + a["prefix"] + [a["cmd"]]
-                    inst.expect_ok(a["cmd"])
+                    inst.wait_longer()  # a label that comes with data still loading
+                    try:
+                        inst.expect_ok(a["cmd"])
+                    except ReplayFailed:
+                        a["cmd"] = alt
+                        steps = prep + a["prefix"] + [a["cmd"]]
+                        inst.expect_ok(a["cmd"])
                 inst.settle()
                 inst.say("pick cancel")
                 to = inst.observe()
@@ -1217,7 +1298,10 @@ class Explorer:
                     edges.append({"label": a["label"], "cmd": a["cmd"], "kind": "control", "to": {"id": "EXIT"}, "steps": steps,
                                   "note": "the app has no activity left"})
                     continue
-                edges.append({"label": a["label"], "cmd": a["cmd"], "kind": "control", "to": to, "steps": steps})
+                edge = {"label": a["label"], "cmd": a["cmd"], "kind": "control", "to": to, "steps": steps, "alt": alt}
+                if note:
+                    edge["note"] = note
+                edges.append(edge)
             except ReplayFailed as e:
                 edges.append({"label": a["label"], "cmd": a["cmd"], "kind": "control", "to": {"id": "FAILED"}, "steps": steps,
                               "note": str(e)})
@@ -1230,11 +1314,24 @@ class Explorer:
         if len(acts) > args.max_actions:
             findings.append({"kind": "note", "detail": f"{screen['id']}: {len(acts)} controls, the first {args.max_actions} tried",
                              "path": screen["path"], "build": self.name})
+        # A flaky screen's control that leads to the same controls in the same activity (a refresh, a tab of itself) is
+        # this screen with other data, not a new screen: followed, each would be a new flaky screen, level after level.
+        mine = self.control_set(here["recs"]) if lenient else None
         for e in edges:
-            if e["to"]["id"] in aliases:
+            to = e["to"]
+            if to["id"] in aliases:
                 e["to"] = {"id": screen["id"]}
+            elif mine and to.get("recs") is not None and to.get("activity") == screen["activity"] \
+                    and self.control_set(to["recs"]) == mine:
+                e["to"] = {"id": screen["id"]}
+                e["note"] = "the same controls with other data (this screen is flaky)"
         return {"actions": [{k: a[k] for k in ("label", "cmd", "kind", "box", "skipped", "scrolls")} for a in acts],
-                "edges": edges, "findings": findings, "truncated": truncated, "deps": deps}
+                "edges": edges, "findings": findings, "truncated": truncated, "deps": deps, "flaky": flaky if lenient else None}
+
+    def control_set(self, recs):
+        """A screen's controls by label, numbers left out (a temperature, a count): what stays of it as its data changes."""
+        return frozenset(re.sub(r"\d+", "#", a["label"]) for a in candidates(recs, self.skip_re, True)
+                         if a["kind"] == "control")
 
     def crash_finding(self, crash, path):
         kind = "crash" if crash["kind"] == "crash" else crash["kind"]

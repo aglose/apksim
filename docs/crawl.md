@@ -84,6 +84,26 @@ scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] 
    user making them while on the screen), settles and takes `shot`. Screens are spread over the instances; with fewer
    screens than instances the combinations are split too. A path that does not replay (the screen it reaches is not
    the one expected) is a `replay` finding, and a capture that fails a `capture` one.
+
+### Screens whose replay is not exact
+
+An app with live data (a forecast, alerts, a feed) shows another structure, or other labels, at each launch, so a path
+recorded once may not lead back to its screen. The walk is forgiving before it gives up, and does not give up on the
+screen's subtree:
+
+- A replay step that fails (a `tap-text` whose label is not there yet, a reply that did nothing) is tried again after a
+  real wait of 1.5 s and `settle 6000 300`; so is a control's own `tap-text` before it falls back to the control's
+  coordinates. A screen reached with another structure is read again after the same wait.
+- A screen is replayed up to three times before it is explored, the third waiting longer for the start screen.
+- When all three fail, the screen is a `flaky` finding (and `flaky` in `crawl.json`, "FLAKY" on its card), and its
+  controls, as the walk saw them when it found the screen, are still tried, each on what the path reaches now: any
+  structure of the same activity will do, and a step whose label changed (`tap-text Ski 3°`, now 4°) is tried as the tap
+  at its coordinates when it was recorded. What they lead to is followed as from any screen, so screens below a flaky one
+  are found, and may be flaky in turn. Edges tried on another structure carry a note saying so. A control of a flaky
+  screen that leads to a screen of the same activity with the same controls (labels, numbers left out: a refresh) is an
+  edge back to it, not a new screen. A control that worked when its screen replayed and does not now is tried on what
+  the path reaches now too.
+- `scripts/crawl-replay-check.py` (CI's quick checks, no apksim) walks a stand-in app with each of these.
 6. `--base`: the other build is walked and captured the same way (`--base-option "--setting global:K=V"` gives its launches
    options of their own, and with no `--base` the same APK is the base: "what does this setting change"). Screens are
    paired by id, then by replaying each new-only screen's path on the base build. `same`, `changed` (another structure, or
