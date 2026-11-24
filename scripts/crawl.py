@@ -2472,6 +2472,15 @@ def compare_with_seed(new, seed, src_dir, doc, args, out):
         if bs["id"] not in matched_base:
             pairs.append({"id": None, "base": bs["id"], "status": "gone",
                           "why": "no screen of the new build reaches it"})
+    lost = lost_carried(new, seed)
+    for p in pairs:
+        if p["status"] == "same" and p["id"] in lost and new.screens[p["id"]].get("origin") == "carried":
+            if lost[p["id"]] == "gone":
+                p.update(id=None, status="gone", why="no transition of the new graph leads to it any more: every screen "
+                         "that led to it was walked again or is itself gone")
+            else:
+                p.update(status="unknown", why="no transition of the new graph leads to it, but a screen that led to it "
+                         "was not walked again (or the seed never explored it), so it may still exist")
 
     def stage_base_captures(bs):
         bc = dict(bs)
@@ -2546,6 +2555,86 @@ def compare_with_seed(new, seed, src_dir, doc, args, out):
     doc["diffs"] = diffs
     doc["base_screens"] = base_screens
     doc["base_edges"] = seed.get("edges", [])
+    doc["edges"] = compare_edges(new, seed)
+
+
+def lost_carried(new, seed):
+    """Carried screens that no transition of the new graph leads to from a start: {id: "gone" | "unknown"}.
+    Gone when every screen that led to it (in the seed) was walked again or is itself gone; unknown when one that led
+    to it was neither (the seed never explored it) or it had no recorded way in."""
+    ids = set(new.screens)
+    seen = {sid for sid in ids if new.screens[sid].get("parent") is None}
+    todo = list(seen)
+    out_edges = {}
+    for e in new.edges:
+        out_edges.setdefault(e["from"], []).append(e["to"])
+    while todo:
+        for t in out_edges.get(todo.pop(), []):
+            if t in ids and t not in seen:
+                seen.add(t)
+                todo.append(t)
+    lost = [sid for sid in ids if sid not in seen and new.screens[sid].get("origin") == "carried"]
+    if not lost:
+        return {}
+    walked_old = set()
+    for sid in ids:
+        ns = new.screens[sid]
+        if ns.get("origin") == "walked":
+            walked_old.add(sid)
+            if ns.get("replaces"):
+                walked_old.add(ns["replaces"])
+    lost_set = set(lost)
+    inbound = {}
+    for e in seed.get("edges", []):
+        if e.get("to") in lost_set:
+            inbound.setdefault(e["to"], set()).add(e["from"])
+    unexplored = set(seed.get("unexplored", []))
+    status = {}
+    for sid in lost:
+        srcs = inbound.get(sid, set())
+        bad = not srcs or any(f in unexplored and f not in walked_old for f in srcs) \
+            or any(f not in walked_old and f not in lost_set for f in srcs)
+        status[sid] = "unknown" if bad else "gone"
+    changed = True
+    while changed:  # a screen that only the unknown ones led to may still exist
+        changed = False
+        for sid in lost:
+            if status[sid] == "gone" and any(status.get(f) == "unknown" for f in inbound.get(sid, ())):
+                status[sid] = "unknown"
+                changed = True
+    return status
+
+
+def compare_edges(new, seed):
+    """Transitions out of screens walked again, new graph against the seed: added, removed, retargeted."""
+    replaced = {ns["replaces"]: sid for sid, ns in new.screens.items() if ns.get("replaces")}
+    walked = {sid for sid, ns in new.screens.items() if ns.get("origin") == "walked"}
+
+    def key_all(edges, mapf):
+        out, count = {}, {}
+        for e in edges:
+            f = mapf(e["from"])
+            if f not in walked:
+                continue
+            k = (f, e["action"])
+            count[k] = count.get(k, 0) + 1
+            out[k + (count[k],)] = e
+        return out
+    base = key_all(seed.get("edges", []), lambda f: replaced.get(f, f))
+    cur = key_all(new.edges, lambda f: f)
+    res = {"added": [], "removed": [], "retargeted": []}
+    for k, e in cur.items():
+        b = base.get(k)
+        if b is None:
+            res["added"].append({"from": k[0], "action": k[1], "to": e["to"]})
+            continue
+        bto = replaced.get(b["to"], b["to"])
+        if bto != e["to"]:
+            res["retargeted"].append({"from": k[0], "action": k[1], "to": e["to"], "base_to": b["to"]})
+    for k, b in base.items():
+        if k not in cur:
+            res["removed"].append({"from": k[0], "action": k[1], "base_to": b["to"]})
+    return res
 
 
 def diff_images(inst, a_path, b_path, name, outdir, delta, pixels, root):

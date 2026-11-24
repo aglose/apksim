@@ -208,6 +208,14 @@ directly against the seed's `crawl.json` and `screens/` without re-walking the b
   `min(-j, len(--only))`, teardown runs in parallel, and GPU-rendered `--diff-seed` runs opt into apksim's warm standby
   JVM when available (`APKSIM_STANDBY=0` forces a cold launch).
 
+A carried screen that the new graph no longer leads to from a start is not `same`. Its `compare` entry is `gone`
+(`id` null, `base` its id, with `why`) when every screen that led to it in the seed was walked again or is itself
+gone, and `unknown` when one that led to it was neither (a screen the seed never explored, or it had no recorded way
+in), as it may still exist. `doc["edges"]` lists the transitions out of screens walked again against the seed's:
+`added` (`from`, `action`, `to`), `removed` (`from`, `action`, `base_to`) and `retargeted` (`from`, `action`, `to`,
+`base_to`), with ids of screens replaced in the walk mapped to their new ids. Transitions of carried screens are the
+seed's and are not listed. `scripts/crawl-diff-seed-check.py` checks this on a synthetic graph.
+
 `crawl.json` is as before, with two keys per screen: `origin`, `"walked"` (explored or found in this run; every screen
 of a walk without `--seed`) or `"carried"` (taken from the seed), and `replaces: OLD_ID` on a screen that took a named
 screen's place. Readers that do not know them keep working.
