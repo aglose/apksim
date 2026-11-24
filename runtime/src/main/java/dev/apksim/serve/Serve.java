@@ -2800,6 +2800,13 @@ public final class Serve {
   /** The agent's own mark in a device start's launch: the page agreed to uninstall a copy signed by another key. */
   static final String DEVICE_UNINSTALL = "--beam-device-uninstall";
 
+  /**
+   * The `need: "uninstall"` answers given (origin, serial, build -> when): `"uninstall": true` is honoured only for a
+   * start that follows one within 10 minutes, so a page cannot erase an app's data on the phone without the round trip
+   * through its user that the answer asks for. Bounded: cleared when it grows past 1024.
+   */
+  private final Map<String, Long> uninstallAsked = new java.util.concurrent.ConcurrentHashMap<>();
+
   /** What GET /beam/devices last said of each ready device, for the session's `i` message. */
   private final Map<String, DeviceTarget.Device> deviceInfo = new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -2834,14 +2841,20 @@ public final class Serve {
     }
     String pkg = DeviceTarget.packageOf(a.path());
     System.err.printf("[beam] %s: installing %s on the device %s%n", o, a.name(), serial);
+    String asked = o + " " + serial + " " + sha;
+    Long at = uninstallAsked.get(asked);
+    boolean uninstall = launch.contains(DEVICE_UNINSTALL) && at != null && System.currentTimeMillis() - at < 600_000;
     String need;
     try {
-      need = DeviceTarget.install(serial, a.path(), sha, launch.contains(DEVICE_UNINSTALL));
+      need = DeviceTarget.install(serial, a.path(), sha, uninstall);
     } catch (IOException e) {
       Http.text(out, 409, "the device " + serial + ": " + e.getMessage());
       return null;
     }
+    if (uninstall) uninstallAsked.remove(asked);
     if (need != null) {
+      if (uninstallAsked.size() > 1024) uninstallAsked.clear();
+      uninstallAsked.put(asked, System.currentTimeMillis());
       Http.json(out, 200, "{\"need\":\"uninstall\",\"package\":" + Http.q(pkg == null ? "" : pkg) + ",\"why\":"
           + Http.q(need.substring("need-uninstall: ".length())) + "}");
       return null;

@@ -26,6 +26,7 @@ import importlib.util
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -217,6 +218,31 @@ def on_device(apksim, apk, serial, keep_app):
             s.ws.send(c)
             s.pump(0.5)
         check(not any(t.startswith("r ") and "error" in t for t in s.texts), f"typing, back, home and resume are taken ({[t for t in s.texts if t.startswith('r ')]})")
+        # The bridge's control port answers only the session's token: not a page posting to loopback, not a stray program.
+        pid = s.stats.get("pid", 0) if s.stats else 0
+        if not pid:
+            s.ws.send("stats")
+            s.pump(3, until=lambda: s.stats.get("pid", 0) > 0)
+            pid = s.stats.get("pid", 0)
+        ports = subprocess.run(["lsof", "-nP", "-a", "-p", str(pid), "-iTCP", "-sTCP:LISTEN", "-Fn"], capture_output=True, text=True).stdout
+        bport = next((int(l.rsplit(":", 1)[1]) for l in ports.splitlines() if l.startswith("n") and ":" in l), 0)
+        answers = []
+        for probe in (b"stats\n", b"POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 6\r\n\r\nstats\n", b"auth wrong-token-0123456789abcdef0123456789\nstats\n"):
+            try:
+                c = socket.create_connection(("127.0.0.1", bport), timeout=5)
+                c.sendall(probe)
+                c.settimeout(3)
+                answers.append(c.recv(100))
+                c.close()
+            except OSError as e:
+                answers.append(repr(e).encode())
+        check(bport and all(x == b"" or b"ConnectionReset" in x for x in answers), f"the bridge's port ({bport}) answers nothing without the session's token ({answers})")
+        for sid, line, want in (("s1", "settings put global http_proxy 10.0.0.1:8080", 126), ("s2", "settings get system font_scale", 0),
+                                ("s3", "am broadcast -a dev.apksim.check.NOTHING", 126), ("s4", "ls /sdcard", 126)):
+            s.ws.send(f"shell {sid} {line}")
+            s.pump(15, until=lambda: any(t.startswith("a ") and f'"{sid}"' in t for t in s.texts))
+            got = next((json.loads(t[2:]) for t in s.texts if t.startswith("a ") and f'"{sid}"' in t), {})
+            check(got.get("status") == want, f"limited shell on the device: `{line}` -> {want} ({got})")
         st, _, body = req(gp, "POST", "/beam/start", A, start_body(apk, sha, device=serial))
         check(st == 409 and b"already runs a session" in body, f"a second start on the device is refused while one runs ({st})")
         s.ws.s.close()
@@ -225,6 +251,9 @@ def on_device(apksim, apk, serial, keep_app):
         other = resigned(apk)
         if other:
             osha = hashlib.sha256(open(other, "rb").read()).hexdigest()
+            g1, _ = bc.begin(gp, A, start_body(other, osha, device=serial, uninstall=True), open(other, "rb").read())
+            check(g1.get("need") == "uninstall" and shell(serial, f"pm path {PKG}").startswith("package:"),
+                  f"\"uninstall\": true before any need: uninstall answer uninstalls nothing ({g1})")
             g2, _ = bc.begin(gp, A, start_body(other, osha, device=serial), open(other, "rb").read())
             check(g2.get("need") == "uninstall" and g2.get("package") == PKG and g2.get("why"),
                   f"a build signed by another key answers need: uninstall ({g2})")
@@ -235,8 +264,10 @@ def on_device(apksim, apk, serial, keep_app):
             s3.ws.s.close()
             no_sessions(gp)
             # The original build back, so the device holds what it held (or nothing, below).
-            g4, _ = bc.begin(gp, A, start_body(apk, sha, device=serial, uninstall=True), open(apk, "rb").read())
-            check(g4.get("token"), "the first build goes back the same way")
+            g4, _ = bc.begin(gp, A, start_body(apk, sha, device=serial), open(apk, "rb").read())
+            if g4.get("need") == "uninstall":
+                g4, _ = bc.begin(gp, A, start_body(apk, sha, device=serial, uninstall=True), open(apk, "rb").read())
+            check(g4.get("token"), f"the first build goes back the same way ({g4})")
             shutil.rmtree(os.path.dirname(other), ignore_errors=True)
         else:
             print("     (no apksigner or keytool: the need-uninstall check is skipped)")

@@ -61,6 +61,11 @@ final class DeviceTarget {
 
   /** Runs `adb [-s serial] args...` with a deadline; stdout and stderr together. */
   static Result run(String serial, List<String> args, long seconds) throws IOException {
+    return run(serial, args, seconds, 16 << 20);
+  }
+
+  /** As {@link #run(String, List, long)}, keeping at most `max` bytes of output: past that, adb is stopped. */
+  static Result run(String serial, List<String> args, long seconds, int max) throws IOException {
     String a = adb();
     if (a == null) throw new IOException("no adb on this Mac (install the Android SDK's platform-tools)");
     List<String> cmd = new ArrayList<>(List.of(a));
@@ -70,7 +75,17 @@ final class DeviceTarget {
     java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
     Thread drain = Thread.ofVirtual().start(() -> {
       try (var in = p.getInputStream()) {
-        in.transferTo(out);
+        byte[] b = new byte[1 << 16];
+        for (int n; (n = in.read(b)) > 0; ) {
+          synchronized (out) {
+            int keep = Math.min(n, max - out.size());
+            if (keep > 0) out.write(b, 0, keep);
+            if (out.size() >= max) {
+              p.destroyForcibly();  // a command that never stops printing (cat /dev/zero) ends here, not in memory
+              break;
+            }
+          }
+        }
       } catch (IOException e) {
         // closed on a timeout
       }

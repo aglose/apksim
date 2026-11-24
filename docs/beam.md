@@ -1409,7 +1409,8 @@ agent a short PATH (`DeviceTarget.adb`).
 nothing when the device already has this build (by hash); `install -r -d` when it has none or one with the same signer
 (`ApkSigners`); and for a copy signed by another key it answers `{"need":"uninstall","package","why"}` instead of a
 grant, as a replacement erases that app's data on the device. The page asks its user and starts again with
-`"uninstall": true` (the build is then in the cache). Refused: a device that is not `device` to adb (409; `unauthorized`
+`"uninstall": true` (the build is then in the cache). `"uninstall": true` counts only after that answer, for the same
+origin, device and build within 10 minutes: sent first, it gets the answer and uninstalls nothing. Refused: a device that is not `device` to adb (409; `unauthorized`
 names the "Allow USB debugging?" prompt on the device), a device that already runs a session (409: one at a time), launch
 options (400, naming them: they are the simulator's), `saved`/`dataFrom`/`data`, `"inspect": true` and `"relay": true`
 (400). A device session counts toward `max`. `"adb": true` gives it the whole shell where `allow-adb` is on, as for a
@@ -1418,7 +1419,10 @@ simulated session; no adb device is published (the device is one already).
 **The bridge.** A device session's "instance" is `DeviceBridge`, a small JVM (`-Xmx64m`, C1) the agent starts with its
 own java and class path in place of the launcher. It runs scrcpy's server on the device and serves the instance's own
 control protocol on a loopback port, printed as `[apksim] control port N`, so `Session` relays it as it relays a
-simulated screen (acks, the in-flight window, viewers). scrcpy is not bundled: the server is Homebrew's
+simulated screen (acks, the in-flight window, viewers). Unlike an instance, whose port reaches a sandboxed app, the
+bridge's reaches a real phone: every connection must send `auth TOKEN` first (a random token per session, given to the
+bridge in `APKSIM_BRIDGE_TOKEN` and sent by `Session.connect`), and anything else, a browser's request line included, is
+closed unanswered. The bridge ends itself when the agent that started it ends without a `quit`. scrcpy is not bundled: the server is Homebrew's
 (`brew install scrcpy`: `share/scrcpy/scrcpy-server`, its version from `bin/scrcpy --version`, which the server must be
 started with exactly), else `APKSIM_SCRCPY_SERVER` and `APKSIM_SCRCPY_VERSION`. Its start: the jar pushed to
 `/data/local/tmp/apksim-scrcpy-SCID.jar` (a name of the session's own, so a scrcpy the device's owner runs keeps its file),
@@ -1446,13 +1450,16 @@ log). The tab's `device`, `viewport`, `window`, `camera`, `sensor`, `sysfs`, `fo
 `appearance`, `locale`, `fontscale`, `animscale`, `permission`, `audio`, `video`, `rotary`, `ambient`, `detach` and
 `handoff` answer `r refused: not on a device session` (`Session.SIMULATOR_ONLY`), and the bridge answers any other
 command it lacks `error: X: not on a device session`. A shell line (`shell ID LINE`) runs as `adb shell` on the device:
-limited, the simulated session's rules (`TabShell.refusal`) and nothing the device's shell would read as more than one
-command, `cat` only of a file in the app's own folders (through `run-as`, so a debuggable build); full, as typed.
+full (as typed) only for a start with `"adb": true` while `allow-adb` is on (the agent starts the bridge with
+`--full-shell`); else limited: the simulated session's rules (`TabShell.refusal`), nothing the device's shell would read
+as more than one command, and two more for a real phone, where they would reach the whole device: `settings put` only of
+the animation and font scales, `am start`/`am broadcast` only with the app's `-n` or `-p`; `cat` only of a file in the
+app's own folders (through `run-as`, so a debuggable build). Output is kept to 256 KB (adb is stopped past it).
 
 **Session info.** `i` has `"target": "device"` and `"targetDevice": {"serial", "model", "sdk"}`, `rec: false`,
 `inspect: false`, `inspectAllowed: false`, `audio: "off"` and no `keep`. Only the bridge's own lines (at the start of a
 line) are read from its output: the app's logcat lines there are the device's to write, so none of an instance's markers
-(data slot, permissions) is taken from them.
+(data slot, permissions) is taken from them, and the bridge prints them behind `[logcat] `.
 
 **End.** The device unplugged, de-authorized or offline ends the session with `x the device SERIAL was disconnected
 (STATE)` (the video's end, or a 2 s `adb get-state` watch), and the agent stays up for the next start. Ending a session

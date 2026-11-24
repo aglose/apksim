@@ -56,7 +56,16 @@ public final class DeviceBridge {
   private volatile boolean rotated;
   private volatile String[] rotationWas;
 
-  private DeviceBridge(String serial, String pkg, String activity, DeviceTarget.Server server) {
+  /** The token every connection must send first (`auth TOKEN`): APKSIM_BRIDGE_TOKEN, from the session. */
+  private final String token;
+  /** Whether a shell line may run as typed (the start asked for adb while the owner allows it), else the limited rules. */
+  private final boolean fullShell;
+  /** Guards writes to scrcpy's control socket only, so a slow adb call (rotate, logcat) never holds up input. */
+  private final Object controlLock = new Object();
+
+  private DeviceBridge(String serial, String pkg, String activity, DeviceTarget.Server server, String token, boolean fullShell) {
+    this.token = token;
+    this.fullShell = fullShell;
     this.serial = serial;
     this.pkg = pkg;
     this.activity = activity;
@@ -69,7 +78,14 @@ public final class DeviceBridge {
   /** `DeviceBridge --serial S --package P [--activity A]`: scrcpy's server is found as {@link DeviceTarget#server}. */
   public static void main(String[] args) {
     String serial = null, pkg = null, activity = null;
-    for (int i = 0; i + 1 < args.length; i += 2) {
+    boolean full = false;
+    for (int i = 0; i < args.length; i += 2) {
+      if (args[i].equals("--full-shell")) {
+        full = true;
+        i--;
+        continue;
+      }
+      if (i + 1 >= args.length) break;
       switch (args[i]) {
         case "--serial" -> serial = args[i + 1];
         case "--package" -> pkg = args[i + 1];
@@ -85,9 +101,16 @@ public final class DeviceBridge {
       System.out.println("[apksim] exit 2: device bridge: usage: --serial SERIAL --package PACKAGE [--activity CLASS]");
       System.exit(2);
     }
+    String token = System.getenv("APKSIM_BRIDGE_TOKEN");
+    if (token == null || token.length() < 32) {
+      System.out.println("[apksim] exit 2: device bridge: no APKSIM_BRIDGE_TOKEN (the agent starts the bridge)");
+      System.exit(2);
+    }
     DeviceTarget.Server s = DeviceTarget.server();
     if (s == null) die(DeviceTarget.SERVER_MISSING);
-    DeviceBridge b = new DeviceBridge(serial, pkg, activity, s);
+    DeviceBridge b = new DeviceBridge(serial, pkg, activity, s, token, full);
+    // The agent that started it gone without a quit (killed, crashed): the device must not stay mirrored and driven.
+    ProcessHandle.current().parent().ifPresent(parent -> parent.onExit().thenRun(() -> die("the agent that started this session ended")));
     Runtime.getRuntime().addShutdownHook(new Thread(b::cleanup, "apksim-device-cleanup"));
     try {
       b.run();
@@ -139,14 +162,20 @@ public final class DeviceBridge {
     long deadline = System.currentTimeMillis() + 15_000;
     while (true) {
       if (!sp.isAlive()) throw new IOException("scrcpy's server ended before it started (see the log)");
-      Socket v = new Socket(InetAddress.getLoopbackAddress(), forwardPort);
-      v.setTcpNoDelay(true);
-      int dummy = v.getInputStream().read();
+      int dummy = -1;
+      Socket v = null;
+      try {
+        v = new Socket(InetAddress.getLoopbackAddress(), forwardPort);
+        v.setTcpNoDelay(true);
+        dummy = v.getInputStream().read();
+      } catch (IOException e) {
+        // adb resets the connection while nothing listens on the device yet: again
+      }
       if (dummy >= 0) {
         video = v;
         break;
       }
-      v.close();
+      if (v != null) v.close();
       if (System.currentTimeMillis() > deadline) throw new IOException("scrcpy's server did not answer in 15 s");
       sleep(100);
     }
@@ -317,6 +346,13 @@ public final class DeviceBridge {
     try (s) {
       InputStream in = s.getInputStream();
       OutputStream out = s.getOutputStream();
+      // The session's token first, answered with nothing; anything else (a browser's request line, a stray program)
+      // is closed unanswered. Constant-time comparison.
+      String auth = readLine(in);
+      if (auth == null || !auth.startsWith("auth ") || !java.security.MessageDigest.isEqual(
+          auth.substring(5).getBytes(StandardCharsets.US_ASCII), token.getBytes(StandardCharsets.US_ASCII))) {
+        return;
+      }
       String first = readLine(in);
       if (first == null) return;
       if (first.startsWith("stream")) {
@@ -358,12 +394,15 @@ public final class DeviceBridge {
           return;
         }
         // The instance's other watch connections (hostwatch, audiowatch, netwatch...) end here: none apply to a device.
-        if (l.strip().endsWith("watch")) return;
+        if (WATCHES.contains(l.strip())) return;
       }
     } catch (IOException e) {
       // the session went away
     }
   }
+
+  /** The first lines of an instance's event connections, none of which a device has. */
+  private static final java.util.Set<String> WATCHES = java.util.Set.of("hostwatch", "audiowatch", "netwatch", "relaywatch", "fwdwatch");
 
   private static final class PrintLines {
     final OutputStream out;
@@ -491,12 +530,14 @@ public final class DeviceBridge {
   /** scrcpy's pointer id for a finger (its "generic finger": a touch, not a mouse). */
   private static final long FINGER = -2;
 
-  private synchronized void sendControl(byte[] msg) {
-    try {
-      controlOut.write(msg);
-      controlOut.flush();
-    } catch (IOException e) {
-      // the device is going: the video's end says so
+  private void sendControl(byte[] msg) {
+    synchronized (controlLock) {
+      try {
+        controlOut.write(msg);
+        controlOut.flush();
+      } catch (IOException e) {
+        // the device is going: the video's end says so
+      }
     }
   }
 
@@ -642,9 +683,8 @@ public final class DeviceBridge {
         .redirectErrorStream(true).redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null"))).start();
     Thread.ofVirtual().name("device-logcat").start(() -> {
       try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
-        for (String l; (l = r.readLine()) != null; ) {
-          System.out.println(l);
-        }
+        // Prefixed: the app's own text must never start a line the session reads as the bridge's ("[apksim] exit ...").
+        for (String l; (l = r.readLine()) != null; ) System.out.println("[logcat] " + l.replace('\r', ' '));
       } catch (IOException e) {
         // stopped
       }
@@ -666,12 +706,16 @@ public final class DeviceBridge {
     } catch (IllegalArgumentException e) {
       return "error: tabshell: bad base64";
     }
+    if (a[1].equals("full") && !fullShell) {
+      return "ok 126 " + b64("refused: this session's shell is limited (a start with \"adb\": true, where apksim beam config allow-adb is on, gets the whole shell)\n");
+    }
     if (a[1].equals("limited")) {
       if (!line.matches("[A-Za-z0-9 ._/:=,+@%-]{1,4000}")) {
         return "ok 126 " + b64("refused: a limited shell takes one plain command (no quotes, pipes, ; & $ or redirections)\n");
       }
       List<String> w = List.of(line.split(" +"));
       String why = dev.apksim.TabShell.refusalFor(w, pkg);
+      if (why == null) why = deviceRefusal(w);
       if (why != null) return "ok 126 " + b64("refused: " + why + "\n");
       if (w.get(0).equals("cat")) {
         String p = w.get(1);
@@ -683,10 +727,24 @@ public final class DeviceBridge {
         line = "run-as " + pkg + " cat " + own;
       }
     }
-    DeviceTarget.Result r = DeviceTarget.run(serial, List.of("shell", line), 60);
+    DeviceTarget.Result r = DeviceTarget.run(serial, List.of("shell", line), 60, 256 * 1024);
     byte[] out = r.out().getBytes(StandardCharsets.UTF_8);
-    if (out.length > 256 * 1024) out = java.util.Arrays.copyOf(out, 256 * 1024);
     return "ok " + r.code() + " " + Base64.getEncoder().encodeToString(out);
+  }
+
+  /**
+   * What the simulator's limited rules allow but a real phone must not: they were written for an instance that is the
+   * app's own device. Here `settings put` reaches the whole phone (its proxy, private DNS, accessibility services), so
+   * only the animation and font scales; and `am start`/`am broadcast` must name the app's own component or package
+   * (`-n`/`-p`), so a page cannot place a call or reach another app.
+   */
+  private static String deviceRefusal(List<String> w) {
+    if (w.get(0).equals("settings") && w.get(1).equals("put")
+        && !java.util.Set.of("animator_duration_scale", "transition_animation_scale", "window_animation_scale", "font_scale").contains(w.get(3))) {
+      return "on a device, settings put takes only animator_duration_scale, transition_animation_scale, window_animation_scale and font_scale";
+    }
+    if (w.get(0).equals("am") && !dev.apksim.TabShell.pinnedFor(w)) return "on a device, am start and am broadcast name the app with -n or -p";
+    return null;
   }
 
   private static String b64(String s) {
@@ -694,6 +752,11 @@ public final class DeviceBridge {
   }
 
   // ---------------------------------------------------------------- the end
+
+  private static String restoreSetting(String key, String was, String valid) {
+    if (was.equals("null")) return "settings delete system " + key;
+    return was.matches(valid) ? "settings put system " + key + " " + was : "true";
+  }
 
   /** The server, its forward and jar, logcat, and the rotation settings as they were: the device as it was found. */
   private void cleanup() {
@@ -710,12 +773,11 @@ public final class DeviceBridge {
     String[] was = rotationWas;
     try {
       // Only this session's server (its scid is on its command line), never a scrcpy the device's owner runs.
-      // The pattern's [=] keeps this shell's own command line (which holds it) from matching.
-      DeviceTarget.run(serial, List.of("shell", "pkill -f 'scid[=]" + scid + " '; rm -f " + jarOnDevice), 10);
-      if (rotated && was != null && was[0].matches("[01]") && was[1].matches("[0-3]")) {
-        DeviceTarget.run(serial, List.of("shell", "settings put system user_rotation " + was[1]
-            + "; settings put system accelerometer_rotation " + was[0]), 10);
-      }
+      // One adb call, most important first: the server (the pattern's [=] keeps this shell's own command line, which
+      // holds it, from matching), the rotation settings as found (an unset one deleted again), the jar.
+      String restore = !rotated || was == null ? "" : "; " + restoreSetting("user_rotation", was[1], "[0-3]") + "; "
+          + restoreSetting("accelerometer_rotation", was[0], "[01]");
+      DeviceTarget.run(serial, List.of("shell", "pkill -f 'scid[=]" + scid + " '" + restore + "; rm -f " + jarOnDevice), 10);
       if (forwardPort > 0) DeviceTarget.run(serial, List.of("forward", "--remove", "tcp:" + forwardPort), 10);
     } catch (IOException e) {
       // the device is gone: nothing of this session's runs on it any more

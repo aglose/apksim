@@ -519,6 +519,7 @@ final class Session {
     if (serve.beam) Files.createDirectories(serve.state.resolve("tmp"));  // a fresh state folder has none yet
     pb.directory(serve.beam ? serve.state.resolve("tmp").toFile() : serve.logs.toFile());
     serve.instanceEnvironment(pb);
+    if (deviceSerial() != null) pb.environment().put("APKSIM_BRIDGE_TOKEN", bridgeToken);
     // Under the lifecycle lock: a stop() that came first (idle while a configured URL downloaded) must not leave a
     // process it never saw.
     synchronized (this) {
@@ -1631,8 +1632,17 @@ final class Session {
   private static Socket connect(int port) throws IOException {
     Socket s = new Socket(InetAddress.getLoopbackAddress(), port);
     s.setTcpNoDelay(true);
+    // A device bridge (issue 626) serves its port only to whoever sends its token first: a page posting to a loopback
+    // port, or another local program, must not reach the real device behind it. The bridge answers nothing to it.
+    String token = BRIDGE_TOKENS.get(port);
+    if (token != null) s.getOutputStream().write(("auth " + token + "\n").getBytes(StandardCharsets.US_ASCII));
     return s;
   }
+
+  /** The device bridges' tokens by their control port (issue 626). */
+  private static final Map<Integer, String> BRIDGE_TOKENS = new java.util.concurrent.ConcurrentHashMap<>();
+  /** This session's bridge token (a device session), given to the bridge in its environment. */
+  private final String bridgeToken = java.util.HexFormat.of().formatHex(secureBytes()) + java.util.HexFormat.of().formatHex(secureBytes());
 
   private void readLog() {
     boolean onDevice = deviceSerial() != null;
@@ -1646,7 +1656,11 @@ final class Session {
             if (line.startsWith("[apksim] exit ")) deviceExit = line.replaceFirst("^\\[apksim\\] exit [0-9]+: ", "");
           } else {
             Matcher dm = CONTROL_PORT.matcher(line);
-            if (line.startsWith("[apksim] control port ") && dm.find()) port.complete(Integer.parseInt(dm.group(1)));
+            if (line.startsWith("[apksim] control port ") && dm.find()) {
+              int bp = Integer.parseInt(dm.group(1));
+              BRIDGE_TOKENS.put(bp, bridgeToken);
+              port.complete(bp);
+            }
             if (line.startsWith("[apksim] exit ")) deviceExit = line.replaceFirst("^\\[apksim\\] exit [0-9]+: ", "");
             if (line.startsWith("[device] ")) {
               String what = line.substring(9);
@@ -2622,6 +2636,8 @@ final class Session {
     if (pkg == null) throw new IOException("cannot read the build's package name");
     List<String> c = new ArrayList<>(List.of(java, "-XX:TieredStopAtLevel=1", "-Xmx64m", "-cp", System.getProperty("java.class.path"),
         DeviceBridge.class.getName(), "--serial", deviceSerial(), "--package", pkg));
+    // The whole shell on the device only for a start that asked for adb while the owner allows it (Session.wantsAdb).
+    if (wantsAdb()) c.add("--full-shell");
     List<String> l = app.launch();
     int a = l.indexOf("--activity");
     if (a >= 0 && a + 1 < l.size()) {
@@ -3071,6 +3087,7 @@ final class Session {
     closeQuietly(hostwatch);
     closeQuietly(audiowatch);
     keepRecordings();
+    if (port.isDone() && !port.isCompletedExceptionally()) BRIDGE_TOKENS.remove(port.join(), bridgeToken);
     // The data slot is announced on the instance's output: read it to the end (the process has gone, so the end comes)
     // before erasing, or an app that died just after taking its slot would leave it behind.
     Thread reading = logReader;
