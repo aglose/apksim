@@ -213,6 +213,9 @@ def shared_prefs(path):
     return out
 
 
+EVENT_LOCK = threading.Lock()
+
+
 class Gone(Exception):
     """The instance ended: [crash] says how."""
 
@@ -1054,7 +1057,10 @@ class Explorer:
     def event(self, kind, **fields):
         """--events: one line of JSON on stdout, beside the human lines (which stay as they are)."""
         if self.args.events:
-            print(json.dumps(dict({"event": kind, "build": self.name}, **fields)), flush=True)
+            line = json.dumps(dict({"event": kind, "build": self.name}, **fields)) + "\n"
+            with EVENT_LOCK:  # capture threads finish screens at once: one write per line
+                sys.stdout.write(line)
+                sys.stdout.flush()
 
     def screen_event(self, screen, explored=True):
         if screen["id"] in self.announced:
@@ -2563,8 +2569,12 @@ class SeedCompare:
                                         "detail": f"{p['id']} {c}: no capture in {'the new' if not a_ else 'the base'} build to compare"})
                 continue
             if inst is not None:
-                d[c] = diff_images(inst, os.path.join(out, b_), os.path.join(out, a_), c,
-                                   os.path.join(out, "diff", p["id"]), args.diff_delta, args.diff_pixels, out)
+                try:
+                    d[c] = diff_images(inst, os.path.join(out, b_), os.path.join(out, a_), c,
+                                       os.path.join(out, "diff", p["id"]), args.diff_delta, args.diff_pixels, out)
+                except Gone as e:
+                    # An instance that ends in a comparison must not leave the pair half-compared as "same".
+                    d[c] = {"error": f"the instance ended during the comparison: {e}"}
                 if d[c].get("error"):
                     doc["findings"].append({"kind": "compare", "build": "new", "path": ns["path"],
                                             "detail": f"{p['id']} {c}: the image comparison failed: {d[c]['error']}"})
@@ -2589,6 +2599,9 @@ class SeedCompare:
         """Compares what no capture callback reached (screens already captured, or no combinations), then fills the doc."""
         for sid in list(self.todo):
             self.compare(sid, inst)
+        for p in self.pairs:
+            if p["status"] == "new":
+                self.new.event("compare", id=p["id"], base=None, status="new", why=p["why"])
         doc = self.doc
         doc["compare"] = self.pairs
         doc["diffs"] = self.diffs

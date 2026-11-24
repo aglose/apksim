@@ -172,10 +172,15 @@ def main():
             }
             self.instances = []
 
+        def event(self, kind, **fields):
+            events.append((kind, fields))
+
+    events = []
     out_dir = tempfile.mkdtemp(prefix="crawl-diff-seed-check-")
     new_doc = {"combos": [], "findings": []}
     args = crawl.parse(["app.apk", "--out", out_dir, "--seed", out_dir, "--only", "Main-2222", "--diff-seed"])
-    crawl.compare_with_seed(DummyNew(), doc, out_dir, new_doc, args, out_dir)
+    sc = crawl.SeedCompare(DummyNew(), doc, out_dir, new_doc, args, out_dir)
+    sc.finish(None)
     by_id = {p["id"]: p for p in new_doc["compare"]}
     check(by_id["Main-1111"]["status"] == "same", "carried screen is same", str(by_id["Main-1111"]))
     check(by_id["Main-2222"]["status"] == "changed" and "Custom Server URL" in (by_id["Main-2222"]["why"] or ""),
@@ -183,6 +188,10 @@ def main():
     check(by_id["Main-3333-new"]["status"] == "changed" and by_id["Main-3333-new"]["base"] == "Main-3333",
           "replaced screen paired with old id", str(by_id["Main-3333-new"]))
     check(by_id["Main-4444"]["status"] == "new", "newly discovered screen marked new", str(by_id["Main-4444"]))
+
+    cmp_ev = {f["id"]: f for k, f in events if k == "compare"}
+    check(set(cmp_ev) == {"Main-2222", "Main-3333-new", "Main-4444"} and cmp_ev["Main-4444"]["status"] == "new"
+          and cmp_ev["Main-2222"]["status"] == "changed", "a compare event per walked screen, new ones included", str(events))
 
     if failures:
         print(f"{len(failures)} check(s) failed")

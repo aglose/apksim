@@ -234,7 +234,9 @@ with the seed's (carried screens get none: their `screen` event says `origin: ca
 {"event": "compare", "build": "new", "id": "Settings-1a2b", "base": "Settings-1a2b", "status": "changed", "why": "text 'Save' -> 'Done'", "ui_diff": {...}, "diffs": {"default": {"differs": true, "pixels": 5120, "map": "diff/Settings-1a2b/default.png"}}}
 ```
 
-`ui_diff` and `unstable` are present when the pair has them. The lines come while the captures run, so a viewer sees
+`ui_diff` and `unstable` are present when the pair has them. A walked screen the seed lacks gets its line after the
+capture stage, with `"base": null` and `"status": "new"`; a screen of the seed nothing reaches now (`gone`) is only in
+`crawl.json`. The lines come while the captures run, so a viewer sees
 a pair when its screen is finished rather than when the whole run ends; the walk itself still ends first (the
 captures follow it), and a screen whose captures were all taken during the walk is compared after the capture stage.
 `crawl.json`'s `compare` and `diffs` are unchanged.
