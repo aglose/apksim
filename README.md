@@ -996,7 +996,7 @@ scripts/crawl.py app.apk --out crawl/ --base app-old.apk  # every screen it can 
   again; `--events` prints a JSON line per screen as the walk goes. Every replay and capture starts from the data the
   app had at its launch (an instance whose app wrote a setting or a file is launched again first), so two walks of one
   build give the same map. A plain walk renders on the GPU at 30 fps with animations off, steals work per action across
-  `-j` instances and reuses a screen in place when an action leaves the data alone: a ~169-screen app's walk with `-j 6`
+  `-j` instances and reuses a screen in place when an action leaves the data alone: a ~169-screen app's walk with `-j 6` and light captures
   went from 8,762 s to 966 s. A screen whose path no longer replays exactly (live data) is still explored where the
   path leads now. See [docs/crawl.md](docs/crawl.md).
 
