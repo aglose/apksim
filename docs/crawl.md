@@ -14,8 +14,8 @@ Status: item 1 of the roadmap, checked on the test app (`scripts/crawl-check.py`
 scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] [--max-seconds S] [--max-depth N]
                  [--skip-text REGEX]... [--tap-unlabeled] [--fill TEXT] [--matrix AXIS=V,V]... [--matrix-file SPEC.json]
                  [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--keep-data] [--keep-app-state]
-                 [--base-option "APKSIM OPTIONS"] [--seed RUN (--only ID,ID... | --only-file PATH)] [--events] [--screen-titles]
-                 [--record-deps [--deps-packages PKG,PKG]]
+                 [--base-option "APKSIM OPTIONS"] [--seed RUN (--only ID,ID... | --only-file PATH) [--diff-seed [--diff-controls changed|none|all]]]
+                 [--events] [--screen-titles] [--record-deps [--deps-packages PKG,PKG]]
                  [-- APKSIM_OPTION...]
 ```
 
@@ -55,7 +55,10 @@ scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] 
   locale, fontscale; missing axes take phone, light, en-US, 1.0), or `--matrix-file` naming a snapshot spec whose
   `matrix` and `exclude` are used. `--no-captures` walks only.
 - `--seed RUN --only ID,ID...` (or `--only-file PATH`, one id per line, `#` for a comment): start from an earlier walk's
-  result instead of from nothing, and walk again only the screens named (see "Seeded walks").
+  result instead of from nothing, and walk again only the screens named (see "Seeded walks"). Add `--diff-seed` to
+  compare the walked/new screens directly against the seed's graph and captures (semantic text/control diffs plus pixel
+  diff maps) without re-walking the base build, with `--diff-controls changed|none|all` (default `changed`: tap only
+  new or renamed controls).
 - `--events`: besides the human lines, which stay as they are (`[new] depth N: ...`), one line of JSON on stdout per
   finished screen, per level, and one at the end (see "Seeded walks").
 - `--record-deps`: per screen, the app classes whose code ran, their source files and the resources resolved, and the
@@ -188,6 +191,23 @@ The crawler does not decide what is affected; it is told.
    nothing and is refused (leave out `--seed` to walk everything again); `--seed` with `--base` or `--base-option`, and with
    `--sweep`, are refused. The seed may be OUT itself: its captures are moved aside first.
 
+### Diffing against the seed (`--diff-seed`)
+
+With `--seed RUN --only ... --diff-seed`, the crawler compares the walked, replaced, and newly discovered screens
+directly against the seed's `crawl.json` and `screens/` without re-walking the base APK:
+
+- Carried screens are immediately `same` with zero instance time; walked screens are paired by id (or `replaces: OLD_ID`
+  when structure changed), diffed semantically on `title`, visible `texts` (clock ticks excluded) and `controls`
+  (`ui_diff` in `crawl.json` and shown in `report.html`), and pixel-diffed against the seed's captures using the same
+  renderer recorded in the seed (`"snapshot"` in `crawl.json`).
+- `--diff-controls` chooses how much control exploration runs on each `--only` screen whose structure did not change:
+  `changed` (the default with `--diff-seed`) carries edges for untouched controls and taps only new or renamed controls;
+  `none` skips scrolling and button taps for a pure screen UI + pixel diff; `all` re-explores every control.
+- To keep PR diffs fast (a few seconds for a single affected screen), `observe_at` keeps each worker parked on its
+  reached screen so `discover_screen` reuses it without a second replay or relaunch, the worker pool caps at
+  `min(-j, len(--only))`, teardown runs in parallel, and GPU-rendered `--diff-seed` runs opt into apksim's warm standby
+  JVM when available (`APKSIM_STANDBY=0` forces a cold launch).
+
 `crawl.json` is as before, with two keys per screen: `origin`, `"walked"` (explored or found in this run; every screen
 of a walk without `--seed`) or `"carried"` (taken from the seed), and `replaces: OLD_ID` on a screen that took a named
 screen's place. Readers that do not know them keep working.
@@ -277,14 +297,24 @@ and the document a top-level `"start_deps"` of the same shape (read once per wal
   framework's. A resource of a shared library package other than the app's is `pkg:type/name`. `id/...` entries are
   names, not files.
 
-Mapping a changed file to screens is the caller's: a changed source file selects the screens whose `sources` have it; a
-changed resource file (`res/layout/x.xml`, `res/drawable-night/y.xml`) the screens whose `resources` have `layout/x`,
-`drawable/y`; a changed value file (`res/values*/strings.xml`) each name it defines. A change to any file in
-`start_deps` selects every screen (they all run after the start). Never subtract the start set from a screen: a screen
-that shares classes with the start (the first screen shares nearly all) still depends on them. What cannot be mapped
-selects everything: build and packaging files, `assets/` (not recorded), generated code, native code, constants inlined
-by the compiler, dependency versions. docs/crawl-deps-spike.md has the measurements of the prototype and the full list
-of what a changed file cannot be mapped through.
+Mapping a changed file to screens is implemented in `scripts/crawl-select.py` (unit-tested in
+`scripts/crawl-select-check.py`):
+
+```bash
+scripts/crawl-select.py BASE_OUT --diff origin/main...HEAD --repo REPO --out-ids affected.ids
+scripts/crawl.py NEW.apk --out PR_OUT --seed BASE_OUT --only-file affected.ids --diff-seed
+```
+
+A changed Kotlin/Java source file selects the screens whose `sources` contain it; a changed Android resource file
+(`res/layout/x.xml`, `res/drawable-night/y.xml`) selects the screens whose `resources` contain `layout/x` or
+`drawable/y`; a changed `res/values*/*.xml` file is narrowed via `git show` to only the modified resource names; a
+changed Compose Multiplatform resource under `composeResources/values*/*.xml`, `drawable*/`, or `font*/` is narrowed
+the same way and resolved through Kotlin `Res.<type>.<name>` references in `--repo`. A change to anything in
+`start_deps` (or `deps_unreliable`, manifests, build files, `assets/`, `composeResources/files/`, or unprobed packages)
+reports `mode="full"` so the caller falls back to a full walk. Non-Android files (docs, tests, iOS/desktop source sets)
+are ignored by default (`--no-default-ignore` disables that). Never subtract `start_deps` from a screen: a screen that
+shares classes with startup still depends on them. `docs/crawl-deps-spike.md` has the measurements of the prototype and
+the full list of what a changed file cannot be mapped through.
 
 What to know:
 

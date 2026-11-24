@@ -34,7 +34,7 @@ cp "$ROOT/apksim" "$ROOT/LICENSE" "$ROOT/NOTICE" "$ROOT/THIRD-PARTY-NOTICES.md" 
 # train.sh builds the startup cache; ctl.py and drive.py drive running instances; instrument.py (with affected.py) runs
 # test suites; snapshot.py screenshot tests; crawl.py reads an APK's package with subsystem-audit.py's manifest reader.
 cp "$ROOT/scripts/train.sh" "$ROOT/scripts/ctl.py" "$ROOT/scripts/drive.py" "$ROOT/scripts/instrument.py" \
-  "$ROOT/scripts/affected.py" "$ROOT/scripts/coverage.py" "$ROOT/scripts/snapshot.py" "$ROOT/scripts/crawl.py" "$ROOT/scripts/device-profile.py" "$ROOT/scripts/replay-adb.py" "$ROOT/scripts/mcp.py" \
+  "$ROOT/scripts/affected.py" "$ROOT/scripts/coverage.py" "$ROOT/scripts/snapshot.py" "$ROOT/scripts/crawl.py" "$ROOT/scripts/crawl-select.py" "$ROOT/scripts/device-profile.py" "$ROOT/scripts/replay-adb.py" "$ROOT/scripts/mcp.py" \
   "$ROOT/scripts/subsystem-audit.py" "$D/scripts/"
 # Every script a shipped one loads (`import NAME` of a sibling, or a quoted "NAME.py" / "NAME.sh" it opens by path)
 # must ship too: 0.60.0 left out subsystem-audit.py, and every crawl.py --keep-data walk failed in an installed copy.
