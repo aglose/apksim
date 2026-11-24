@@ -26,7 +26,7 @@ new screen they lead to); the rest is carried over with its captures (docs/crawl
 line of JSON per finished screen and level on stdout.
 """
 import xml.etree.ElementTree as ET
-import argparse, base64, concurrent.futures, hashlib, html, itertools, json, os, re, shlex, shutil, signal, subprocess, sys
+import argparse, base64, concurrent.futures, difflib, hashlib, html, itertools, json, os, re, shlex, shutil, signal, subprocess, sys
 import tempfile, threading, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -225,6 +225,7 @@ class Instance(snapshot.Worker):
     """A headless instance and what a walk does with it: replaying paths, reading the screen, capturing."""
     fresh_at_root = False
     last_settled = True
+    parked = None
 
     def __init__(self, i, ctx):
         super().__init__(i, [dict(DEFAULT_COMBO)], ctx)
@@ -254,6 +255,7 @@ class Instance(snapshot.Worker):
         self.applied = {a: None for a in AXES} if has_override else dict(DEFAULT_COMBO)
         self.fresh_at_root = not has_override
         self.last_settled = True
+        self.parked = None
         self.start()
 
     def ensure(self):
@@ -518,6 +520,7 @@ class Instance(snapshot.Worker):
         new one on an emptied slot (--fresh) first, or with --keep-data on a new copy of the prepared slot.
         [patient] waits longer for the start screen first; [alt] is the path's steps with text taps as coordinates,
         each tried when its step fails twice (Explorer.alt_paths)."""
+        self.parked = None
         self.fresh_start() if relaunch else self.ensure()
         self.configure(DEFAULT_COMBO)
         if self.fresh_at_root and not path.get("start") and not self.ctx.get("record_deps"):
@@ -887,13 +890,17 @@ def copy_tree(src, dst):
 class Explorer:
     """One walk of one APK: the graph, the findings and the captures."""
 
-    def __init__(self, name, apk, args, out, extra_options, shots="screens", combos=()):
+    def __init__(self, name, apk, args, out, extra_options, shots="screens", combos=(), snapshot_override=None):
         self.name, self.apk, self.args, self.out, self.shots = name, apk, args, out, shots
         self.capture_combos = list(combos)
         self.default_combo_name = snapshot.combo_name(DEFAULT_COMBO)
         self.inline_capture = (any(snapshot.combo_name(c) == self.default_combo_name for c in self.capture_combos)
                                and not args.keep_app_state)
         self.explore_fast = not (args.base or args.base_option or args.sweep)
+        self.is_seeded = bool(args.seed)
+        self.diff_controls = getattr(args, "diff_controls", "all") or ("changed" if getattr(args, "diff_seed", False) else "all")
+        self.seed_actions = {}
+        self.seed_edges_by_from = {}
         self.options = list(args.apksim) + list(extra_options)
         # Never the owner's saved sign-ins, and a slot namespace of the crawler's own: --fresh would empty an ordinary
         # launch's `default` slot (--keep-data walks copies of a prepared slot: KeptSlot; an option of the caller's own wins).
@@ -939,9 +946,11 @@ class Explorer:
         if re.search(r"\s", self.stage):
             fail(f"the temporary folder {self.stage!r} has whitespace in its path: set TMPDIR")
         # Pixel-exact CPU rendering (--snapshot) is needed for cross-build / sweep diffs; plain walks use GPU rendering.
-        use_snapshot = bool(args.base or args.base_option or args.sweep)
+        use_snapshot = bool(args.base or args.base_option or args.sweep) if snapshot_override is None else bool(snapshot_override)
+        self.use_snapshot = use_snapshot
         self.ctx = {"spec": {"timezone": "UTC", "clock": CLOCK}, "apk": apk, "apksim": self.options, "out": out,
-                    "stage": self.stage, "snapshot": use_snapshot, "fresh": not args.keep_data, "screens": [],
+                    "stage": self.stage, "snapshot": use_snapshot, "standby": bool(getattr(args, "diff_seed", False) and not use_snapshot),
+                    "fresh": not args.keep_data, "screens": [],
                     "record": lambda r: None, "crashes": self.findings, "stable_ms": args.stable_ms, "name": name,
                     "keep_state": args.keep_app_state, "restore": self.kept.restore if self.kept else None,
                     "relaunches": [0], "relaunch_files": {}, "first_values": {}, "unsettled": set(),
@@ -990,8 +999,21 @@ class Explorer:
                 fail(f"--record-deps: the first instance ended before its start was read: {e.crash.get('detail')}")
 
     def close(self):
-        for inst in self.instances:
-            inst.quit()
+        def stop(inst):
+            try:
+                inst.quit(fast=True)
+            except TypeError:
+                inst.quit()
+
+        if len(self.instances) > 1:
+            threads = [threading.Thread(target=stop, args=(inst,)) for inst in self.instances]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        else:
+            for inst in self.instances:
+                stop(inst)
         if self.kept:
             self.kept.remove()
         shutil.rmtree(self.stage, ignore_errors=True)
@@ -1098,7 +1120,7 @@ class Explorer:
                             "steps": list(e.get("steps") or [])}  # fills and scrolls before the tap, and the tap
                     if e.get("note"):
                         edge["note"] = e["note"]
-                    if to["id"] not in PSEUDO and to["id"] not in self.screens:
+                    if to["id"] is not None and to["id"] not in PSEUDO and to["id"] not in self.screens:
                         steps = self.full_path(screen, e["steps"])["steps"]
                         if repeated(steps, args.max_repeat):
                             edge["note"] = f"not followed: the same step {args.max_repeat} times in a row"
@@ -1146,6 +1168,10 @@ class Explorer:
                 self.ctx["unsettled"].add(c["id"])
         for sid in self.order:
             self.seed_waypoints(sid)
+        self.seed_actions = {s["id"]: list(s.get("actions") or []) for s in seed["screens"] if s.get("actions") is not None}
+        self.seed_edges_by_from = {}
+        for e in seed["edges"]:
+            self.seed_edges_by_from.setdefault(e["from"], []).append(dict(e))
         self.edges = [dict(e) for e in seed["edges"] if e["from"] not in only]
         targets = [self.screens[o] for o in only]
 
@@ -1232,18 +1258,25 @@ class Explorer:
         self.t_explore = time.time() - t0
 
     def observe_at(self, inst, screen):
-        """An --only screen's stored path replayed: what it reaches now ({obs}, a {note} when a step failed) or a {crash}."""
+        """An --only screen's stored path replayed: what it reaches now ({obs}, a {note} when a step failed) or a {crash}.
+        Leaves [inst] parked on the reached screen so discover_screen reuses it without a redundant replay or relaunch."""
         note = None
         wp = self.waypoints.get(screen["id"])
         for attempt in range(2):
             try:
-                inst.reach(screen["path"], waypoints=wp, explore_fast=self.explore_fast)
-                return {"obs": inst.observe()}
+                last_obs = inst.reach(screen["path"], waypoints=wp, explore_fast=self.explore_fast)
+                obs = last_obs if (last_obs is not None and last_obs["id"] == screen["id"]) else inst.observe(expected_id=screen["id"])
+                s_state = inst.data_state() if inst.from_launch_data() else None
+                inst.parked = (obs["id"], obs, s_state)
+                return {"obs": obs}
             except ReplayFailed as e:
                 note = str(e)
                 if attempt:
                     try:
-                        return {"obs": inst.observe(), "note": note}
+                        obs = inst.observe(expected_id=screen["id"])
+                        s_state = inst.data_state() if inst.from_launch_data() else None
+                        inst.parked = (obs["id"], obs, s_state)
+                        return {"obs": obs, "note": note}
                     except Gone as g:
                         return {"crash": g.crash}
             except Gone as e:
@@ -1341,7 +1374,7 @@ class Explorer:
 
     def capture_inline(self, inst, screen):
         """Takes the default combination's capture while the instance is already cleanly on [screen] during explore."""
-        if not self.inline_capture or screen["depth"] < 1:
+        if not self.inline_capture or (screen["depth"] < 1 and not self.is_seeded):
             return
         name = self.default_combo_name
         if name in screen.get("captures", {}):
@@ -1367,20 +1400,26 @@ class Explorer:
         args = self.args
         wp = self.waypoints.get(screen["id"])
         here = None
+        parked_state = None
         lenient = False  # the screen's path does not replay to it: its controls are tried where the path leads now
         flaky = None
         aliases = set()  # structures that are this screen: scrolled, or a flaky screen's other arrivals
-        for attempt in range(3):
-            try:
-                here = inst.reach_screen(screen, patient=attempt == 2, waypoints=wp, explore_fast=self.explore_fast)
-                break
-            except ReplayFailed as e:
-                flaky = str(e)
-            except Gone as e:
-                entry["findings"].append(self.crash_finding(e.crash, screen["path"]))
-                entry["flaky"] = "ended on arrival"
-                entry["failed"] = True
-                return False, False, None
+        parked = getattr(inst, "parked", None)
+        inst.parked = None
+        if parked is not None and parked[0] == screen["id"]:
+            here, parked_state = parked[1], parked[2]
+        else:
+            for attempt in range(3):
+                try:
+                    here = inst.reach_screen(screen, patient=attempt == 2, waypoints=wp, explore_fast=self.explore_fast)
+                    break
+                except ReplayFailed as e:
+                    flaky = str(e)
+                except Gone as e:
+                    entry["findings"].append(self.crash_finding(e.crash, screen["path"]))
+                    entry["flaky"] = "ended on arrival"
+                    entry["failed"] = True
+                    return False, False, None
         if here is None:
             # Not a dead end: the walk reached this screen once, so its controls (as it showed them then) are tried on
             # what its path reaches now in the same activity, and what they lead to is followed. Still flaky.
@@ -1446,9 +1485,12 @@ class Explorer:
         entry["sig"] = screen_sig(recs)
         acts = [a for a in candidates(recs, self.skip_re, args.tap_unlabeled) if a["kind"] == "control"]
         # Controls below the fold: scroll and read again, until nothing new shows.
+        reuse_seed_controls = (self.diff_controls in ("none", "changed") and not screen.get("replaces")
+                               and screen["id"] in self.seed_actions)
         scrolls = []
         seen = {a["label"] for a in acts}
-        for k in range(1, args.max_scrolls + 1):
+        max_scrolls = 0 if (reuse_seed_controls and self.diff_controls == "none") else args.max_scrolls
+        for k in range(1, max_scrolls + 1):
             sc = scroll_cmd(recs)
             if not sc:
                 break
@@ -1481,17 +1523,43 @@ class Explorer:
         if len(acts) > args.max_actions:
             entry["findings"].append({"kind": "note", "detail": f"{screen['id']}: {len(acts)} controls, the first {args.max_actions} tried",
                                       "path": screen["path"], "build": self.name})
+        def norm_label(lbl):
+            return re.sub(r"\d+", "#", lbl)
+
+        prev_labels = ({norm_label(a["label"]) for a in self.seed_actions[screen["id"]] if a.get("kind") == "control"}
+                       if reuse_seed_controls else set())
+        carried_by_action = ({e["action"]: e for e in self.seed_edges_by_from.get(screen["id"], []) if e.get("kind") == "control"}
+                             if reuse_seed_controls else {})
+        carried_by_norm = ({norm_label(e["action"]): e for e in self.seed_edges_by_from.get(screen["id"], []) if e.get("kind") == "control"}
+                           if reuse_seed_controls else {})
         for idx, a in enumerate(acts[:args.max_actions]):
             if a["skipped"]:
                 entry["edges_by_idx"][idx] = {"label": a["label"], "cmd": a["cmd"], "kind": "skipped", "to": {"id": "SKIPPED"},
                                               "steps": [], "note": a["skipped"]}
+            elif reuse_seed_controls and (self.diff_controls == "none" or norm_label(a["label"]) in prev_labels):
+                ce = carried_by_action.get(a["label"]) or carried_by_norm.get(norm_label(a["label"]))
+                target_id = ce.get("to") if ce else None
+                if ce and (target_id is None or target_id in self.screens or target_id in PSEUDO):
+                    edge = {"label": a["label"], "cmd": ce.get("cmd", a["cmd"]), "kind": "control",
+                            "to": {"id": target_id}, "steps": list(ce.get("steps") or [])}
+                    if ce.get("note"):
+                        edge["note"] = ce["note"]
+                    entry["edges_by_idx"][idx] = edge
+                elif self.diff_controls == "none":
+                    entry["edges_by_idx"][idx] = {"label": a["label"], "cmd": a["cmd"], "kind": "skipped",
+                                                  "to": {"id": "SKIPPED"}, "steps": [], "note": "not tapped (--diff-controls none)"}
+                else:
+                    entry["todo"].append((idx, a))
             else:
                 entry["todo"].append((idx, a))
         at_ok = (not scrolls) and (not lenient)
-        try:
-            s_state = inst.data_state() if inst.from_launch_data() else None
-        except Gone:
-            at_ok, s_state = False, None
+        if parked_state is not None and not scrolls and not prep:
+            s_state = parked_state
+        else:
+            try:
+                s_state = inst.data_state() if inst.from_launch_data() else None
+            except Gone:
+                at_ok, s_state = False, None
         return True, at_ok, s_state
 
     def control_set(self, recs):
@@ -1534,7 +1602,9 @@ class Explorer:
                             mode, entry = "action", cur
                             break
                         if undiscovered:
-                            entry = undiscovered.pop(0)
+                            p = getattr(inst, "parked", None)
+                            pick = next((i for i, e in enumerate(undiscovered) if p is not None and e["screen"]["id"] == p[0]), 0)
+                            entry = undiscovered.pop(pick)
                             in_discovery[0] += 1
                             mode = "discover"
                             break
@@ -2311,6 +2381,173 @@ def pair_builds(new, base, args):
     return out
 
 
+def diff_seq(old, new):
+    """Sequence diff of two string lists -> {'replaced': [[a, b], ...], 'added': [...], 'removed': [...]}."""
+    sm = difflib.SequenceMatcher(None, old, new)
+    replaced, added, removed = [], [], []
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            continue
+        if tag == "replace":
+            n = min(i2 - i1, j2 - j1)
+            for k in range(n):
+                replaced.append([old[i1 + k], new[j1 + k]])
+            removed.extend(old[i1 + n:i2])
+            added.extend(new[j1 + n:j2])
+        elif tag == "delete":
+            removed.extend(old[i1:i2])
+        elif tag == "insert":
+            added.extend(new[j1:j2])
+    out = {}
+    if replaced:
+        out["replaced"] = replaced
+    if added:
+        out["added"] = added
+    if removed:
+        out["removed"] = removed
+    return out
+
+
+def ui_diff(base_s, new_s, above_fold_only=False):
+    """Semantic diff of two screens' title, visible texts (excluding clock ticks) and controls."""
+    out = {}
+    bt, nt = base_s.get("title") or "", new_s.get("title") or ""
+    if bt != nt and not (TIME_RE.search(bt) and TIME_RE.search(nt)):
+        out["title"] = {"from": bt, "to": nt}
+    b_texts = [t for t in (base_s.get("texts") or []) if not TIME_RE.search(t)]
+    n_texts = [t for t in (new_s.get("texts") or []) if not TIME_RE.search(t)]
+    td = diff_seq(b_texts, n_texts)
+    if td:
+        out["texts"] = td
+    b_acts = [a["label"] for a in (base_s.get("actions") or [])
+              if a.get("kind") == "control" and (not above_fold_only or a.get("scrolls", 0) == 0)
+              and not TIME_RE.search(a.get("label", ""))]
+    n_acts = [a["label"] for a in (new_s.get("actions") or [])
+              if a.get("kind") == "control" and (not above_fold_only or a.get("scrolls", 0) == 0)
+              and not TIME_RE.search(a.get("label", ""))]
+    ad = diff_seq(b_acts, n_acts)
+    if ad:
+        out["controls"] = ad
+    return out
+
+
+def format_ui_diff(ud):
+    """Short human-readable summary of a ui_diff dict."""
+    parts = []
+    if ud.get("title"):
+        parts.append(f"title {ud['title']['from']!r} -> {ud['title']['to']!r}")
+    for key, label in (("texts", "text"), ("controls", "control")):
+        d = ud.get(key) or {}
+        for a, b in (d.get("replaced") or [])[:3]:
+            parts.append(f"{label} {a!r} -> {b!r}")
+        if d.get("added"):
+            parts.append(f"+{label} " + ", ".join(repr(x) for x in d["added"][:3]))
+        if d.get("removed"):
+            parts.append(f"-{label} " + ", ".join(repr(x) for x in d["removed"][:3]))
+    return "; ".join(parts)
+
+
+def compare_with_seed(new, seed, src_dir, doc, args, out):
+    """Compares a --seed walk's walked/new screens against the seed's crawl.json and captures without re-walking base."""
+    seed_by_id = {s["id"]: s for s in seed.get("screens", [])}
+    pairs = []
+    matched_base = set()
+    for sid in new.order:
+        ns = new.screens[sid]
+        if ns.get("origin") == "carried":
+            pairs.append({"id": sid, "base": sid, "status": "same", "why": None})
+            matched_base.add(sid)
+            continue
+        old_id = ns.get("replaces")
+        if old_id and old_id in seed_by_id:
+            pairs.append({"id": sid, "base": old_id, "status": "changed",
+                          "why": f"structure differs: {old_id} in the base build"})
+            matched_base.add(old_id)
+        elif sid in seed_by_id:
+            pairs.append({"id": sid, "base": sid, "status": "same", "why": None})
+            matched_base.add(sid)
+        else:
+            pairs.append({"id": sid, "base": None, "status": "new", "why": "new screen"})
+    for bs in seed.get("screens", []):
+        if bs["id"] not in matched_base:
+            pairs.append({"id": None, "base": bs["id"], "status": "gone",
+                          "why": "no screen of the new build reaches it"})
+
+    def stage_base_captures(bs):
+        bc = dict(bs)
+        caps = {}
+        for name, rel in (bs.get("captures") or {}).items():
+            src = os.path.join(src_dir, rel)
+            if not os.path.isfile(src):
+                continue
+            dst = os.path.join(out, "base-screens", bs["id"], name + ".png")
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            try:
+                os.link(src, dst)
+            except OSError:
+                shutil.copyfile(src, dst)
+            caps[name] = f"base-screens/{bs['id']}/{name}.png"
+        bc["captures"] = caps
+        return bc
+
+    diffs = {}
+    base_screens = []
+    inst = new.instances[0] if new.instances else None
+    for p in pairs:
+        if p["status"] == "gone" and p["base"] in seed_by_id:
+            base_screens.append(stage_base_captures(seed_by_id[p["base"]]))
+            continue
+        if not (p["id"] and p["base"]):
+            continue
+        ns = new.screens[p["id"]]
+        if ns.get("origin") != "walked":
+            continue
+        bs = stage_base_captures(seed_by_id[p["base"]])
+        base_screens.append(bs)
+        ud = ui_diff(bs, ns, above_fold_only=(getattr(args, "diff_controls", "all") == "none"))
+        if ud:
+            p["ui_diff"] = ud
+            summary = format_ui_diff(ud)
+            if p["status"] == "same":
+                p["status"] = "changed"
+                p["why"] = summary
+            else:
+                p["why"] = (p["why"] + "; " + summary) if p.get("why") else summary
+        d = {}
+        unstable = set(ns.get("unsettled", [])) | set(bs.get("unsettled", []))
+        if unstable:
+            p["unstable"] = sorted(unstable)
+        for c in doc["combos"]:
+            a_, b_ = ns["captures"].get(c), bs["captures"].get(c)
+            if c in unstable:
+                continue
+            if not (a_ and b_):
+                doc["findings"].append({"kind": "compare", "build": "new", "path": ns["path"],
+                                        "detail": f"{p['id']} {c}: no capture in {'the new' if not a_ else 'the base'} build to compare"})
+                continue
+            if inst is not None:
+                d[c] = diff_images(inst, os.path.join(out, b_), os.path.join(out, a_), c,
+                                   os.path.join(out, "diff", p["id"]), args.diff_delta, args.diff_pixels, out)
+                if d[c].get("error"):
+                    doc["findings"].append({"kind": "compare", "build": "new", "path": ns["path"],
+                                            "detail": f"{p['id']} {c}: the image comparison failed: {d[c]['error']}"})
+        if d:
+            diffs[p["id"]] = d
+        if unstable and p["status"] == "same":
+            p["why"] = "animates for ever in " + ", ".join(sorted(unstable)) + ": those captures are not compared"
+        if any(x.get("differs") for x in d.values()):
+            look = "looks different: " + ", ".join(c for c, x in d.items() if x.get("differs"))
+            if p["status"] == "same":
+                p["status"] = "changed"
+                p["why"] = look
+            elif look not in (p.get("why") or ""):
+                p["why"] = (p["why"] + "; " + look) if p.get("why") else look
+    doc["compare"] = pairs
+    doc["diffs"] = diffs
+    doc["base_screens"] = base_screens
+    doc["base_edges"] = seed.get("edges", [])
+
+
 def diff_images(inst, a_path, b_path, name, outdir, delta, pixels, root):
     """The control channel's `diff` of two PNGs: (differing pixels, total, map file or None, size changed)."""
     inst.ensure()  # a Gone earlier may have ended this instance
@@ -2454,13 +2691,27 @@ if(D.sweep){fd.append(E('h2',{},'Resilience sweep'));
 // Comparison
 const cp=document.getElementById('compare');
 if(D.compare){cp.append(E('h2',{},'Against the base build'));
- const t=E('table',{});D.compare.forEach(p=>{const cl=p.status==='same'?'ok':p.status==='changed'?'warn':'bad';
-  t.append(E('tr',{},E('td',{},E('span',{class:'badge '+cl},p.status)),E('td',{},p.id||p.base),E('td',{class:'muted'},p.why||'')))});cp.append(t);
- D.compare.filter(p=>p.status!=='same'&&p.id&&D.diffs[p.id]).forEach(p=>{const d=D.diffs[p.id];const row=E('div',{class:'shots'});
-  Object.entries(d).forEach(([c,x])=>{if(x.map||x.differs){const b=(D.baseShots[p.base]||{})[c],n=(D.shots[p.id]||{})[c];
-   if(b)row.append(E('figure',{},E('img',{src:b}),E('figcaption',{},'base, '+c)));if(n)row.append(E('figure',{},E('img',{src:n}),E('figcaption',{},'new, '+c)));
-   row.append(E('figure',{},x.map?E('img',{src:x.map}):'',E('figcaption',{},'difference: '+(x.error||x.pixels+' px differ'))))}});
-  cp.append(E('h3',{},p.id),row)});
+ const changed=D.compare.filter(p=>p.status!=='same'),same=D.compare.filter(p=>p.status==='same');
+ cp.append(E('p',{class:'muted'},changed.length+' changed/new/gone, '+same.length+' unchanged'));
+ const mkTable=list=>{const t=E('table',{});list.forEach(p=>{const cl=p.status==='same'?'ok':p.status==='changed'?'warn':'bad';
+  t.append(E('tr',{},E('td',{},E('span',{class:'badge '+cl},p.status)),E('td',{},p.id&&S[p.id]?E('a',{onclick:'select("'+p.id+'")'},p.id):(p.id||p.base)),E('td',{class:'muted'},p.why||'')))});return t};
+ if(changed.length)cp.append(mkTable(changed));
+ if(same.length<=10){if(same.length)cp.append(mkTable(same))}
+ else{const det=E('details',{},E('summary',{class:'muted'},same.length+' unchanged screen(s)'),mkTable(same));cp.append(det)}
+ changed.filter(p=>p.id&&(D.diffs[p.id]||p.ui_diff)).forEach(p=>{
+  cp.append(E('h3',{},S[p.id]?E('a',{onclick:'select("'+p.id+'")'},p.id):p.id,' ',E('span',{class:'badge '+(p.status==='new'?'ok':'warn')},p.status)));
+  if(p.ui_diff){const lines=[];
+   if(p.ui_diff.title)lines.push('title: '+JSON.stringify(p.ui_diff.title.from)+' -> '+JSON.stringify(p.ui_diff.title.to));
+   [['texts','text'],['controls','control']].forEach(([k,lbl])=>{const u=p.ui_diff[k]||{};
+    (u.replaced||[]).forEach(([a,b])=>lines.push(lbl+': '+JSON.stringify(a)+' -> '+JSON.stringify(b)));
+    (u.added||[]).forEach(a=>lines.push('+'+lbl+': '+JSON.stringify(a)));
+    (u.removed||[]).forEach(a=>lines.push('-'+lbl+': '+JSON.stringify(a)))});
+   if(lines.length)cp.append(E('pre',{},lines.join('\n')))}
+  if(D.diffs[p.id]){const d=D.diffs[p.id];const row=E('div',{class:'shots'});
+   Object.entries(d).forEach(([c,x])=>{if(x.map||x.differs){const b=(D.baseShots[p.base]||{})[c],n=(D.shots[p.id]||{})[c];
+    if(b)row.append(E('figure',{},E('img',{src:b}),E('figcaption',{},'base, '+c)));if(n)row.append(E('figure',{},E('img',{src:n}),E('figcaption',{},'new, '+c)));
+    row.append(E('figure',{},x.map?E('img',{src:x.map}):'',E('figcaption',{},'difference: '+(x.error||x.pixels+' px differ'))))}});
+   if(row.childNodes.length)cp.append(row)}});
  D.compare.filter(p=>p.status==='gone').forEach(p=>cp.append(E('p',{class:'muted'},'Gone: '+p.base)))}
 // Cards
 const cd=document.getElementById('cards');cd.append(E('h2',{},'Screens'));
@@ -2525,6 +2776,10 @@ def parse(argv):
     p.add_argument("--seed", metavar="RUN", help="an earlier walk's OUT folder: start from its graph and walk again only the --only screens")
     p.add_argument("--only", help="with --seed: the screen ids to walk again, comma-separated")
     p.add_argument("--only-file", help="with --seed: a file of screen ids to walk again, one per line")
+    p.add_argument("--diff-seed", action="store_true",
+                   help="with --seed: compare walked/new screens against the seed's graph and captures (text/control + pixel diffs) without re-walking the base build")
+    p.add_argument("--diff-controls", choices=("changed", "none", "all"),
+                   help="with --diff-seed: which controls on an --only screen to tap: changed (default: only new/renamed controls), none (screen UI+pixel diff only), or all (full re-exploration)")
     p.add_argument("--events", action="store_true", help="also print a line of JSON per finished screen and per level")
     p.add_argument("--record-deps", action="store_true", help="per screen, the app classes that ran, their source files and the resources resolved (crawl.json deps, start_deps; docs/crawl.md)")
     p.add_argument("--deps-packages", help="with --record-deps: packages to probe, comma-separated (default the app package's first two parts)")
@@ -2544,12 +2799,18 @@ def parse(argv):
     if args.only_file:
         try:
             with open(args.only_file) as f:
-                only += [ln.strip() for ln in f if ln.strip() and not ln.strip().startswith("#")]
+                only += [x for x in (ln.split("#", 1)[0].strip() for ln in f) if x]
         except OSError as e:
             fail(f"cannot read {args.only_file}: {e}")
     args.only_ids = list(dict.fromkeys(only))
     if args.deps_packages and not args.record_deps:
         fail("--deps-packages goes with --record-deps")
+    if args.diff_seed and not args.seed:
+        fail("--diff-seed goes with --seed")
+    if args.diff_controls and not args.diff_seed:
+        fail("--diff-controls goes with --diff-seed")
+    if args.diff_controls is None:
+        args.diff_controls = "changed" if args.diff_seed else "all"
     if args.seed:
         # An --only-file with no ids is allowed: a walk stopped during its captures has every screen explored, and its
         # continuation only takes the captures it lacks.
@@ -2716,13 +2977,17 @@ def main():
         shutil.rmtree(os.path.join(out, d), ignore_errors=True)
     os.makedirs(out, exist_ok=True)
     t0 = time.time()
-    new = Explorer("new", apk, args, out, [], combos=combos)
+    snap_override = seed.get("snapshot") if (seed is not None and args.diff_seed and "snapshot" in seed) else None
+    new = Explorer("new", apk, args, out, [], combos=combos, snapshot_override=snap_override)
     base = None
     STOP.update(walk=new, out=out, t0=t0, combos=combos)
     signal.signal(signal.SIGTERM, on_stop)
     signal.signal(signal.SIGINT, on_stop)
     try:
-        new.pool(args.jobs)
+        n_jobs = args.jobs
+        if seed is not None and args.only_ids and not seed.get("stopped"):
+            n_jobs = min(args.jobs, len(args.only_ids))
+        new.pool(n_jobs)
         if seed is not None:
             new.explore_seeded(seed, args.only_ids)
         else:
@@ -2740,11 +3005,14 @@ def main():
             log(f"[new] {len(combos)} combination(s) captured in {new.t_capture:.1f} s")
         if seed is not None:
             new.carry_captures(lambda rel: os.path.join(src_dir, rel))
-            if os.path.basename(src_dir) == ".seed":
-                shutil.rmtree(src_dir, ignore_errors=True)
         doc = new.doc()
         doc["combos"] = [snapshot.combo_name(c) for c in combos]
         doc["screen_titles"] = bool(args.screen_titles)
+        doc["snapshot"] = bool(new.use_snapshot)
+        if seed is not None and args.diff_seed:
+            compare_with_seed(new, seed, src_dir, doc, args, out)
+        if seed is not None and os.path.basename(src_dir) == ".seed":
+            shutil.rmtree(src_dir, ignore_errors=True)
         sweep = None
         if args.sweep:
             sweep = Sweep(new, parse_sweep(args.sweep), args, read_allow(args.allow))
@@ -2777,6 +3045,9 @@ def main():
                     continue
                 d = {}
                 ns, bs = new.screens[p["id"]], base.screens[p["base"]]
+                ud = ui_diff(bs, ns)
+                if ud:
+                    p["ui_diff"] = ud
                 unstable = set(ns.get("unsettled", [])) | set(bs.get("unsettled", []))
                 if unstable:
                     p["unstable"] = sorted(unstable)  # it animates for ever there: its captures differ from run to run, so they are not compared

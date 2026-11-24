@@ -320,6 +320,23 @@ def main():
           and len(doc12["screens"]) == len(doc11["screens"]), "the rest of that seed is carried",
           str([(s["id"], s["origin"]) for s in doc12["screens"]]))
 
+    # 9b: --diff-seed compares walked/replaced screens directly against the seed (semantic ui_diff + pixel diff)
+    ds_same_dir, ds_diff_dir = os.path.join(args.out, "diff-seed-same"), os.path.join(args.out, "diff-seed-changed")
+    doc12_same, _, p12_same = crawl(args.apk, ds_same_dir, *two, "--seed", wpath(rs_dir), "--only", old[0] if old else "none",
+                                    "--diff-seed", "--setting", "global:apksim_slot_seed=" + "long-" * 120)
+    same_differs = [p for p in doc12_same.get("compare", []) if p["status"] != "same"]
+    check(p12_same.returncode == 0 and not same_differs,
+          "--diff-seed on an unchanged --only screen passes with no differences",
+          f"exit {p12_same.returncode}, {same_differs[:2]}")
+    doc12_diff, _, p12_diff = crawl(args.apk, ds_diff_dir, *two, "--seed", wpath(rs_dir), "--only", old[0] if old else "none",
+                                    "--diff-seed", "--setting", "global:apksim_slot_seed=changed-in-pr")
+    diff_changed = [p for p in doc12_diff.get("compare", []) if p["status"] != "same"]
+    diff_maps = [d.get("map") for s in doc12_diff.get("diffs", {}).values() for d in s.values() if d.get("map")]
+    check(p12_diff.returncode == 1 and len(diff_changed) == 1 and bool(diff_changed[0].get("ui_diff"))
+          and bool(diff_maps) and os.path.isfile(os.path.join(ds_diff_dir, diff_maps[0])),
+          "--diff-seed detects a changed --only screen with semantic ui_diff and a pixel diff image",
+          f"exit {p12_diff.returncode}, changed={diff_changed}, maps={diff_maps}")
+
     # 10: per-screen dependencies (--record-deps)
     dep_starts = ["--start", "apksim://composeapp/home", "--start", "apksim://stack", "--start", "apksim://appcompat",
                   "--max-depth", "2", "--no-captures", "-j", str(args.j)]

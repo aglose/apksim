@@ -175,9 +175,12 @@ class Worker:
         with lock, open(self.log, "w") as log:
             if stopping is not None and stopping.is_set():
                 raise Closed(f"instance {self.i}: the run is being stopped")
-            # Cold launches: a standby has read the GPU switches --snapshot sets before the launch.
-            self.proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                         env=dict(os.environ, APKSIM_STANDBY="0"))
+            # Cold launches by default (a standby has read the GPU switches --snapshot sets before the launch);
+            # GPU-rendered --diff-seed runs can opt in via ctx["standby"] for sub-second warm handoffs.
+            env = dict(os.environ)
+            if not self.ctx.get("standby", False) or self.ctx.get("snapshot", True):
+                env["APKSIM_STANDBY"] = "0"
+            self.proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env)
         deadline = time.time() + 180
         port = None
         while time.time() < deadline and self.proc.poll() is None and port is None:
@@ -313,21 +316,25 @@ class Worker:
                 pass
         self.file = self.sock = None
 
-    def quit(self):
-        """Ends the instance whatever state it is in: `quit` if it still answers, else SIGTERM, then SIGKILL."""
+    def quit(self, fast=False):
+        """Ends the instance whatever state it is in: `quit` if it still answers (unless [fast]), else SIGTERM, then SIGKILL."""
         if self.proc is None:
             return
-        if self.file is not None and self.proc.poll() is None:
+        if not fast and self.file is not None and self.proc.poll() is None:
             try:
                 self.send("quit")
             except (Closed, OSError, ValueError):
                 pass
         self.close()
-        for stop in (None, self.proc.terminate, self.proc.kill):
+        stops = (self.proc.terminate, self.proc.kill) if fast else (None, self.proc.terminate, self.proc.kill)
+        for stop in stops:
             if stop:
-                stop()
+                try:
+                    stop()
+                except OSError:
+                    pass
             try:
-                self.proc.wait(timeout=30 if stop is None else 10)
+                self.proc.wait(timeout=2 if fast else (30 if stop is None else 10))
                 return
             except subprocess.TimeoutExpired:
                 pass
