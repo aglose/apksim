@@ -837,7 +837,7 @@ A job using the released image:
 - name: Device tests on apksim
   run: |
     mkdir -p out && cp app/build/outputs/apk/debug/*.apk app/build/outputs/apk/androidTest/debug/*.apk out/
-    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.60.1 \
+    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.61.0 \
       app-debug.apk app-debug-androidTest.apk --xml junit.xml --bundles bundles
 - uses: actions/upload-artifact@v4
   if: always()
@@ -912,9 +912,9 @@ How it works, its limits and measurements on a large app: [docs/affected-tests.m
 ```bash
 # record goldens in the Linux image, where CI checks them (spec, APK and goldens in the mounted folder; --out keeps
 # the report there too, outside the goldens folder: without it, it stays in the container)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.60.1 spec.json --update --out snapshots/record
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.61.0 spec.json --update --out snapshots/record
 # compare every screen in every combination; exit 1 on any difference (in CI: the same image, without --update)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.60.1 spec.json --out snapshots/check
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.61.0 spec.json --out snapshots/check
 # a quick local check on a Mac before pushing, against the image's goldens with a one-level tolerance in the spec
 scripts/snapshot.py spec.json -j 4
 ```
@@ -995,7 +995,10 @@ scripts/crawl.py app.apk --out crawl/ --base app-old.apk  # every screen it can 
   files and the resources it resolved (and the same for the app's start), so a change's files say which screens to walk
   again; `--events` prints a JSON line per screen as the walk goes. Every replay and capture starts from the data the
   app had at its launch (an instance whose app wrote a setting or a file is launched again first), so two walks of one
-  build give the same map. See [docs/crawl.md](docs/crawl.md).
+  build give the same map. A plain walk renders on the GPU at 30 fps with animations off, steals work per action across
+  `-j` instances and reuses a screen in place when an action leaves the data alone: a ~169-screen app's walk with `-j 6`
+  went from 8,762 s to 966 s. A screen whose path no longer replays exactly (live data) is still explored where the
+  path leads now. See [docs/crawl.md](docs/crawl.md).
 
 ## Agents, Bluetooth LE and scenes
 
