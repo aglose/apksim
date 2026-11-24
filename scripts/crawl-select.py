@@ -215,19 +215,26 @@ def find_kmp_resource_referrers(repo, items):
     return hits, scanned
 
 
-CONST_RE = re.compile(r"^\s*(?:(?:public|internal|private|protected)\s+)*(?:const\s+val|static\s+final\s+[\w<>\[\].]+)\s+(\w+)", re.M)
-CODE_RE = re.compile(r"\b(?:fun|class|interface)\s+\w|@Composable")
+CONST_RE = re.compile(r"\b(?:const\s+val|static\s+final\s+[\w<>\[\].]+)\s+(\w+)")
+KT_CODE_RE = re.compile(r"\b(?:fun|class|interface)\s+\w|@Composable")
+JAVA_CODE_RE = re.compile(r"\)\s*(?:throws\s+[\w.,\s]+)?\{|\bstatic\s*\{")  # a method body or static initializer
+COMMENT_RE = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
+
+
+TEST_SETS = ("/src/test/", "/src/androidTest/", "/src/commonTest/", "/src/iosMain/", "/src/iosTest/", "/src/desktopMain/", "/src/desktopTest/")
 
 
 def declared_constants(full_path):
     """Names of the constants a source file declares (`const val`, `static final`), when it declares nothing that
-    runs (no fun/class/interface; `object` holders are fine): its constants are inlined into their users, so no
-    screen records the file itself. [] otherwise."""
+    runs (Kotlin: no fun/class/interface, `object` holders are fine; Java: no method body or static initializer):
+    its constants are inlined into their users, so no screen records the file itself. [] otherwise."""
     text = read_text(full_path) if full_path else None
     if not text:
         return []
+    text = COMMENT_RE.sub(" ", text)
     names = CONST_RE.findall(text)
-    return names if names and not CODE_RE.search(text) else []
+    code = JAVA_CODE_RE if str(full_path).endswith(".java") else KT_CODE_RE
+    return names if names and not code.search(text) else []
 
 
 def find_constant_referrers(repo, names, exclude=None):
@@ -240,6 +247,9 @@ def find_constant_referrers(repo, names, exclude=None):
     repo_abs = os.path.abspath(repo)
     for root, dirs, files in os.walk(repo_abs):
         dirs[:] = [d for d in dirs if d not in KMP_SKIP_DIRS]
+        if any(seg in "/" + os.path.relpath(root, repo_abs).replace("\\", "/") + "/" for seg in TEST_SETS):
+            dirs[:] = []
+            continue
         for fn in files:
             if not fn.endswith(affected.SOURCE_EXTENSIONS):
                 continue

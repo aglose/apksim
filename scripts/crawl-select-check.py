@@ -128,6 +128,12 @@ def main():
     r = crawl_select.select_screens(doc, [("app/src/main/kotlin/com/example/Limits.kt", f_const)], repo=repo)
     check(r["mode"] == "none" and r["unplaced"], "constants nobody uses stay unplaced", str(r))
 
+    jc = write("app/src/main/java/com/example/JLimits.java", "package com.example;\n/** Limits class. */\npublic final class JLimits { public static final int X = 1; }\n")
+    kc = write("app/src/main/kotlin/com/example/KLimits.kt", "package com.example\n/** Limits class for rows. */\nobject C { const val Z = 1 }\n")
+    check(crawl_select.declared_constants(jc) == ["X"], "java static final constants-only", "")
+    check(crawl_select.declared_constants(kc) == ["Z"], "kotlin comment and one-line object", "")
+    check(crawl_select.declared_constants(write("app/src/main/java/com/example/JCode.java", "package com.example;\nclass J { static final int Y = 1; int f() { return Y; } }\n")) == [], "java with a method is code", "")
+
     # 4d. A screen never explored is selected by any change that is not ignored
     doc3 = json.loads(json.dumps(doc))
     doc3["screens"].append({"id": "Main-9999", "title": "Deep"})
