@@ -2718,7 +2718,7 @@ def diff_images(inst, a_path, b_path, name, outdir, delta, pixels, root):
     res["differs"] = bool(m[2]) or res["pixels"] > (pixels * res["total"] if pixels < 1 else pixels)
     if os.path.exists(sm) and res["pixels"]:
         try:
-            found = diff_regions(sm)
+            found = diff_regions(sm) if res["differs"] else None  # noise under the threshold has no regions
         except Exception:  # a map that cannot be read gives no regions, never a failed comparison
             found = None
         if found:

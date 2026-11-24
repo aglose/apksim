@@ -204,8 +204,8 @@ directly against the seed's `crawl.json` and `screens/` without re-walking the b
   each entry of `texts`, in the capture's pixels) and `size` (`[w, h]`). A `ui_diff` `texts` or `controls` entry gets a
   `bounds` object beside its lists, of the same shape: `added[i]` is the box of `added[i]` in the new build, `removed[i]`
   its box in the base build, and `replaced[i]` is `[base box, new box]` (`null` where a box is not known, as for a seed
-  written before this); `ui_diff.size` is the display's size. `diffs[id][combo]` gets `size` and `regions`: boxes of
-  the connected areas of the difference map's red pixels (differences over `--diff-delta`; areas within 16 px are one),
+  written before this); `ui_diff.size` is the display's size (the new build's; boxes assume both builds ran on the same display, and a control's box is where the walk found it, so it is only reliable above the fold). `diffs[id][combo]` gets `size` and `regions`: boxes of
+  the connected areas of the difference map's red pixels (differences over `--diff-delta`; areas a few cells (8 px each, a gap of up to 2) apart are one; only for a comparison that counts as different),
   largest first, at most 8, with `regions_more` counting the rest. Read from the map by `diff_regions`, which needs no
   imaging library; `scripts/crawl-check.py` checks it.
 - `--diff-controls` chooses how much control exploration runs on each `--only` screen whose structure did not change:
