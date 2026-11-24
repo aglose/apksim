@@ -923,7 +923,9 @@ readable by any origin. Requests to the server carry its token as everything els
    (step 7), and optionally `"source"`: where else the build can be downloaded without credentials (an artifact
    store), which the agent uses only if its owner allowed that address ("Builds from an artifact store"; ignored by
    releases before 0.20.0). Or, for the site's saved data (step 8; 0.21.0 and later): `"saved": ID` (its own build: `sha256` may be left
-   out) or `"dataFrom": ID` beside a newer build's fields. The agent may first prompt its owner (up to 2.5 minutes: keep
+   out) or `"dataFrom": ID` beside a newer build's fields. Or, for a real device (issue 626, "Device sessions"; where
+   hello says `"devices": "on"`): `"device": SERIAL` from `GET AGENT/beam/devices`, `"options": []`, and `"uninstall":
+   true` after the user agreed to a `need: "uninstall"` answer. The agent may first prompt its owner (up to 2.5 minutes: keep
    the request open; `asking` in step 2 says it is). Answers:
    - `{"app", "token", "via"}` (`via`: `cache`, `source` or `download`; `"data": true` when it took the data, with
      `"saved"` or `"dataFrom"` naming the saved session it used): go to step 5.
@@ -1385,6 +1387,94 @@ refusals); a real device is not part of it.
 
 Not done: the same for a plain instance (a `handoff adb SERIAL` control command) and a "Move to device" item in the page's
 menu; both would call this code.
+
+## Device sessions (2026-11-24, issue 626)
+
+A session whose screen and input are a real Android device attached over adb, instead of a simulated one. The page
+keeps its canvas, its stream and its input words; only the source changes. `beam to-device` (above) carries a saved
+session's data on to a device; this is the other half, the device's screen in the tab.
+
+**Opt-in.** `apksim beam config devices on|off`, off by default and read at each use: a site that drives a device sees
+everything on it (notifications, other apps), more than a sandboxed session shows, so the owner chooses it apart from
+trusting the site. `/beam/hello` says `"devices": "on"|"off"`. Only a trusted site may list or start (403 otherwise).
+
+**List.** `GET /beam/devices` answers `{"devices":[{"serial","state","model","sdk","width","height","transport"}]}`
+from `adb devices -l`, and for a device in state `device` its `getprop ro.product.model`, `ro.build.version.sdk` and
+`wm size` (an override size wins); `transport` is `tcp` for a network address or an mDNS name, else `usb`. `adb` is the
+one on PATH, else the SDK's (ANDROID_HOME, ANDROID_SDK_ROOT, ~/Library/Android/sdk) or Homebrew's: launchd gives the
+agent a short PATH (`DeviceTarget.adb`).
+
+**Start.** `POST /beam/start` takes `"device": SERIAL` and `"uninstall": true|false`. The build arrives as for any start
+(cache, `source`, the page's server, or `need: upload` and `/beam/upload`); then the agent installs it (`DeviceTarget.install`):
+nothing when the device already has this build (by hash); `install -r -d` when it has none or one with the same signer
+(`ApkSigners`); and for a copy signed by another key it answers `{"need":"uninstall","package","why"}` instead of a
+grant, as a replacement erases that app's data on the device. The page asks its user and starts again with
+`"uninstall": true` (the build is then in the cache). `"uninstall": true` counts only after that answer, for the same
+origin, device and build within 10 minutes: sent first, it gets the answer and uninstalls nothing. Refused: a device that is not `device` to adb (409; `unauthorized`
+names the "Allow USB debugging?" prompt on the device), a device that already runs a session (409: one at a time), launch
+options (400, naming them: they are the simulator's), `saved`/`dataFrom`/`data`, `"inspect": true` and `"relay": true`
+(400). A device session counts toward `max`. `"adb": true` gives it the whole shell where `allow-adb` is on, as for a
+simulated session; no adb device is published (the device is one already).
+
+**The bridge.** A device session's "instance" is `DeviceBridge`, a small JVM (`-Xmx64m`, C1) the agent starts with its
+own java and class path in place of the launcher. It runs scrcpy's server on the device and serves the instance's own
+control protocol on a loopback port, printed as `[apksim] control port N`, so `Session` relays it as it relays a
+simulated screen (acks, the in-flight window, viewers). Unlike an instance, whose port reaches a sandboxed app, the
+bridge's reaches a real phone: every connection must send `auth TOKEN` first (a random token per session, given to the
+bridge in `APKSIM_BRIDGE_TOKEN` and sent by `Session.connect`), and anything else, a browser's request line included, is
+closed unanswered. The bridge ends itself when the agent that started it ends without a `quit`. scrcpy is not bundled: the server is Homebrew's
+(`brew install scrcpy`: `share/scrcpy/scrcpy-server`, its version from `bin/scrcpy --version`, which the server must be
+started with exactly), else `APKSIM_SCRCPY_SERVER` and `APKSIM_SCRCPY_VERSION`. Its start: the jar pushed to
+`/data/local/tmp/apksim-scrcpy-SCID.jar` (a name of the session's own, so a scrcpy the device's owner runs keeps its file),
+`adb forward tcp:0 localabstract:scrcpy_SCID`, then `app_process ... Server VERSION scid=SCID audio=false control=true
+tunnel_forward=true video_codec=h264 clipboard_autosync=false cleanup=false`. The first connection waits for the server's
+dummy byte (the forward accepts and closes while nothing listens), then reads the device name (64 bytes) and codec (4).
+
+Read from scrcpy 5.0.1 on a Pixel (Android 17), not its documentation: every packet has a 12-byte header; bit 63 marks a
+session packet (the next 4 + 4 bytes are the width and height, after the start, a reset or a rotation), bit 62 codec
+config (SPS and PPS), bit 61 a keyframe. The config comes as its own packet: the bridge puts it in front of the next
+keyframe, as the page wants one access unit per frame with its parameter sets. Frames go out in FrameStream's format
+(`length, width, height, present µs, encode µs = 0, key byte, Annex B`), at the device's size, so touch coordinates are
+the device's pixels. A tab's `key` (its decoder lost its place) sends scrcpy's reset-video message (type 17), which gives
+a keyframe; `pace`, `viewport`, `maxfps` and `vsync` are taken and ignored (the device's encoder keeps its own pace,
+sending only changed frames). The stream is H.264 only: a tab without WebCodecs gets "a device session needs H.264".
+
+**Input.** `touch down|move|up|cancel X Y` (scrcpy's inject-touch with its "generic finger" pointer, the stream's size as
+the screen size), `wheel X Y AMOUNT` (inject-scroll: apksim's notches over scrcpy's 16-notch fixed point), `key NAME
+[COUNT] [ctrl|shift|alt|meta]` (inject-keycode from a table of KeyEvent codes; any other name goes to the device's
+`input keyevent KEYCODE_NAME`, without modifiers), `type TEXT` (inject-text, 300 bytes a message), `back`
+(back-or-screen-on), `home` (KEYCODE_HOME), `resume` (the app started again), `open URL` (`am start -a VIEW`),
+`rotate portrait|landscape|left|right` (auto-rotate off and `user_rotation` set; an app that fixes its orientation, the
+lock screen included, stays as it is, as in a hand), `logcat on|off` (`adb logcat --pid` of the app into the session's
+log). The tab's `device`, `viewport`, `window`, `camera`, `sensor`, `sysfs`, `fold`, `inspect`, `rec`, `keep`,
+`appearance`, `locale`, `fontscale`, `animscale`, `permission`, `audio`, `video`, `rotary`, `ambient`, `detach` and
+`handoff` answer `r refused: not on a device session` (`Session.SIMULATOR_ONLY`), and the bridge answers any other
+command it lacks `error: X: not on a device session`. A shell line (`shell ID LINE`) runs as `adb shell` on the device:
+full (as typed) only for a start with `"adb": true` while `allow-adb` is on (the agent starts the bridge with
+`--full-shell`); else limited: the simulated session's rules (`TabShell.refusal`), nothing the device's shell would read
+as more than one command, and two more for a real phone, where they would reach the whole device: `settings put` only of
+the animation and font scales, `am start`/`am broadcast` only with the app's `-n` or `-p`; `cat` only of a file in the
+app's own folders (through `run-as`, so a debuggable build). Output is kept to 256 KB (adb is stopped past it).
+
+**Session info.** `i` has `"target": "device"` and `"targetDevice": {"serial", "model", "sdk"}`, `rec: false`,
+`inspect: false`, `inspectAllowed: false`, `audio: "off"` and no `keep`. Only the bridge's own lines (at the start of a
+line) are read from its output: the app's logcat lines there are the device's to write, so none of an instance's markers
+(data slot, permissions) is taken from them, and the bridge prints them behind `[logcat] `.
+
+**End.** The device unplugged, de-authorized or offline ends the session with `x the device SERIAL was disconnected
+(STATE)` (the video's end, or a 2 s `adb get-state` watch), and the agent stays up for the next start. Ending a session
+stops the server (`pkill -f 'scid[=]SCID '`: the bracket keeps the cleanup shell's own command line from matching), removes
+its jar and forward and, if the session rotated the display, puts the rotation settings back as it found them; the app
+stays installed. A device dropped mid-session keeps the jar until the next start's sweep of jars no server holds. The
+screen is woken (KEYCODE_WAKEUP) before the app starts; a secure lock screen stays locked. The app is started with `am
+start` on its resolved launcher activity: `monkey -p PKG 1` (which `beam to-device` uses) turns auto-rotate on.
+
+`scripts/beam-device-session-check.py APK [--serial SERIAL]`: the opt-in, listing and refusals against a stand-in `adb`
+(no device), and with `--serial` the whole session on that device, leaving it as it found it.
+
+Not done: the device's sound (scrcpy's audio socket, Android 11+; `audio` is `off`), multi-pointer touch (the page sends
+one pointer), the page's own device picker and uninstall prompt, a `stats` with the device's own figures, and devices
+on another machine.
 
 ## Measurements to keep (as serve's table)
 

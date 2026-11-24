@@ -529,7 +529,7 @@ public final class Serve {
       Catalog.loopbackAllowance = () -> store.loopbackNow(port);
       BeamStore.Config c = store.config;
       store.config = new BeamStore.Config(keepDays != null ? keepDays : c.keepDays(),
-          saveSessions != null ? saveSessions : c.saveSessions(), keepSavedDays != null ? keepSavedDays : c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback(), c.max());
+          saveSessions != null ? saveSessions : c.saveSessions(), keepSavedDays != null ? keepSavedDays : c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback(), c.max(), c.devices());
       if (!maxGiven) max = store.config.maxSessions();
       if (!store.lockAgent(port)) {
         int other = store.agentPort();
@@ -2039,7 +2039,9 @@ public final class Serve {
    */
   private String info(Session x, String shareKey, boolean rejoined) {
     return "i {\"id\":" + Http.q(x.id) + ",\"app\":" + Http.q(x.app.name()) + ",\"device\":" + Http.q(x.device)
-        + ",\"idleLimitS\":" + idleSeconds + ",\"logcat\":" + (beam || allowLogcat) + (beam ? ",\"keep\":" + x.keep : "")
+        + ",\"idleLimitS\":" + idleSeconds + ",\"logcat\":" + (beam || allowLogcat) + (beam && x.deviceSerial() == null ? ",\"keep\":" + x.keep : "")
+        // Issue 626: a session on a real device says so, and which.
+        + (x.deviceSerial() != null ? ",\"target\":\"device\",\"targetDevice\":" + deviceInfoJson(x.deviceSerial()) : "")
         // What the page may offer: the report (a recording, needs --allow-rec) and the network inspector.
         + (beam ? ",\"rec\":" + (x.recChannels() != null) + (x.recChannels() != null ? ",\"recChannels\":" + Http.q(x.recChannels()) : "")
             : ",\"rec\":" + allowRec + (issueUrl != null ? ",\"issueUrl\":" + Http.q(issueUrl) : ""))
@@ -2518,7 +2520,7 @@ public final class Serve {
       if (o != null && agent.trusted(o)) warmStandbyOnHello();  // only a site the owner trusts may cause a JVM to boot
       int[] pr = Beam.protocols();
       Http.json(out, 200, "{\"apksim\":" + Http.q(Beam.version(root)) + ",\"protocol\":" + pr[1] + ",\"minProtocol\":" + pr[0] + ",\"trusted\":"
-          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"max\":" + max + ",\"allowRequest\":[\"forward\",\"loopback\",\"host\"],\"forward\":" + (o != null && agent.trusted(o) ? forwardJson() : "[]") + ",\"adb\":" + store.allowAdbNow() + ",\"loopback\":" + (o != null && agent.trusted(o) ? store.loopbackNow(port) : List.of()) + ",\"hosts\":" + (o != null && agent.trusted(o) ? hostsJson() : "[]") + ",\"maxBroadcasts\":" + dev.apksim.BroadcastSpec.COUNT_MAX + ",\"rejoinS\":" + rejoinGraceSeconds + ",\"options\":" + Catalog.optionsJson() + "}");
+          + (o != null && agent.trusted(o)) + ",\"asking\":" + agent.asking(o) + ",\"relay\":true,\"inspect\":" + Http.q(store.config.inspectNetwork()) + ",\"inspectOptOut\":true,\"max\":" + max + ",\"allowRequest\":[\"forward\",\"loopback\",\"host\"],\"forward\":" + (o != null && agent.trusted(o) ? forwardJson() : "[]") + ",\"adb\":" + store.allowAdbNow() + ",\"devices\":" + Http.q(store.devicesNow() ? "on" : "off") + ",\"loopback\":" + (o != null && agent.trusted(o) ? store.loopbackNow(port) : List.of()) + ",\"hosts\":" + (o != null && agent.trusted(o) ? hostsJson() : "[]") + ",\"maxBroadcasts\":" + dev.apksim.BroadcastSpec.COUNT_MAX + ",\"rejoinS\":" + rejoinGraceSeconds + ",\"options\":" + Catalog.optionsJson() + "}");
       return;
     }
     // `apksim beam status` (docs/beam.md, phase 6): to a local tool only, never a page (a browser always sends Origin).
@@ -2618,6 +2620,29 @@ public final class Serve {
       else deleteSaved(o, id, out);
       return;
     }
+    // Issue 626: this Mac's adb devices, for a trusted site while the owner allows device sessions.
+    if (r.method().equals("GET") && r.path().equals("/beam/devices")) {
+      String no = deviceRefusal(o);
+      if (no != null) {
+        Http.text(out, 403, no);
+        return;
+      }
+      List<DeviceTarget.Device> list;
+      try {
+        list = DeviceTarget.list();
+      } catch (IOException e) {
+        Http.text(out, 503, e.getMessage());
+        return;
+      }
+      StringBuilder b = new StringBuilder("{\"devices\":[");
+      for (DeviceTarget.Device d : list) {
+        if (b.charAt(b.length() - 1) != '[') b.append(',');
+        b.append(d.json());
+        if (d.state().equals("device")) deviceInfo.put(d.serial(), d);
+      }
+      Http.json(out, 200, b.append("]}").toString());
+      return;
+    }
     switch (r.method() + " " + r.path()) {
       case "POST /beam/start" -> beamStart(r, o, out);
       case "POST /beam/allow" -> beamAllow(r, o, out);
@@ -2663,6 +2688,14 @@ public final class Serve {
         }
         String got = g.sha256();
         System.err.printf("[beam] %s sent %s (%d MB)%n", o, a.name(), Files.size(a.path()) >> 20);
+        if (deviceOf(g.launch()) != null) {
+          // Issue 626: the build reached this Mac for a device session: it goes on the device now, as from the cache.
+          List<String> dl = deviceInstall(o, a, got, g.launch(), out);
+          if (dl == null) return;
+          Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), got, a.name(), dl, null, 1, g.label()))
+              + ",\"device\":" + Http.q(deviceOf(dl)) + "}");
+          return;
+        }
         String seed = null;
         if (g.extra() != null && g.extra().startsWith("@")) {
           try {
@@ -2762,6 +2795,88 @@ public final class Serve {
   /** JSON bodies of addApp and beamStart: room for 256 KB of --sdcard-file contents as base64, and the rest. */
   private static final int BODY_MAX = 400 * 1024;
 
+  // ---------------------------------------------------------------- device sessions (issue 626)
+
+  /** The agent's own mark in a device start's launch: the page agreed to uninstall a copy signed by another key. */
+  static final String DEVICE_UNINSTALL = "--beam-device-uninstall";
+
+  /**
+   * The `need: "uninstall"` answers given (origin, serial, build -> when): `"uninstall": true` is honoured only for a
+   * start that follows one within 10 minutes, so a page cannot erase an app's data on the phone without the round trip
+   * through its user that the answer asks for. Bounded: cleared when it grows past 1024.
+   */
+  private final Map<String, Long> uninstallAsked = new java.util.concurrent.ConcurrentHashMap<>();
+
+  /** What GET /beam/devices last said of each ready device, for the session's `i` message. */
+  private final Map<String, DeviceTarget.Device> deviceInfo = new java.util.concurrent.ConcurrentHashMap<>();
+
+  /** Why this origin may not list or use this Mac's devices now, or null when it may. */
+  private String deviceRefusal(String o) {
+    if (!store.devicesNow()) return "this Mac's owner has not allowed device sessions (GET /beam/hello says \"devices\": \"on\" when they may: apksim beam config devices on)";
+    if (!agent.trusted(o)) return "this Mac's devices are for sites it trusts (apksim beam trust allow ORIGIN)";
+    return null;
+  }
+
+  /** The serial a launch's device marker names, or null. */
+  static String deviceOf(List<String> launch) {
+    int i = launch.indexOf(Session.DEVICE_MARKER);
+    return i >= 0 && i + 1 < launch.size() ? launch.get(i + 1) : null;
+  }
+
+  /**
+   * Puts the build on the start's device (DeviceTarget.install) and answers the page itself when it cannot: `need:
+   * uninstall` for a copy signed by another key (the page asks its user and starts again with `"uninstall": true`),
+   * 409 with the reason otherwise. Returns the session's launch (without the uninstall mark), or null once answered.
+   */
+  private List<String> deviceInstall(String o, Catalog.App a, String sha, List<String> launch, OutputStream out) throws IOException {
+    String serial = deviceOf(launch);
+    if (!store.devicesNow() || !agent.trusted(o)) {
+      Http.text(out, 403, deviceRefusal(o));
+      return null;
+    }
+    String refused = DeviceTarget.refusal(serial, DeviceTarget.state(serial));
+    if (refused != null) {
+      Http.text(out, 409, refused);
+      return null;
+    }
+    String pkg = DeviceTarget.packageOf(a.path());
+    System.err.printf("[beam] %s: installing %s on the device %s%n", o, a.name(), serial);
+    String asked = o + " " + serial + " " + sha;
+    Long at = uninstallAsked.get(asked);
+    boolean uninstall = launch.contains(DEVICE_UNINSTALL) && at != null && System.currentTimeMillis() - at < 600_000;
+    String need;
+    try {
+      need = DeviceTarget.install(serial, a.path(), sha, uninstall);
+    } catch (IOException e) {
+      Http.text(out, 409, "the device " + serial + ": " + e.getMessage());
+      return null;
+    }
+    if (uninstall) uninstallAsked.remove(asked);
+    if (need != null) {
+      if (uninstallAsked.size() > 1024) uninstallAsked.clear();
+      uninstallAsked.put(asked, System.currentTimeMillis());
+      Http.json(out, 200, "{\"need\":\"uninstall\",\"package\":" + Http.q(pkg == null ? "" : pkg) + ",\"why\":"
+          + Http.q(need.substring("need-uninstall: ".length())) + "}");
+      return null;
+    }
+    if (!deviceInfo.containsKey(serial)) {
+      try {
+        for (DeviceTarget.Device d : DeviceTarget.list()) if (d.serial().equals(serial)) deviceInfo.put(serial, d);
+      } catch (IOException e) {
+        // the i message then names the serial alone
+      }
+    }
+    List<String> l = new ArrayList<>(launch);
+    l.remove(DEVICE_UNINSTALL);
+    return l;
+  }
+
+  /** `targetDevice` of a device session's `i` message. */
+  String deviceInfoJson(String serial) {
+    DeviceTarget.Device d = deviceInfo.get(serial);
+    return "{\"serial\":" + Http.q(serial) + ",\"model\":" + Http.q(d == null ? "" : d.model()) + ",\"sdk\":" + (d == null ? 0 : d.sdk()) + "}";
+  }
+
   private void beamStart(Http.Request r, String o, OutputStream out) throws IOException {
     long length = r.chunked() ? -1 : r.contentLength();
     byte[] raw = r.content().readNBytes((int) Math.min(BODY_MAX + 1, length < 0 ? Long.MAX_VALUE : length));
@@ -2835,6 +2950,9 @@ public final class Serve {
       // Issue 371: the network inspector for this session, if this Mac's owner allows it (`inspect-network optional|on`).
       Object inspect = body.get("inspect");
       if (inspect != null && !(inspect instanceof Boolean)) throw new IOException("\"inspect\" takes true or false");
+      if (Boolean.TRUE.equals(inspect) && body.get("device") != null) {
+        throw new IOException("a device session has no network inspector (it would need a proxy and a certificate on the device)");
+      }
       if (Boolean.TRUE.equals(inspect) && store.config.inspectNetwork().equals("off")) {
         Http.text(out, 409, "this Mac's owner has not allowed the network inspector (GET /beam/hello says \"inspect\": \"optional\" or \"on\" when it may be asked for: apksim beam config inspect-network optional)");
         return;
@@ -2867,10 +2985,44 @@ public final class Serve {
         launch = new ArrayList<>(launch);
         launch.add("--tab-relay");  // the agent's own: Catalog.launchOptions does not let a page name it
       }
+      // Issue 626: a session on a real device attached over adb, where this Mac's owner allows it.
+      Object dev = body.get("device");
+      Object un = body.get("uninstall");
+      if (un != null && !(un instanceof Boolean)) throw new IOException("\"uninstall\" takes true or false");
+      if (dev != null) {
+        if (!(dev instanceof String serial) || !serial.matches(DeviceHandoff.SERIAL)) throw new IOException("\"device\" takes a serial (GET /beam/devices lists them)");
+        String no = deviceRefusal(o);
+        if (no != null) {
+          Http.text(out, 403, no);
+          return;
+        }
+        List<String> simulated = new ArrayList<>(given);
+        if (!simulated.isEmpty()) {
+          throw new IOException("a device session takes no launch options (they are the simulator's): " + String.join(" ", simulated));
+        }
+        if (local != null || data != null) throw new IOException("a device session starts from the device's own data: no \"saved\", \"dataFrom\" or \"data\"");
+        if (Boolean.TRUE.equals(body.get("relay"))) throw new IOException("a device session has no tab relay");
+        String state = DeviceTarget.state(serial);
+        String refused = DeviceTarget.refusal(serial, state);
+        if (refused != null) {
+          Http.text(out, 409, refused);
+          return;
+        }
+        for (Session x : sessions.values()) {
+          if (serial.equals(x.deviceSerial())) {
+            Http.text(out, 409, "the device " + serial + " already runs a session (one at a time on a device)");
+            return;
+          }
+        }
+        launch = new ArrayList<>(List.of(Session.DEVICE_MARKER, serial));
+        if (Boolean.TRUE.equals(adb) && store.allowAdbNow()) launch.add(Session.ADB_MARKER);  // the whole shell, as for a simulated session
+        if (Boolean.TRUE.equals(un)) launch.add(DEVICE_UNINSTALL);
+        inspect = Boolean.FALSE;
+      }
       if (Boolean.TRUE.equals(inspect)) {
         launch = new ArrayList<>(launch);
         launch.add("--network-inspect");  // likewise the agent's own: the session's instance runs the inspector
-      } else if (Boolean.FALSE.equals(inspect)) {
+      } else if (Boolean.FALSE.equals(inspect) && !launch.contains(Session.DEVICE_MARKER)) {
         // Issue 389: under `inspect-network on` the setting is the default, and this start declines it (no network engine).
         launch = new ArrayList<>(launch);
         launch.add("--no-network-inspect");
@@ -2920,6 +3072,14 @@ public final class Serve {
         why = (why == null ? "" : why + "; ") + (source == null ? "" : "from the page's server: ") + e.getMessage();
         System.err.println("[beam] could not download " + label + " from " + o + ": " + e.getMessage());
       }
+    }
+    if (a != null && deviceOf(launch) != null) {
+      List<String> dl = deviceInstall(o, a, sha, launch, out);
+      if (dl == null) return;
+      Http.json(out, 200, "{\"app\":" + Http.q(a.id()) + ",\"token\":" + Http.q(agent.grant(Beam.Kind.SESSION, o, a.id(), sha, a.name(), dl, null, 1, pageLabel))
+          + ",\"via\":" + Http.q(via) + ",\"device\":" + Http.q(deviceOf(dl)) + "}");
+      sweepBeam();
+      return;
     }
     if (a != null) {
       String seed = null;
