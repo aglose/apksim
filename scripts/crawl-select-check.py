@@ -171,6 +171,11 @@ def main():
                 "Main-4444": {"id": "Main-4444", "title": "New", "texts": ["New"], "actions": [], "origin": "walked", "captures": {}},
             }
             self.instances = []
+            self.edges = []
+            self.explored = set(self.screens)
+            self.partial = set()
+            for sc in self.screens.values():
+                sc.setdefault("parent", None)
 
     out_dir = tempfile.mkdtemp(prefix="crawl-diff-seed-check-")
     new_doc = {"combos": [], "findings": []}

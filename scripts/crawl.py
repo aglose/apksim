@@ -2555,7 +2555,7 @@ def compare_with_seed(new, seed, src_dir, doc, args, out):
     doc["diffs"] = diffs
     doc["base_screens"] = base_screens
     doc["base_edges"] = seed.get("edges", [])
-    doc["edges"] = compare_edges(new, seed)
+    doc["edge_changes"] = compare_edges(new, seed)
 
 
 def lost_carried(new, seed):
@@ -2576,10 +2576,12 @@ def lost_carried(new, seed):
     lost = [sid for sid in ids if sid not in seen and new.screens[sid].get("origin") == "carried"]
     if not lost:
         return {}
-    walked_old = set()
+    walked_old = set()  # seed ids of screens walked again whose controls were all tried
+    explored, partial = getattr(new, "explored", None), getattr(new, "partial", set())
     for sid in ids:
         ns = new.screens[sid]
-        if ns.get("origin") == "walked":
+        if ns.get("origin") == "walked" and not ns.get("flaky") and sid not in partial \
+                and (explored is None or sid in explored):
             walked_old.add(sid)
             if ns.get("replaces"):
                 walked_old.add(ns["replaces"])
@@ -2614,7 +2616,7 @@ def compare_edges(new, seed):
         out, count = {}, {}
         for e in edges:
             f = mapf(e["from"])
-            if f not in walked:
+            if f not in walked or e.get("kind") == "skipped" or e["to"] in ("SKIPPED", "FAILED"):
                 continue
             k = (f, e["action"])
             count[k] = count.get(k, 0) + 1
@@ -3181,7 +3183,7 @@ def main():
     if args.sweep:
         junit(args.junit or os.path.join(out, "junit.xml"), sweep)
     crashes = [f for f in doc["findings"] if f["kind"] in ("crash", "compare") or (f["kind"] == "sweep" and not f["allowed"])]
-    differs = [p for p in doc.get("compare", []) if p["status"] != "same"]
+    differs = [p for p in doc.get("compare", []) if p["status"] not in ("same", "unknown")]
     for p in differs:
         log(f"{p['status']:>8}  {p['id'] or p['base']}  {p.get('why') or ''}")
     code = 1 if crashes or differs else 0

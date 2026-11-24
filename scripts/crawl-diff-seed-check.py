@@ -23,6 +23,7 @@ seed = {"screens": [{"id": x} for x in "ABCDEF"], "unexplored": ["E"],
         "edges": [edge("A", "b", "B"), edge("A", "c", "C"), edge("A", "e", "E"), edge("B", "d", "D"), edge("E", "f", "F")]}
 # New: B lost its control to D; A lost "c" and gained "g" to a new screen G; B's "x" now goes to C.
 new = types.SimpleNamespace(
+    explored=None, partial=set(),
     screens={"A": scr("A", "walked"), "B": scr("B", "walked", "A"), "C": scr("C", "carried", "A"),
              "D": scr("D", "carried", "B"), "E": scr("E", "carried", "A"), "F": scr("F", "carried", "E"),
              "G": scr("G", "walked", "A")},
@@ -44,4 +45,9 @@ assert lost.get("E") == "gone" and lost.get("F") == "gone" and lost.get("D") == 
 # A retarget.
 new.edges.append(edge("B", "y", "G")); seed["edges"].append(edge("B", "y", "C"))
 assert crawl.compare_edges(new, seed)["retargeted"] == [{"from": "B", "action": "y", "to": "G", "base_to": "C"}]
+# A walked screen whose walk was cut short says nothing about what it led to.
+new.explored = {"A", "G"}  # B was not explored
+assert crawl.lost_carried(new, seed).get("D") == "unknown"
+new.explored = {"A", "B", "G"}; new.partial = {"B"}
+assert crawl.lost_carried(new, seed).get("D") == "unknown"
 print("ok")
