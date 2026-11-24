@@ -419,90 +419,97 @@ final class Session {
     // Its own data slots (serve-0, serve-1...): --fresh then never empties data an ordinary launch keeps.
     // A beamed instance has a window, hidden, which "Show in Simulator" brings up (docs/beam.md, phase 3): the same
     // display, a second view of it.
-    List<String> cmd = new ArrayList<>(List.of(serve.launcher.toString()));
-    cmd.addAll(serve.beam ? List.of("--window", "hidden") : List.of("--headless"));
-    // A session whose data came from the server (phase 5) runs in the slot the agent unpacked it into, not a fresh one.
-    if (seedSlot != null) cmd.addAll(List.of("--no-autofill", "--data-slots", seedSlot, "--control", "auto"));
-    else cmd.addAll(List.of("--fresh", "--no-autofill", "--data-slots", serve.home, "--control", "auto"));
-    cmd.addAll(List.of("--device", deviceSpec(device)));
-    String appearance = options.get("appearance");
-    if ("dark".equals(appearance) || "light".equals(appearance)) cmd.addAll(List.of("--appearance", appearance));
-    String locale = options.get("locale");
-    if (locale != null && locale.matches("[a-z]{2,3}(-[A-Z]{2})?")) cmd.addAll(List.of("--locale", locale));
-    String font = options.get("fontscale");
-    if (font != null && font.matches("[0-2](\\.\\d{1,2})?")) cmd.addAll(List.of("--font-scale", font));
-    String perms = options.getOrDefault("permissions", "ask");
-    if (perms.equals("grant") || perms.equals("deny")) cmd.addAll(List.of("--permissions", perms));
-    if (serve.noNetwork) cmd.add("--no-network");
-    if (inspecting() && !app.launch().contains("--network-inspect")) cmd.add("--network-inspect");
-    if (inspecting() && serve.beam) cmd.add(FORWARD_MARKER);  // its forward rules are sent by this agent (issue 426)
-    if (inspecting() && serve.inspectMaxRules != dev.apksim.net.Inspector.MAX_RULES) cmd.addAll(List.of("--network-inspect-rules", String.valueOf(serve.inspectMaxRules)));
-    // The report button's recording (docs/pr-preview.md) holds the last five minutes: the rings keep that long (default 120 s).
-    if (serve.allowRec && !serve.beam && !app.launch().contains("--rec-window")) cmd.addAll(List.of("--rec-window", "300"));
-    if (serve.moveSharedData) cmd.add("--move-shared-data");
-    // A beamed instance starts from its build's caches the agent kept (translated classes, its APK cache entry), which
-    // it cannot write; what it makes goes to its own out folder, moved into that cache once it has exited (beamCaches).
-    String build = serve.beam ? serve.catalog.buildHash(app.path()) : null;
-    if (build != null) cmd.addAll(List.of("--jvm", "-Dapksim.beamBuildCache=" + serve.beamCache(build)));
-    // And may read the translated classes of earlier builds of this app from this site, signed by the same key (issue 578).
-    if (build != null) cmd.addAll(serve.beamSiblingArgs(build, site, app.path()));
-    // A beam session records by default (`apksim beam config rec`; input alone costs little), so the person who finds a
-    // bug has something to save (`rec save`) and replay (scripts/replay-adb.py). The app's own options may choose.
-    List<String> own = app.launch();
-    if (serve.beam && serve.store != null && !own.contains("--rec") && !"off".equals(serve.store.config.rec())) {
-      cmd.addAll(List.of("--rec", serve.store.config.rec()));
-    }
-    // A crash's bundle goes where `rec save` ones do, under an id of its own, so the tab can download it (issue 516).
-    // Only where recordings are allowed: the bundle holds the app's network calls and logs.
-    if (serve.beam || serve.allowRec) {
-      cmd.addAll(List.of("--rec-crash-id", crashRid));
-      if (!serve.beam) cmd.addAll(List.of("--rec-crash-dir", recDir().toString()));
-    }
-    // The session's skin on its own device decides the kind (its own, or what the size gives), as the device chosen
-    // decides the size: this server's skin (the agent's on a Mac), or the page's skin this endpoint lacks (`kind`).
-    Skin chosen = skin != null ? Serve.skin(skin) : null;
-    boolean pageKind = skin == null && options.get("kind") != null && device.equals(options.get("device"));
-    boolean skinKind = chosen != null && device.equals(chosen.device) || pageKind;
-    // The app's own (catalog line or URL add), checked by Catalog.launchOptions; its --device is the default above.
-    for (int i = 0; i < own.size(); i++) {
-      if (own.get(i).equals("--device")) i++;
-      else if (own.get(i).equals("--skin")) i++;  // the session's skin, below
-      // The app's own --device-kind goes with its own --device (Serve.skinAsDevice adds the pair): not with another
-      // device, nor where the session's skin decides (a kind generated from another skin of that device included).
-      else if (own.get(i).equals("--device-kind") && (!device.equals(appDevice(app)) || skinKind)) i++;
-      // A reopened saved session (issue 181) starts as it was saved: what it recorded (in options) wins over the
-      // app's own defaults, as `apksim beam run` puts them.
-      else if (savedId != null && i + 1 < own.size() && SAVED_OVER_OWN.containsKey(own.get(i)) && options.containsKey(SAVED_OVER_OWN.get(own.get(i)))) i++;
-      // The agent's own marker for a start with "adb": true (issue 397): an adb device on loopback, as `apksim --adb auto`
-      // by hand, only while this Mac's owner allows it; the launcher never sees the marker.
-      else if (own.get(i).equals(ADB_MARKER)) {
-        if (wantsAdb()) cmd.addAll(List.of("--adb", "auto"));
+    List<String> cmd;
+    if (deviceSerial() != null) {
+      // Issue 626: a real device's screen and input, through a bridge that serves the instance's own protocol.
+      cmd = deviceCommand(apk);
+      ws.sendText("p connecting to the device " + deviceSerial());
+    } else {
+      cmd = new ArrayList<>(List.of(serve.launcher.toString()));
+      cmd.addAll(serve.beam ? List.of("--window", "hidden") : List.of("--headless"));
+      // A session whose data came from the server (phase 5) runs in the slot the agent unpacked it into, not a fresh one.
+      if (seedSlot != null) cmd.addAll(List.of("--no-autofill", "--data-slots", seedSlot, "--control", "auto"));
+      else cmd.addAll(List.of("--fresh", "--no-autofill", "--data-slots", serve.home, "--control", "auto"));
+      cmd.addAll(List.of("--device", deviceSpec(device)));
+      String appearance = options.get("appearance");
+      if ("dark".equals(appearance) || "light".equals(appearance)) cmd.addAll(List.of("--appearance", appearance));
+      String locale = options.get("locale");
+      if (locale != null && locale.matches("[a-z]{2,3}(-[A-Z]{2})?")) cmd.addAll(List.of("--locale", locale));
+      String font = options.get("fontscale");
+      if (font != null && font.matches("[0-2](\\.\\d{1,2})?")) cmd.addAll(List.of("--font-scale", font));
+      String perms = options.getOrDefault("permissions", "ask");
+      if (perms.equals("grant") || perms.equals("deny")) cmd.addAll(List.of("--permissions", perms));
+      if (serve.noNetwork) cmd.add("--no-network");
+      if (inspecting() && !app.launch().contains("--network-inspect")) cmd.add("--network-inspect");
+      if (inspecting() && serve.beam) cmd.add(FORWARD_MARKER);  // its forward rules are sent by this agent (issue 426)
+      if (inspecting() && serve.inspectMaxRules != dev.apksim.net.Inspector.MAX_RULES) cmd.addAll(List.of("--network-inspect-rules", String.valueOf(serve.inspectMaxRules)));
+      // The report button's recording (docs/pr-preview.md) holds the last five minutes: the rings keep that long (default 120 s).
+      if (serve.allowRec && !serve.beam && !app.launch().contains("--rec-window")) cmd.addAll(List.of("--rec-window", "300"));
+      if (serve.moveSharedData) cmd.add("--move-shared-data");
+      // A beamed instance starts from its build's caches the agent kept (translated classes, its APK cache entry), which
+      // it cannot write; what it makes goes to its own out folder, moved into that cache once it has exited (beamCaches).
+      String build = serve.beam ? serve.catalog.buildHash(app.path()) : null;
+      if (build != null) cmd.addAll(List.of("--jvm", "-Dapksim.beamBuildCache=" + serve.beamCache(build)));
+      // And may read the translated classes of earlier builds of this app from this site, signed by the same key (issue 578).
+      if (build != null) cmd.addAll(serve.beamSiblingArgs(build, site, app.path()));
+      // A beam session records by default (`apksim beam config rec`; input alone costs little), so the person who finds a
+      // bug has something to save (`rec save`) and replay (scripts/replay-adb.py). The app's own options may choose.
+      List<String> own = app.launch();
+      if (serve.beam && serve.store != null && !own.contains("--rec") && !"off".equals(serve.store.config.rec())) {
+        cmd.addAll(List.of("--rec", serve.store.config.rec()));
       }
-      else if (own.get(i).equals("--rec") && i + 1 < own.size() && own.get(i + 1).equals("off")) i++;  // off: no recorder
-      else cmd.add(own.get(i));
+      // A crash's bundle goes where `rec save` ones do, under an id of its own, so the tab can download it (issue 516).
+      // Only where recordings are allowed: the bundle holds the app's network calls and logs.
+      if (serve.beam || serve.allowRec) {
+        cmd.addAll(List.of("--rec-crash-id", crashRid));
+        if (!serve.beam) cmd.addAll(List.of("--rec-crash-dir", recDir().toString()));
+      }
+      // The session's skin on its own device decides the kind (its own, or what the size gives), as the device chosen
+      // decides the size: this server's skin (the agent's on a Mac), or the page's skin this endpoint lacks (`kind`).
+      Skin chosen = skin != null ? Serve.skin(skin) : null;
+      boolean pageKind = skin == null && options.get("kind") != null && device.equals(options.get("device"));
+      boolean skinKind = chosen != null && device.equals(chosen.device) || pageKind;
+      // The app's own (catalog line or URL add), checked by Catalog.launchOptions; its --device is the default above.
+      for (int i = 0; i < own.size(); i++) {
+        if (own.get(i).equals("--device")) i++;
+        else if (own.get(i).equals("--skin")) i++;  // the session's skin, below
+        // The app's own --device-kind goes with its own --device (Serve.skinAsDevice adds the pair): not with another
+        // device, nor where the session's skin decides (a kind generated from another skin of that device included).
+        else if (own.get(i).equals("--device-kind") && (!device.equals(appDevice(app)) || skinKind)) i++;
+        // A reopened saved session (issue 181) starts as it was saved: what it recorded (in options) wins over the
+        // app's own defaults, as `apksim beam run` puts them.
+        else if (savedId != null && i + 1 < own.size() && SAVED_OVER_OWN.containsKey(own.get(i)) && options.containsKey(SAVED_OVER_OWN.get(own.get(i)))) i++;
+        // The agent's own marker for a start with "adb": true (issue 397): an adb device on loopback, as `apksim --adb auto`
+        // by hand, only while this Mac's owner allows it; the launcher never sees the marker.
+        else if (own.get(i).equals(ADB_MARKER)) {
+          if (wantsAdb()) cmd.addAll(List.of("--adb", "auto"));
+        }
+        else if (own.get(i).equals("--rec") && i + 1 < own.size() && own.get(i + 1).equals("off")) i++;  // off: no recorder
+        else cmd.add(own.get(i));
+      }
+      // A build with a 4 KB-aligned library the loader would refuse here (issue 171): a Linux serve runs it (4 KB pages),
+      // its catalog need not say --move-shared-data, and the beamed app would exit at its first loadLibrary. The agent
+      // adds the flag itself; it changes only how such libraries are mapped, and the instance is in the beam sandbox.
+      if (serve.beam) {
+        SharedDataLibs.addFlag(cmd, apk, build, app.name(), line -> {
+          System.err.println(line);
+          logLine(line);
+        });
+      }
+      // The skin's cutout and corners for the app (issue 246). Not to a beamed instance: its sandbox reads nothing in the
+      // home folder, the skin store included; the page draws the frame either way.
+      if (skin != null && !serve.beam) cmd.addAll(List.of("--skin", skin));
+      // A beamed instance gets the skin's kind instead (a custom-size watch skin is a watch), which needs no skin store.
+      // Each skin-derived kind only with its own device: another device the session runs on keeps its own kind.
+      String kind = null;
+      if (chosen != null && serve.beam && skinKind) kind = chosen.kind;
+      else if (pageKind) kind = options.get("kind");  // the page's skin's
+      if (kind != null) cmd.addAll(List.of("--device-kind", kind));
+      int lk = cmd.lastIndexOf("--device-kind");
+      launchKind = lk >= 0 && lk + 1 < cmd.size() ? cmd.get(lk + 1) : sizeKind(deviceSpec(device));
+      cmd.add(apk.toString());
+      ws.sendText("d {\"skin\":" + (skin == null ? "null" : Http.q(skin)) + ",\"device\":" + Http.q(device) + "}");
     }
-    // A build with a 4 KB-aligned library the loader would refuse here (issue 171): a Linux serve runs it (4 KB pages),
-    // its catalog need not say --move-shared-data, and the beamed app would exit at its first loadLibrary. The agent
-    // adds the flag itself; it changes only how such libraries are mapped, and the instance is in the beam sandbox.
-    if (serve.beam) {
-      SharedDataLibs.addFlag(cmd, apk, build, app.name(), line -> {
-        System.err.println(line);
-        logLine(line);
-      });
-    }
-    // The skin's cutout and corners for the app (issue 246). Not to a beamed instance: its sandbox reads nothing in the
-    // home folder, the skin store included; the page draws the frame either way.
-    if (skin != null && !serve.beam) cmd.addAll(List.of("--skin", skin));
-    // A beamed instance gets the skin's kind instead (a custom-size watch skin is a watch), which needs no skin store.
-    // Each skin-derived kind only with its own device: another device the session runs on keeps its own kind.
-    String kind = null;
-    if (chosen != null && serve.beam && skinKind) kind = chosen.kind;
-    else if (pageKind) kind = options.get("kind");  // the page's skin's
-    if (kind != null) cmd.addAll(List.of("--device-kind", kind));
-    int lk = cmd.lastIndexOf("--device-kind");
-    launchKind = lk >= 0 && lk + 1 < cmd.size() ? cmd.get(lk + 1) : sizeKind(deviceSpec(device));
-    cmd.add(apk.toString());
-    ws.sendText("d {\"skin\":" + (skin == null ? "null" : Http.q(skin)) + ",\"device\":" + Http.q(device) + "}");
     ws.sendText("p launching " + app.name());
     if (viewers != null) viewers.text("p launching " + app.name());
     ProcessBuilder pb = new ProcessBuilder(cmd).redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null")))
@@ -512,6 +519,7 @@ final class Session {
     if (serve.beam) Files.createDirectories(serve.state.resolve("tmp"));  // a fresh state folder has none yet
     pb.directory(serve.beam ? serve.state.resolve("tmp").toFile() : serve.logs.toFile());
     serve.instanceEnvironment(pb);
+    if (deviceSerial() != null) pb.environment().put("APKSIM_BRIDGE_TOKEN", bridgeToken);
     // Under the lifecycle lock: a stop() that came first (idle while a configured URL downloaded) must not leave a
     // process it never saw.
     synchronized (this) {
@@ -595,6 +603,7 @@ final class Session {
    * at the start, or later with `audio stream on`), "off" where the app was launched with `--audio off`.
    */
   String audioStreamState() {
+    if (deviceSerial() != null) return "off";  // issue 626: the device's own sound is not carried yet
     // A Mac's tracks play on CoreAudio, the Linux image's run on a virtual clock (issue 545): both are copied. Not with --audio off.
     List<String> l = app.launch();
     int i = l.lastIndexOf("--audio");
@@ -856,6 +865,7 @@ final class Session {
    * `"inspect": false`, kept as `--no-network-inspect` in its launch) runs without it, and so with no network engine.
    */
   boolean inspecting() {
+    if (deviceSerial() != null) return false;  // issue 626: no proxy or CA on a real device
     if (serve.beam) return serve.store != null && !serve.store.config.inspectNetwork().equals("off")
           && !app.launch().contains("--no-network-inspect")
           && (serve.store.config.inspectNetwork().equals("on") || app.launch().contains("--network-inspect"));
@@ -873,6 +883,7 @@ final class Session {
 
   /** Whether a session could have the inspector (issue 371): the page offers the switch only where it works. */
   boolean inspectAllowed() {
+    if (deviceSerial() != null) return false;
     if (serve.beam) return serve.store != null && !serve.store.config.inspectNetwork().equals("off");
     return serve.inspectNetwork || serve.inspectOptional;
   }
@@ -882,7 +893,7 @@ final class Session {
    * records nothing. Known before the instance starts, as the page is told with the session's first message.
    */
   String recChannels() {
-    if (!serve.beam) return null;
+    if (!serve.beam || deviceSerial() != null) return null;  // no flight recorder on a device (issue 626)
     List<String> own = app.launch();
     int at = own.indexOf("--rec");
     String c = at >= 0 && at + 1 < own.size() ? own.get(at + 1) : serve.store != null ? serve.store.config.rec() : "off";
@@ -1561,6 +1572,12 @@ final class Session {
       }
     }
     int status = p.exitValue();
+    if (deviceSerial() != null) {
+      // The bridge says why it ended (the device unplugged or refused, its server gone); the app on it may run on.
+      String dw = deviceExit;
+      stop(status == 0 ? "exit" : "other", dw != null ? dw : "the device session ended (status " + status + ")");
+      return;
+    }
     String why = "the app exited (status " + status + ")";
     if (status != 0) {
       abnormal = true;
@@ -1615,13 +1632,43 @@ final class Session {
   private static Socket connect(int port) throws IOException {
     Socket s = new Socket(InetAddress.getLoopbackAddress(), port);
     s.setTcpNoDelay(true);
+    // A device bridge (issue 626) serves its port only to whoever sends its token first: a page posting to a loopback
+    // port, or another local program, must not reach the real device behind it. The bridge answers nothing to it.
+    String token = BRIDGE_TOKENS.get(port);
+    if (token != null) s.getOutputStream().write(("auth " + token + "\n").getBytes(StandardCharsets.US_ASCII));
     return s;
   }
 
+  /** The device bridges' tokens by their control port (issue 626). */
+  private static final Map<Integer, String> BRIDGE_TOKENS = new java.util.concurrent.ConcurrentHashMap<>();
+  /** This session's bridge token (a device session), given to the bridge in its environment. */
+  private final String bridgeToken = java.util.HexFormat.of().formatHex(secureBytes()) + java.util.HexFormat.of().formatHex(secureBytes());
+
   private void readLog() {
+    boolean onDevice = deviceSerial() != null;
     try (BufferedReader r = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
       for (String line; (line = r.readLine()) != null; ) {
         logLine(line);
+        if (onDevice) {
+          // A device session's output holds the app's logcat lines (the device's to write): only the bridge's own lines,
+          // which start the line, are read, and none of the instance's markers (data slot, permissions) apply.
+          if (port.isDone()) {
+            if (line.startsWith("[apksim] exit ")) deviceExit = line.replaceFirst("^\\[apksim\\] exit [0-9]+: ", "");
+          } else {
+            Matcher dm = CONTROL_PORT.matcher(line);
+            if (line.startsWith("[apksim] control port ") && dm.find()) {
+              int bp = Integer.parseInt(dm.group(1));
+              BRIDGE_TOKENS.put(bp, bridgeToken);
+              port.complete(bp);
+            }
+            if (line.startsWith("[apksim] exit ")) deviceExit = line.replaceFirst("^\\[apksim\\] exit [0-9]+: ", "");
+            if (line.startsWith("[device] ")) {
+              String what = line.substring(9);
+              Thread.ofVirtual().start(() -> ws.sendText("p " + what));
+            }
+          }
+          continue;
+        }
         crash.line(line);
         // Issue 577: the launcher says why a launch was cold; the agent's own log gets it too.
         if (line.startsWith("[apksim] cold launch: ")) System.err.printf("[serve] session %s: %s%n", id, line.substring("[apksim] ".length()));
@@ -1903,6 +1950,11 @@ final class Session {
         line.append((char) c);
       }
       h264 = line.toString().trim().equals("ok stream h264");
+      if (line.toString().startsWith("error: ")) {
+        // A device session's stream is H.264 only (issue 626): say why rather than a stream that "ended".
+        stop("error", line.substring(7));
+        return;
+      }
       // Only now may the tab's lines reach the stream: before its answer, Control still reads the connection as a
       // command line, and a `viewport` there would be taken for a command (or swallowed by its reader's buffer).
       streamReady = true;
@@ -2146,6 +2198,15 @@ final class Session {
   // ---------------------------------------------------------------- input
 
   private void onMessage(String text) {
+    if (deviceSerial() != null) {
+      // Issue 626: words only a simulated device has meaning for.
+      String w = text.strip();
+      int sp = w.indexOf(' ');
+      if (SIMULATOR_ONLY.contains(sp < 0 ? w : w.substring(0, sp))) {
+        ws.sendText("r refused: not on a device session");
+        return;
+      }
+    }
     if (text.equals("hold") || text.equals("hold off")) {
       holdCommand(text.equals("hold"));
       return;
@@ -2545,6 +2606,48 @@ final class Session {
    * (`apksim beam config allow-adb on`, read again at each command).
    */
   static final String ADB_MARKER = "--beam-adb";
+
+  /**
+   * The agent's own marker for a device session (issue 626): `--beam-device SERIAL` in the grant's launch, never a
+   * page's (Catalog.launchOptions does not take it). The session's screen and input are that device's.
+   */
+  static final String DEVICE_MARKER = "--beam-device";
+
+  /** Why the device bridge ended, from its own `[apksim] exit N: REASON` line (issue 626). */
+  private volatile String deviceExit;
+
+  /** The device this session runs on, or null for a simulated one. */
+  String deviceSerial() {
+    if (!serve.beam) return null;
+    List<String> l = app.launch();
+    int i = l.indexOf(DEVICE_MARKER);
+    return i >= 0 && i + 1 < l.size() && l.get(i + 1).matches(DeviceHandoff.SERIAL) ? l.get(i + 1) : null;
+  }
+
+  /** What only a simulated device has (issue 626): refused in a device session, with a word on why. */
+  static final java.util.Set<String> SIMULATOR_ONLY = java.util.Set.of("device", "viewport", "window", "camera", "sensor", "sysfs",
+      "fold", "inspect", "rec", "keep", "appearance", "locale", "fontscale", "animscale", "permission", "audio", "video",
+      "rotary", "ambient", "detach", "handoff");
+
+  /** The bridge's command line: this JVM's java and class path, which have DeviceBridge. */
+  private List<String> deviceCommand(Path apk) throws IOException {
+    String java = ProcessHandle.current().info().command().orElse("java");
+    String pkg = DeviceTarget.packageOf(apk);
+    if (pkg == null) throw new IOException("cannot read the build's package name");
+    List<String> c = new ArrayList<>(List.of(java, "-XX:TieredStopAtLevel=1", "-Xmx64m", "-cp", System.getProperty("java.class.path"),
+        DeviceBridge.class.getName(), "--serial", deviceSerial(), "--package", pkg));
+    // The whole shell on the device only for a start that asked for adb while the owner allows it (Session.wantsAdb).
+    if (wantsAdb()) c.add("--full-shell");
+    List<String> l = app.launch();
+    int a = l.indexOf("--activity");
+    if (a >= 0 && a + 1 < l.size()) {
+      String act = l.get(a + 1);
+      if (act.contains("/")) act = act.substring(act.indexOf('/') + 1);
+      if (act.startsWith(".")) act = pkg + act;
+      c.addAll(List.of("--activity", act));
+    }
+    return c;
+  }
 
   /** Whether this session's instance gets an adb device: a beamed one that asked, on a Mac whose owner allows it. */
   boolean wantsAdb() {
@@ -2984,6 +3087,7 @@ final class Session {
     closeQuietly(hostwatch);
     closeQuietly(audiowatch);
     keepRecordings();
+    if (port.isDone() && !port.isCompletedExceptionally()) BRIDGE_TOKENS.remove(port.join(), bridgeToken);
     // The data slot is announced on the instance's output: read it to the end (the process has gone, so the end comes)
     // before erasing, or an app that died just after taking its slot would leave it behind.
     Thread reading = logReader;

@@ -328,6 +328,19 @@ are ignored by default (`--no-default-ignore` disables that). Never subtract `st
 shares classes with startup still depends on them. `docs/crawl-deps-spike.md` has the measurements of the prototype and
 the full list of what a changed file cannot be mapped through.
 
+`--json` prints the result for another tool to rely on: `mode` (`none`, `partial`, `full`), `selected`, `screens` (per
+selected screen, why: `{"file", "via": "source"|"resource"|"constant"|"unexplored", "name"?}`; `name` is the resource
+or constant), `ignored` (changed files the ignore globs dropped), `unplaced` (changed sources in a probed package that
+no recorded screen ran and that no constant scan placed: not "no screen changes", only "nothing here says which"),
+`full` (for `mode: full`, `{"file", "rule"}`: the file and the rule that forced it, such as `start_deps`,
+`unprobed-package`, `unmappable-resource`, `deps-unreliable`) and `diff_controls` (`all` when a source selected a
+screen, since a changed click handler is not seen by `--diff-controls changed`, which compares labels; else `changed`).
+A file that only declares constants (`const val`, `static final`; no function or class) is inlined into its users, so
+no screen records it: it selects the screens whose `sources` include a file under `--repo` that mentions one of its
+constants (a name scan, not a resolver). A screen found and never explored is selected by any change that is not
+ignored (also an unplaced one), not only when another file selected something. Still not selected: runtime `.txt` and
+`.md` content (ignored by default) and a constant used only through reflection.
+
 What to know:
 
 - Only explored screens have `deps`. A screen found and not explored (`--max-depth`, `--max-seconds`, `--max-screens`)

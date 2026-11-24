@@ -52,35 +52,39 @@ final class BeamStore {
    * (`off` by default): the network inspector shows the page that started a session the app's traffic. `on`: every session
    * runs it; `optional` (issue 371): a start that asks (`/beam/start`'s `"inspect": true`) gets it, the others do not.
    */
-  record Config(double keepDays, boolean saveSessions, double keepSavedDays, String rec, String inspectNetwork, boolean allowAdb, List<String> forwardAllow, String allowLoopback, int max) {
-    static final Config DEFAULT = new Config(2, false, DEFAULT_KEEP_SAVED_DAYS, "input", "off", false, List.of(), "", 0);
+  record Config(double keepDays, boolean saveSessions, double keepSavedDays, String rec, String inspectNetwork, boolean allowAdb, List<String> forwardAllow, String allowLoopback, int max, boolean devices) {
+    static final Config DEFAULT = new Config(2, false, DEFAULT_KEEP_SAVED_DAYS, "input", "off", false, List.of(), "", 0, false);
 
     Config(double keepDays, boolean saveSessions, double keepSavedDays) {
-      this(keepDays, saveSessions, keepSavedDays, DEFAULT_REC, "off", false, List.of(), "", 0);
+      this(keepDays, saveSessions, keepSavedDays, DEFAULT_REC, "off", false, List.of(), "", 0, false);
     }
 
     Config withRec(String r) {
-      return new Config(keepDays, saveSessions, keepSavedDays, r, inspectNetwork, allowAdb, forwardAllow, allowLoopback, max);
+      return new Config(keepDays, saveSessions, keepSavedDays, r, inspectNetwork, allowAdb, forwardAllow, allowLoopback, max, devices);
     }
 
     Config withInspect(String mode) {
-      return new Config(keepDays, saveSessions, keepSavedDays, rec, mode, allowAdb, forwardAllow, allowLoopback, max);
+      return new Config(keepDays, saveSessions, keepSavedDays, rec, mode, allowAdb, forwardAllow, allowLoopback, max, devices);
     }
 
     Config withAdb(boolean on) {
-      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, on, forwardAllow, allowLoopback, max);
+      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, on, forwardAllow, allowLoopback, max, devices);
     }
 
     Config withLoopback(String ports) {
-      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, allowAdb, forwardAllow, ports, max);
+      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, allowAdb, forwardAllow, ports, max, devices);
     }
 
     Config withForwardAllow(List<String> prefixes) {
-      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, allowAdb, List.copyOf(prefixes), allowLoopback, max);
+      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, allowAdb, List.copyOf(prefixes), allowLoopback, max, devices);
+    }
+
+    Config withDevices(boolean on) {
+      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, allowAdb, forwardAllow, allowLoopback, max, on);
     }
 
     Config withMax(int n) {
-      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, allowAdb, forwardAllow, allowLoopback, n);
+      return new Config(keepDays, saveSessions, keepSavedDays, rec, inspectNetwork, allowAdb, forwardAllow, allowLoopback, n, devices);
     }
 
     /** The sessions the agent runs at once (issue 569): `max`, else {@link #DEFAULT_MAX}. */
@@ -93,7 +97,7 @@ final class BeamStore {
           + (keepSavedDays < 0 ? "never" : num(keepSavedDays)) + ", rec " + rec
           + ", inspect-network " + inspectNetwork + ", allow-adb " + (allowAdb ? "on" : "off")
           + ", forward-allow " + (forwardAllow.isEmpty() ? "none" : String.join(" ", forwardAllow))
-          + ", allow-loopback " + (allowLoopback.isEmpty() ? "off" : allowLoopback);
+          + ", allow-loopback " + (allowLoopback.isEmpty() ? "off" : allowLoopback) + ", devices " + (devices ? "on" : "off");
     }
   }
 
@@ -183,6 +187,15 @@ final class BeamStore {
     return readConfig().allowAdb();
   }
 
+  /**
+   * Whether a page may list this Mac's adb devices and run a session on one (issue 626), read at each use as
+   * {@link #allowAdbNow} is. A site that drives a device sees everything on it, more than a sandboxed session shows,
+   * so this is the owner's choice apart from trusting the site.
+   */
+  boolean devicesNow() {
+    return readConfig().devices();
+  }
+
   Config readConfig() {
     Config c = Config.DEFAULT;
     try {
@@ -195,7 +208,8 @@ final class BeamStore {
         String rec = m.get("rec") instanceof String r && recSetting(r) != null ? recSetting(r) : c.rec();
         c = new Config(keep, save, saved, rec, inspectMode(m.get("inspect-network"), c.inspectNetwork()), Boolean.TRUE.equals(m.get("allow-adb")), forwardList(m.get("forward-allow")),
             m.get("allow-loopback") instanceof String l && ports(l) != null ? ports(l) : "",
-            m.get("max") instanceof Number mx && mx.intValue() >= 1 && mx.intValue() <= MAX_LIMIT ? mx.intValue() : 0);
+            m.get("max") instanceof Number mx && mx.intValue() >= 1 && mx.intValue() <= MAX_LIMIT ? mx.intValue() : 0,
+            Boolean.TRUE.equals(m.get("devices")));
       }
     } catch (IOException | RuntimeException e) {
       System.err.println("[beam] cannot read " + configFile + " (using the defaults): " + e.getMessage());
@@ -214,7 +228,7 @@ final class BeamStore {
         + ",\n  \"keep-saved-days\": " + (c.keepSavedDays() < 0 ? "\"never\"" : num(c.keepSavedDays())) + ",\n  \"rec\": \"" + c.rec() + "\",\n  \"inspect-network\": \"" + c.inspectNetwork() + "\",\n  \"allow-adb\": " + c.allowAdb()
         + ",\n  \"forward-allow\": [" + c.forwardAllow().stream().map(Http::q).collect(java.util.stream.Collectors.joining(", ")) + "]"
         + ",\n  \"allow-loopback\": \"" + c.allowLoopback() + "\""
-        + (c.max() > 0 ? ",\n  \"max\": " + c.max() : "") + "\n}\n";
+        + (c.max() > 0 ? ",\n  \"max\": " + c.max() : "") + ",\n  \"devices\": " + c.devices() + "\n}\n";
     writeAtomically(configFile, json);
   }
 
@@ -1076,19 +1090,19 @@ final class BeamStore {
             case "keep-days" -> {
               Double d = days(v, false);
               if (d == null) return usage();
-              c = new Config(d, c.saveSessions(), c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback(), c.max());
+              c = new Config(d, c.saveSessions(), c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback(), c.max(), c.devices());
               changed = true;
             }
             case "save-sessions" -> {
               Boolean b = onOff(v);
               if (b == null) return usage();
-              c = new Config(c.keepDays(), b, c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback(), c.max());
+              c = new Config(c.keepDays(), b, c.keepSavedDays(), c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback(), c.max(), c.devices());
               changed = true;
             }
             case "keep-saved-days" -> {
               Double d = days(v, true);
               if (d == null) return usage();
-              c = new Config(c.keepDays(), c.saveSessions(), d, c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback(), c.max());
+              c = new Config(c.keepDays(), c.saveSessions(), d, c.rec(), c.inspectNetwork(), c.allowAdb(), c.forwardAllow(), c.allowLoopback(), c.max(), c.devices());
               changed = true;
             }
             case "inspect-network" -> {
@@ -1108,6 +1122,13 @@ final class BeamStore {
               Boolean b = onOff(v);
               if (b == null) return usage();
               c = c.withAdb(b);
+              changed = true;
+            }
+            // Issue 626: a trusted site's page may list this Mac's adb devices and mirror and drive one in a session.
+            case "devices" -> {
+              Boolean b = onOff(v);
+              if (b == null) return usage();
+              c = c.withDevices(b);
               changed = true;
             }
             // Issue 426: where a session's forward rules (a page's `inspect rule add ... forward`) may send the app's requests.
@@ -1328,6 +1349,7 @@ final class BeamStore {
              apksim beam config [max N] [keep-days N] [save-sessions on|off] [keep-saved-days N|never] [rec input|all|off|CHANNELS]
                                 [inspect-network on|optional|off]   (a trusted page sees the app's HTTP(S) traffic: of every session, or only of a start that asks)
                                 [allow-adb on|off]   (every trusted site's page may ask for an adb device on this Mac's loopback and run any adb shell command in its session)
+                                [devices on|off]   (every trusted site's page may list this Mac's adb devices and mirror and drive one in a session: issue 626)
                                 [forward-allow URL_PREFIX|none] [forward-disallow URL_PREFIX]   (where a page's forward rules may send the app's requests: http://127.0.0.1:PORT/api for a backend on this Mac)
                                 [allow-loopback PORT[,PORT...]|off]   (every trusted site's app may connect to these ports on this Mac's loopback, e.g. a backend run here; never the agent's or an instance's own)
                                 [allow-download URL] [disallow-download URL]   (where it may fetch a build a page names)

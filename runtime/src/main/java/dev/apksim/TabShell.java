@@ -23,7 +23,7 @@ import java.util.List;
  *
  * Runs on the control connection's own thread, not Host's loop: the shell's commands wait for the main thread.
  */
-final class TabShell {
+public final class TabShell {
   static final int MAX_OUT = 256 * 1024;
 
   private TabShell() {}
@@ -78,6 +78,16 @@ final class TabShell {
       }
     }
     return false;
+  }
+
+  /** {@link #pinned} for the agent's device sessions (issue 626). */
+  public static boolean pinnedFor(List<String> a) {
+    return pinned(a);
+  }
+
+  /** {@link #refusal} for the agent's device sessions (issue 626: DeviceBridge runs the line on a real device). */
+  public static String refusalFor(List<String> a, String pkg) {
+    return refusal(a, pkg);
   }
 
   /** Why a limited line is refused, or null when it may run. `pkg` is the app's package. */
