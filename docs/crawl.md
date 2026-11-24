@@ -200,6 +200,14 @@ directly against the seed's `crawl.json` and `screens/` without re-walking the b
   when structure changed), diffed semantically on `title`, visible `texts` (clock ticks excluded) and `controls`
   (`ui_diff` in `crawl.json` and shown in `report.html`), and pixel-diffed against the seed's captures using the same
   renderer recorded in the seed (`"snapshot"` in `crawl.json`).
+- Where a difference is (issue 630). Each screen in `crawl.json` records `text_boxes` (the bounds `[l, t, r, b]` of
+  each entry of `texts`, in the capture's pixels) and `size` (`[w, h]`). A `ui_diff` `texts` or `controls` entry gets a
+  `bounds` object beside its lists, of the same shape: `added[i]` is the box of `added[i]` in the new build, `removed[i]`
+  its box in the base build, and `replaced[i]` is `[base box, new box]` (`null` where a box is not known, as for a seed
+  written before this); `ui_diff.size` is the display's size (the new build's; boxes assume both builds ran on the same display, and a control's box is where the walk found it, so it is only reliable above the fold). `diffs[id][combo]` gets `size` and `regions`: boxes of
+  the connected areas of the difference map's red pixels (differences over `--diff-delta`; areas a few cells (8 px each, a gap of up to 2) apart are one; only for a comparison that counts as different),
+  largest first, at most 8, with `regions_more` counting the rest. Read from the map by `diff_regions`, which needs no
+  imaging library; `scripts/crawl-check.py` checks it.
 - `--diff-controls` chooses how much control exploration runs on each `--only` screen whose structure did not change:
   `changed` (the default with `--diff-seed`) carries edges for untouched controls and taps only new or renamed controls;
   `none` skips scrolling and button taps for a pure screen UI + pixel diff; `all` re-explores every control.
@@ -207,6 +215,18 @@ directly against the seed's `crawl.json` and `screens/` without re-walking the b
   reached screen so `discover_screen` reuses it without a second replay or relaunch, the worker pool caps at
   `min(-j, len(--only))`, teardown runs in parallel, and GPU-rendered `--diff-seed` runs opt into apksim's warm standby
   JVM when available (`APKSIM_STANDBY=0` forces a cold launch).
+
+A carried screen that the new graph no longer leads to from a start is not `same`. Its `compare` entry is `gone`
+(`id` null, `base` its id, with `why`) when every screen that led to it in the seed was walked again or is itself
+gone, and `unknown` when one that led to it was neither (a screen the seed never explored, or it had no recorded way
+in), as it may still exist. `doc["edge_changes"]` (`edges` stays the graph's own list) lists the transitions out of screens walked again against the seed's:
+`added` (`from`, `action`, `to`), `removed` (`from`, `action`, `base_to`) and `retargeted` (`from`, `action`, `to`,
+`base_to`), with ids of screens replaced in the walk mapped to their new ids; skipped controls are ignored, and `removed` is
+unreliable when the walk was cut short. A screen walked again that crashed, was cut short or is `flaky` is unknown
+ground: what only it led to is `unknown`, not `gone`. `unknown` does not fail the exit status; `gone` does. With `--diff-controls none` (one screenful read, nothing
+tapped) no carried screen is ever `gone`, only `unknown`, and `removed` is left empty with a `note`; the same holds for
+what a screen led to when a budget kept one of its transitions from being followed. Transitions of carried screens are the
+seed's and are not listed. `scripts/crawl-diff-seed-check.py` (CI) checks this on a synthetic graph.
 
 `crawl.json` is as before, with two keys per screen: `origin`, `"walked"` (explored or found in this run; every screen
 of a walk without `--seed`) or `"carried"` (taken from the seed), and `replaces: OLD_ID` on a screen that took a named
@@ -329,6 +349,19 @@ reports `mode="full"` so the caller falls back to a full walk. Non-Android files
 are ignored by default (`--no-default-ignore` disables that). Never subtract `start_deps` from a screen: a screen that
 shares classes with startup still depends on them. `docs/crawl-deps-spike.md` has the measurements of the prototype and
 the full list of what a changed file cannot be mapped through.
+
+`--json` prints the result for another tool to rely on: `mode` (`none`, `partial`, `full`), `selected`, `screens` (per
+selected screen, why: `{"file", "via": "source"|"resource"|"constant"|"unexplored", "name"?}`; `name` is the resource
+or constant), `ignored` (changed files the ignore globs dropped), `unplaced` (changed sources in a probed package that
+no recorded screen ran and that no constant scan placed: not "no screen changes", only "nothing here says which"),
+`full` (for `mode: full`, `{"file", "rule"}`: the file and the rule that forced it, such as `start_deps`,
+`unprobed-package`, `unmappable-resource`, `deps-unreliable`) and `diff_controls` (`all` when a source selected a
+screen, since a changed click handler is not seen by `--diff-controls changed`, which compares labels; else `changed`).
+A file that only declares constants (`const val`, `static final`; no function or class) is inlined into its users, so
+no screen records it: it selects the screens whose `sources` include a file under `--repo` that mentions one of its
+constants (a name scan, not a resolver). A screen found and never explored is selected by any change that is not
+ignored (also an unplaced one), not only when another file selected something. Still not selected: runtime `.txt` and
+`.md` content (ignored by default) and a constant used only through reflection.
 
 What to know:
 

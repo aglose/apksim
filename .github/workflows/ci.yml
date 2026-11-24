@@ -163,6 +163,8 @@ jobs:
         run: python3 scripts/crawl-replay-check.py
       - name: crawl-select.py and --diff-seed check (source/resource/KMP selection, ui_diff; no apksim)
         run: python3 scripts/crawl-select-check.py
+      - name: crawl.py --diff-seed gone screens and edge changes (synthetic graph; no apksim)
+        run: python3 scripts/crawl-diff-seed-check.py
       - name: Subsystem audit (what the test app refers to, against apksim's status table)
         run: python3 scripts/subsystem-audit-check.py
       - name: Launch options (every launcher option decided for serve, beam and mcp)

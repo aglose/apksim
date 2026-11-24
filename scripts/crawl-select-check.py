@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Unit checks for scripts/crawl-select.py and crawl.py's --diff-seed / ui_diff (no apksim, <1 s)."""
-import importlib.util, os, subprocess, sys, tempfile
+import importlib.util, json, os, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -107,6 +107,41 @@ def main():
     r = crawl_select.select_screens(doc, [("app/src/main/kotlin/com/example/UnusedScreen.kt", f_unused)], repo=repo)
     check(r["mode"] == "none" and r["selected"] == [], "unexecuted probed file selects 0 screens", str(r))
 
+    # 4b. Structured reasons, ignored and unplaced (issue 632)
+    check(r["unplaced"] == ["app/src/main/kotlin/com/example/UnusedScreen.kt"], "unexecuted file is reported unplaced", str(r))
+    r = crawl_select.select_screens(doc, [("app/src/main/kotlin/com/example/SettingsScreen.kt", f_settings),
+                                          ("README.md", os.path.join(repo, "README.md"))], repo=repo)
+    check(r["screens"] == {"Main-2222": [{"file": "app/src/main/kotlin/com/example/SettingsScreen.kt", "via": "source"}]}
+          and r["ignored"] == ["README.md"] and r["full"] is None and r["diff_controls"] == "all",
+          "structured reasons, ignored and diff_controls", str(r))
+    r = crawl_select.select_screens(doc, [("app/src/main/kotlin/com/example/App.kt", f_app)], repo=repo)
+    check(r["full"] == {"file": "app/src/main/kotlin/com/example/App.kt", "rule": "start_deps"}, "full names file and rule", str(r))
+
+    # 4c. A constants-only file selects the screens of the files that use its constants
+    f_const = write("app/src/main/kotlin/com/example/Limits.kt", "package com.example\nconst val MAX_ROWS = 5\n")
+    write("app/src/main/kotlin/com/example/UsesLimits.kt", "package com.example\nfun x() = MAX_ROWS\n")
+    doc2 = json.loads(json.dumps(doc))
+    doc2["screens"][1]["deps"]["sources"].append("com/example/UsesLimits.kt")
+    r = crawl_select.select_screens(doc2, [("app/src/main/kotlin/com/example/Limits.kt", f_const)], repo=repo)
+    check(r["mode"] == "partial" and r["selected"] == ["Main-2222"] and r["screens"]["Main-2222"][0]["via"] == "constant"
+          and r["unplaced"] == [], "constants file selects screens of its users", str(r))
+    r = crawl_select.select_screens(doc, [("app/src/main/kotlin/com/example/Limits.kt", f_const)], repo=repo)
+    check(r["mode"] == "none" and r["unplaced"], "constants nobody uses stay unplaced", str(r))
+
+    jc = write("app/src/main/java/com/example/JLimits.java", "package com.example;\n/** Limits class. */\npublic final class JLimits { public static final int X = 1; }\n")
+    kc = write("app/src/main/kotlin/com/example/KLimits.kt", "package com.example\n/** Limits class for rows. */\nobject C { const val Z = 1 }\n")
+    check(crawl_select.declared_constants(jc) == ["X"], "java static final constants-only", "")
+    check(crawl_select.declared_constants(kc) == ["Z"], "kotlin comment and one-line object", "")
+    check(crawl_select.declared_constants(write("app/src/main/java/com/example/JCode.java", "package com.example;\nclass J { static final int Y = 1; int f() { return Y; } }\n")) == [], "java with a method is code", "")
+
+    # 4d. A screen never explored is selected by any change that is not ignored
+    doc3 = json.loads(json.dumps(doc))
+    doc3["screens"].append({"id": "Main-9999", "title": "Deep"})
+    r = crawl_select.select_screens(doc3, [("app/src/main/kotlin/com/example/UnusedScreen.kt", f_unused)], repo=repo)
+    check(r["mode"] == "partial" and r["selected"] == ["Main-9999"], "unexplored screen selected by an unplaced change", str(r))
+    r = crawl_select.select_screens(doc3, [("README.md", os.path.join(repo, "README.md"))], repo=repo)
+    check(r["mode"] == "none", "unexplored screen not selected by an ignored change", str(r))
+
     # 5. Unprobed package triggers full fallback
     r = crawl_select.select_screens(doc, [("lib/src/main/kotlin/org/other/Helper.kt", f_other)], repo=repo)
     check(r["mode"] == "full", "unprobed package triggers full walk", str(r))
@@ -171,6 +206,11 @@ def main():
                 "Main-4444": {"id": "Main-4444", "title": "New", "texts": ["New"], "actions": [], "origin": "walked", "captures": {}},
             }
             self.instances = []
+            self.edges = []
+            self.explored = set(self.screens)
+            self.partial = set()
+            for sc in self.screens.values():
+                sc.setdefault("parent", None)
 
         def event(self, kind, **fields):
             events.append((kind, fields))
