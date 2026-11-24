@@ -1851,8 +1851,13 @@ class Explorer:
         finally:
             screen = task[0]
             with self.lock:
-                self.cap_left[screen["id"]] -= 1
-                done = self.cap_left[screen["id"]] == 0
+                # A task not counted by capture() (called on its own) is its screen's only one.
+                left = self.cap_left.get(screen["id"], 1) - 1
+                done = left <= 0
+                if done:
+                    self.cap_left.pop(screen["id"], None)
+                else:
+                    self.cap_left[screen["id"]] = left
             if done and self.on_captured:
                 # Every combination of this screen is captured (or failed): --diff-seed compares it now.
                 try:
