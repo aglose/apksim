@@ -215,6 +215,48 @@ def find_kmp_resource_referrers(repo, items):
     return hits, scanned
 
 
+CONST_RE = re.compile(r"^\s*(?:(?:public|internal|private|protected)\s+)*(?:const\s+val|static\s+final\s+[\w<>\[\].]+)\s+(\w+)", re.M)
+CODE_RE = re.compile(r"\b(?:fun|class|interface)\s+\w|@Composable")
+
+
+def declared_constants(full_path):
+    """Names of the constants a source file declares (`const val`, `static final`), when it declares nothing that
+    runs (no fun/class/interface; `object` holders are fine): its constants are inlined into their users, so no
+    screen records the file itself. [] otherwise."""
+    text = read_text(full_path) if full_path else None
+    if not text:
+        return []
+    names = CONST_RE.findall(text)
+    return names if names and not CODE_RE.search(text) else []
+
+
+def find_constant_referrers(repo, names, exclude=None):
+    """Source files under [repo] that mention one of [names] (a source-level scan, not a resolver).
+    Returns ([(rel, full, [names])], scanned_count)."""
+    if not names or not repo or not os.path.isdir(repo):
+        return [], 0
+    pats = [(n, re.compile(rf"\b{re.escape(n)}\b")) for n in names]
+    hits, scanned = [], 0
+    repo_abs = os.path.abspath(repo)
+    for root, dirs, files in os.walk(repo_abs):
+        dirs[:] = [d for d in dirs if d not in KMP_SKIP_DIRS]
+        for fn in files:
+            if not fn.endswith(affected.SOURCE_EXTENSIONS):
+                continue
+            full_p = os.path.join(root, fn)
+            rel = os.path.relpath(full_p, repo_abs).replace("\\", "/")
+            if rel == exclude:
+                continue
+            scanned += 1
+            text = read_text(full_p)
+            if not text:
+                continue
+            m = [n for n, pat in pats if pat.search(text)]
+            if m:
+                hits.append((rel, full_p, m))
+    return hits, scanned
+
+
 def resource_matches(res_key, recorded_set):
     """Matches 'type/name' against recorded entries ('type/name' or 'pkg:type/name')."""
     if res_key in recorded_set:
@@ -230,10 +272,12 @@ def select_screens(doc, changed, repo=".", diff=None, ignore=(), use_default_ign
     all_ids = [s["id"] for s in screens]
     if "start_deps" not in doc:
         return {"mode": "full", "selected": all_ids, "reasons": {}, "notes": [],
-                "fallback_reason": "baseline crawl.json has no start_deps (run baseline with --record-deps)"}
+                "fallback_reason": "baseline crawl.json has no start_deps (run baseline with --record-deps)",
+                "full": {"file": None, "rule": "no-start-deps"}, "screens": {}, "ignored": [], "unplaced": [], "diff_controls": "all"}
     if doc.get("deps_unreliable"):
         return {"mode": "full", "selected": all_ids, "reasons": {}, "notes": [],
-                "fallback_reason": f"baseline deps unreliable: {doc['deps_unreliable']}"}
+                "fallback_reason": f"baseline deps unreliable: {doc['deps_unreliable']}",
+                "full": {"file": None, "rule": "deps-unreliable"}, "screens": {}, "ignored": [], "unplaced": [], "diff_controls": "all"}
 
     start_deps = doc.get("start_deps") or {}
     start_sources = set(start_deps.get("sources") or [])
@@ -255,18 +299,36 @@ def select_screens(doc, changed, repo=".", diff=None, ignore=(), use_default_ign
     base_ref = base_ref_of(diff, repo) if diff else None
 
     selected_reasons = {}  # sid -> list of reason strings
+    details = {}  # sid -> [{file, via, name?}] (machine-readable twin of selected_reasons)
+    ignored_files = []
+    unplaced = []  # changed sources no recorded screen ran, that nothing was found to select by
     notes = []
+    counted = [0]  # changed files that were not ignored
 
-    def add_reason(sid, reason):
+    def add_reason(sid, reason, file=None, via=None, name=None):
         lst = selected_reasons.setdefault(sid, [])
         if reason not in lst:
             lst.append(reason)
+        if file:
+            d = {"file": file, "via": via}
+            if name:
+                d["name"] = name
+            dl = details.setdefault(sid, [])
+            if d not in dl:
+                dl.append(d)
+
+    def go_full(file, rule, why):
+        return {"mode": "full", "selected": all_ids, "reasons": {}, "notes": notes, "fallback_reason": why,
+                "full": {"file": file, "rule": rule}, "screens": {}, "ignored": ignored_files,
+                "unplaced": unplaced, "diff_controls": "all"}
 
     for rel, full in changed:
         norm = rel.replace("\\", "/")
         if any(fnmatch.fnmatch(norm, g) for g in ignores):
             notes.append(f"{rel}: ignored")
+            ignored_files.append(rel)
             continue
+        counted[0] += 1
 
         if norm.endswith(affected.SOURCE_EXTENSIONS):
             base = os.path.basename(norm)
@@ -277,17 +339,15 @@ def select_screens(doc, changed, repo=".", diff=None, ignore=(), use_default_ign
             key = ((pkg.replace(".", "/") + "/") if pkg else "") + base if pkg is not None else None
             # Check start_deps first
             if key and key in start_sources:
-                return {"mode": "full", "selected": all_ids, "reasons": {}, "notes": notes,
-                        "fallback_reason": f"{rel} ({key}) is in start_deps"}
+                return go_full(rel, "start_deps", f"{rel} ({key}) is in start_deps")
             if not key and any(("/" + norm).endswith("/" + k) for k in start_sources):
-                return {"mode": "full", "selected": all_ids, "reasons": {}, "notes": notes,
-                        "fallback_reason": f"{rel} is in start_deps"}
+                return go_full(rel, "start_deps", f"{rel} is in start_deps")
 
             matched = []
             for sid, srcs in screen_sources.items():
                 if (key and key in srcs) or (not key and any(("/" + norm).endswith("/" + k) for k in srcs)):
                     matched.append(sid)
-                    add_reason(sid, f"source {rel}")
+                    add_reason(sid, f"source {rel}", rel, "source")
             if matched:
                 notes.append(f"{rel} -> {len(matched)} screen(s)")
                 continue
@@ -296,26 +356,41 @@ def select_screens(doc, changed, repo=".", diff=None, ignore=(), use_default_ign
             pkg_prefix = (pkg.replace(".", "/") + "/") if pkg else ""
             probed = pkg is not None and any(pkg_prefix.startswith(p) for p in probed_packages)
             if probed:
+                consts = declared_constants(full)
+                if consts:
+                    hits, _scanned = find_constant_referrers(repo, consts, exclude=norm)
+                    msc = set()
+                    for ref_rel, ref_full, names in hits:
+                        rpkg = affected.package_of(ref_full)
+                        rkey = ((rpkg.replace(".", "/") + "/") if rpkg else "") + os.path.basename(ref_rel) if rpkg is not None else None
+                        if rkey and rkey in start_sources:
+                            return go_full(rel, "start_deps", f"{rel} (constant {names[0]}) is used by {ref_rel} in start_deps")
+                        for sid, srcs in screen_sources.items():
+                            if rkey and rkey in srcs:
+                                msc.add(sid)
+                                add_reason(sid, f"constant {names[0]} ({rel}) used by {ref_rel}", rel, "constant", names[0])
+                    if msc:
+                        notes.append(f"{rel}: constants only, referenced by {len(hits)} file(s) -> {len(msc)} screen(s)")
+                        continue
                 notes.append(f"{rel}: in probed packages, not executed by any recorded screen")
+                unplaced.append(rel)
                 continue
-            return {"mode": "full", "selected": all_ids, "reasons": {}, "notes": notes,
-                    "fallback_reason": f"{rel}: package {pkg!r} is outside probed packages ({', '.join(probed_packages)})"}
+            return go_full(rel, "unprobed-package", f"{rel}: package {pkg!r} is outside probed packages ({', '.join(probed_packages)})")
 
         res = match_resource_file(norm, full, repo, base_ref)
         if res is not False:
             keys, note = res
             if keys is None:
-                return {"mode": "full", "selected": all_ids, "reasons": {}, "notes": notes, "fallback_reason": note}
+                return go_full(rel, "unmappable-resource", note)
             for rk in sorted(keys):
                 if resource_matches(rk, start_resources):
-                    return {"mode": "full", "selected": all_ids, "reasons": {}, "notes": notes,
-                            "fallback_reason": f"{rel}: resource {rk} is in start_deps"}
+                    return go_full(rel, "start_deps", f"{rel}: resource {rk} is in start_deps")
             matched = []
             for rk in sorted(keys):
                 for sid, rset in screen_resources.items():
                     if resource_matches(rk, rset):
                         matched.append(sid)
-                        add_reason(sid, f"resource {rk} ({rel})")
+                        add_reason(sid, f"resource {rk} ({rel})", rel, "resource", rk)
             notes.append(f"{note} -> {len(set(matched))} screen(s)")
             continue
 
@@ -323,41 +398,44 @@ def select_screens(doc, changed, repo=".", diff=None, ignore=(), use_default_ign
         if kmp_res is not False:
             items, note = kmp_res
             if items is None:
-                return {"mode": "full", "selected": all_ids, "reasons": {}, "notes": notes, "fallback_reason": note}
+                return go_full(rel, "unmappable-resource", note)
             if not items:
                 notes.append(f"{note} -> 0 screen(s)")
                 continue
             referrers, scanned = find_kmp_resource_referrers(repo, items)
             if scanned == 0:
-                return {"mode": "full", "selected": all_ids, "reasons": {}, "notes": notes,
-                        "fallback_reason": f"{rel}: no Kotlin sources found under {repo!r} to resolve composeResources"}
+                return go_full(rel, "no-kotlin-sources", f"{rel}: no Kotlin sources found under {repo!r} to resolve composeResources")
             matched_screens = set()
             for ref_rel, ref_full, labels in referrers:
                 pkg = affected.package_of(ref_full)
                 key = ((pkg.replace(".", "/") + "/") if pkg else "") + os.path.basename(ref_rel) if pkg is not None else None
                 if key and key in start_sources:
-                    return {"mode": "full", "selected": all_ids, "reasons": {}, "notes": notes,
-                            "fallback_reason": f"{rel} ({', '.join(labels)}) is referenced by {ref_rel} in start_deps"}
+                    return go_full(rel, "start_deps", f"{rel} ({', '.join(labels)}) is referenced by {ref_rel} in start_deps")
                 for sid, srcs in screen_sources.items():
                     if key and key in srcs:
                         matched_screens.add(sid)
-                        add_reason(sid, f"{', '.join(labels)} via {ref_rel}")
+                        add_reason(sid, f"{', '.join(labels)} via {ref_rel}", rel, "resource", ", ".join(labels))
             notes.append(f"{note} -> {len(referrers)} file(s), {len(matched_screens)} screen(s)")
             continue
 
         # Anything else (AndroidManifest.xml, build.gradle*, assets/, native code, etc.)
-        return {"mode": "full", "selected": all_ids, "reasons": {}, "notes": notes,
-                "fallback_reason": f"{rel} ({affected.kind_of(norm)}) cannot be mapped to screens"}
+        return go_full(rel, f"unmappable-{affected.kind_of(norm)}", f"{rel} ({affected.kind_of(norm)}) cannot be mapped to screens")
 
-    if not selected_reasons:
-        return {"mode": "none", "selected": [], "reasons": {}, "notes": notes, "fallback_reason": None}
-
-    # Preserve baseline screen order and include any unexplored screens (which have no recorded deps).
-    if include_unexplored:
+    # A screen found but never explored has no deps: any change that is not ignored may reach it.
+    if include_unexplored and counted[0]:
         for sid in unexplored_ids:
             add_reason(sid, "unexplored in baseline (no recorded deps)")
+            details.setdefault(sid, []).append({"file": None, "via": "unexplored"})
+    # A source change inside a click handler is invisible to --diff-controls changed (it compares labels), so when
+    # a source selected a screen, recommend tapping all of its controls.
+    via_source = any(d["via"] in ("source", "constant") for dl in details.values() for d in dl)
+    base = {"notes": notes, "fallback_reason": None, "full": None, "ignored": ignored_files, "unplaced": unplaced,
+            "diff_controls": "all" if via_source else "changed"}
+    if not selected_reasons:
+        return dict(base, mode="none", selected=[], reasons={}, screens={})
     selected = [s["id"] for s in screens if s["id"] in selected_reasons]
-    return {"mode": "partial", "selected": selected, "reasons": selected_reasons, "notes": notes, "fallback_reason": None}
+    return dict(base, mode="partial", selected=selected, reasons=selected_reasons,
+                screens={sid: details[sid] for sid in selected if sid in details})
 
 
 def load_crawl_json(path):
@@ -416,6 +494,9 @@ def main(argv=None):
         print(f"FULL walk needed ({len(res['selected'])} screens): {res['fallback_reason']}")
     elif res["mode"] == "none":
         print(f"0 of {len(screens_by_id)} screens affected")
+        if res["unplaced"]:
+            print(f"  but {len(res['unplaced'])} changed file(s) are in no screen's sources (not ignored): "
+                  "that does not show the change is invisible")
     else:
         print(f"{len(res['selected'])} of {len(screens_by_id)} screen(s) affected:")
         for sid in res["selected"]:
@@ -424,6 +505,10 @@ def main(argv=None):
             print(f"  {sid}" + (f" ({title})" if title else "") + (f"  <- {why}" if why else ""))
     for n in res["notes"]:
         print("  note: " + n)
+    if res["unplaced"]:
+        print("  unplaced: " + ", ".join(res["unplaced"]))
+    if res["mode"] != "full":
+        print(f"  suggested --diff-controls: {res['diff_controls']}")
 
 
 if __name__ == "__main__":

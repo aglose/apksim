@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Unit checks for scripts/crawl-select.py and crawl.py's --diff-seed / ui_diff (no apksim, <1 s)."""
-import importlib.util, os, subprocess, sys, tempfile
+import importlib.util, json, os, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -106,6 +106,35 @@ def main():
     # 4. Probed-but-unexecuted file selects 0 screens
     r = crawl_select.select_screens(doc, [("app/src/main/kotlin/com/example/UnusedScreen.kt", f_unused)], repo=repo)
     check(r["mode"] == "none" and r["selected"] == [], "unexecuted probed file selects 0 screens", str(r))
+
+    # 4b. Structured reasons, ignored and unplaced (issue 632)
+    check(r["unplaced"] == ["app/src/main/kotlin/com/example/UnusedScreen.kt"], "unexecuted file is reported unplaced", str(r))
+    r = crawl_select.select_screens(doc, [("app/src/main/kotlin/com/example/SettingsScreen.kt", f_settings),
+                                          ("README.md", os.path.join(repo, "README.md"))], repo=repo)
+    check(r["screens"] == {"Main-2222": [{"file": "app/src/main/kotlin/com/example/SettingsScreen.kt", "via": "source"}]}
+          and r["ignored"] == ["README.md"] and r["full"] is None and r["diff_controls"] == "all",
+          "structured reasons, ignored and diff_controls", str(r))
+    r = crawl_select.select_screens(doc, [("app/src/main/kotlin/com/example/App.kt", f_app)], repo=repo)
+    check(r["full"] == {"file": "app/src/main/kotlin/com/example/App.kt", "rule": "start_deps"}, "full names file and rule", str(r))
+
+    # 4c. A constants-only file selects the screens of the files that use its constants
+    f_const = write("app/src/main/kotlin/com/example/Limits.kt", "package com.example\nconst val MAX_ROWS = 5\n")
+    write("app/src/main/kotlin/com/example/UsesLimits.kt", "package com.example\nfun x() = MAX_ROWS\n")
+    doc2 = json.loads(json.dumps(doc))
+    doc2["screens"][1]["deps"]["sources"].append("com/example/UsesLimits.kt")
+    r = crawl_select.select_screens(doc2, [("app/src/main/kotlin/com/example/Limits.kt", f_const)], repo=repo)
+    check(r["mode"] == "partial" and r["selected"] == ["Main-2222"] and r["screens"]["Main-2222"][0]["via"] == "constant"
+          and r["unplaced"] == [], "constants file selects screens of its users", str(r))
+    r = crawl_select.select_screens(doc, [("app/src/main/kotlin/com/example/Limits.kt", f_const)], repo=repo)
+    check(r["mode"] == "none" and r["unplaced"], "constants nobody uses stay unplaced", str(r))
+
+    # 4d. A screen never explored is selected by any change that is not ignored
+    doc3 = json.loads(json.dumps(doc))
+    doc3["screens"].append({"id": "Main-9999", "title": "Deep"})
+    r = crawl_select.select_screens(doc3, [("app/src/main/kotlin/com/example/UnusedScreen.kt", f_unused)], repo=repo)
+    check(r["mode"] == "partial" and r["selected"] == ["Main-9999"], "unexplored screen selected by an unplaced change", str(r))
+    r = crawl_select.select_screens(doc3, [("README.md", os.path.join(repo, "README.md"))], repo=repo)
+    check(r["mode"] == "none", "unexplored screen not selected by an ignored change", str(r))
 
     # 5. Unprobed package triggers full fallback
     r = crawl_select.select_screens(doc, [("lib/src/main/kotlin/org/other/Helper.kt", f_other)], repo=repo)
