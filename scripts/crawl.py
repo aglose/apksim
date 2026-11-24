@@ -213,6 +213,9 @@ def shared_prefs(path):
     return out
 
 
+EVENT_LOCK = threading.Lock()
+
+
 class Gone(Exception):
     """The instance ended: [crash] says how."""
 
@@ -939,6 +942,8 @@ class Explorer:
         self.cut_by = set()     # what left screens unexplored: max-seconds, max-screens, max-depth, stopped
         self.captured_now = set()  # a seeded walk: carried screens captured in this run (the seed, stopped, had none)
         self.announced = set()  # ids --events has told
+        self.on_captured = None  # --diff-seed: called with (screen id, instance) once a screen's captures are all taken
+        self.cap_left = {}
         self.first_recs = {}    # id -> the records the screen showed when it was found (a flaky screen's controls)
         self.alt_paths = {}     # id -> its path's steps with every tap as coordinates (Instance.reach's alt)
         os.makedirs(os.path.join(out, "logs"), exist_ok=True)
@@ -1052,7 +1057,10 @@ class Explorer:
     def event(self, kind, **fields):
         """--events: one line of JSON on stdout, beside the human lines (which stay as they are)."""
         if self.args.events:
-            print(json.dumps(dict({"event": kind, "build": self.name}, **fields)), flush=True)
+            line = json.dumps(dict({"event": kind, "build": self.name}, **fields)) + "\n"
+            with EVENT_LOCK:  # capture threads finish screens at once: one write per line
+                sys.stdout.write(line)
+                sys.stdout.flush()
 
     def screen_event(self, screen, explored=True):
         if screen["id"] in self.announced:
@@ -1831,10 +1839,34 @@ class Explorer:
                 part = need[c::chunks]
                 if part:
                     tasks.append((screen, part))
+        self.cap_left = {}
+        for screen, _ in tasks:
+            self.cap_left[screen["id"]] = self.cap_left.get(screen["id"], 0) + 1
         self.run_on_pool(tasks, self.capture_task)
         self.t_capture = time.time() - t0
 
     def capture_task(self, inst, task):
+        try:
+            self.capture_task_inner(inst, task)
+        finally:
+            screen = task[0]
+            with self.lock:
+                # A task not counted by capture() (called on its own) is its screen's only one.
+                left = self.cap_left.get(screen["id"], 1) - 1
+                done = left <= 0
+                if done:
+                    self.cap_left.pop(screen["id"], None)
+                else:
+                    self.cap_left[screen["id"]] = left
+            if done and self.on_captured:
+                # Every combination of this screen is captured (or failed): --diff-seed compares it now.
+                try:
+                    self.on_captured(screen["id"], inst)
+                except Gone as e:
+                    with self.lock:
+                        self.findings.append(self.crash_finding(e.crash, screen["path"]))
+
+    def capture_task_inner(self, inst, task):
         screen, combos = task
         base_dir = os.path.join(self.out, self.shots, screen["id"])
         os.makedirs(base_dir, exist_ok=True)
@@ -2488,49 +2520,71 @@ def format_ui_diff(ud):
     return "; ".join(parts)
 
 
-def compare_with_seed(new, seed, src_dir, doc, args, out):
-    """Compares a --seed walk's walked/new screens against the seed's crawl.json and captures without re-walking base."""
-    seed_by_id = {s["id"]: s for s in seed.get("screens", [])}
-    pairs = []
-    matched_base = set()
-    for sid in new.order:
-        ns = new.screens[sid]
-        if ns.get("origin") == "carried":
-            pairs.append({"id": sid, "base": sid, "status": "same", "why": None})
-            matched_base.add(sid)
-            continue
-        old_id = ns.get("replaces")
-        if old_id and old_id in seed_by_id:
-            pairs.append({"id": sid, "base": old_id, "status": "changed",
-                          "why": f"structure differs: {old_id} in the base build"})
-            matched_base.add(old_id)
-        elif sid in seed_by_id:
-            pairs.append({"id": sid, "base": sid, "status": "same", "why": None})
-            matched_base.add(sid)
-        else:
-            pairs.append({"id": sid, "base": None, "status": "new", "why": "new screen"})
-    for bs in seed.get("screens", []):
-        if bs["id"] not in matched_base:
-            pairs.append({"id": None, "base": bs["id"], "status": "gone",
-                          "why": "no screen of the new build reaches it"})
-    lost = lost_carried(new, seed)
-    for p in pairs:
-        if p["status"] == "same" and p["id"] in lost and new.screens[p["id"]].get("origin") == "carried":
-            if lost[p["id"]] == "gone":
-                p.update(id=None, status="gone", why="no transition of the new graph leads to it any more: every screen "
-                         "that led to it was walked again or is itself gone")
-            else:
-                p.update(status="unknown", why="no transition of the new graph leads to it, but a screen that led to it "
-                         "was not walked again (or the seed never explored it), so it may still exist")
+class SeedCompare:
+    """Compares a --seed walk's walked/new screens against the seed's crawl.json and captures without re-walking base.
+    The pairs are made once the walk is done; each walked pair is compared by [compare] as soon as its screen has been
+    captured (Explorer.on_captured), which also prints its `compare` event, and [finish] compares what is left."""
 
-    def stage_base_captures(bs):
+    def __init__(self, new, seed, src_dir, doc, args, out):
+        self.new, self.seed, self.src_dir, self.doc, self.args, self.out = new, seed, src_dir, doc, args, out
+        self.lock = threading.Lock()
+        seed_by_id = self.seed_by_id = {s["id"]: s for s in seed.get("screens", [])}
+        pairs = self.pairs = []
+        matched_base = set()
+        for sid in new.order:
+            ns = new.screens[sid]
+            if ns.get("origin") == "carried":
+                pairs.append({"id": sid, "base": sid, "status": "same", "why": None})
+                matched_base.add(sid)
+                continue
+            old_id = ns.get("replaces")
+            if old_id and old_id in seed_by_id:
+                pairs.append({"id": sid, "base": old_id, "status": "changed",
+                              "why": f"structure differs: {old_id} in the base build"})
+                matched_base.add(old_id)
+            elif sid in seed_by_id:
+                pairs.append({"id": sid, "base": sid, "status": "same", "why": None})
+                matched_base.add(sid)
+            else:
+                pairs.append({"id": sid, "base": None, "status": "new", "why": "new screen"})
+        for bs in seed.get("screens", []):
+            if bs["id"] not in matched_base:
+                pairs.append({"id": None, "base": bs["id"], "status": "gone",
+                              "why": "no screen of the new build reaches it"})
+        lost = lost_carried(new, seed)
+        for p in pairs:
+            if p["status"] == "same" and p["id"] in lost and new.screens[p["id"]].get("origin") == "carried":
+                if lost[p["id"]] == "gone":
+                    p.update(id=None, status="gone", why="no transition of the new graph leads to it any more: every screen "
+                             "that led to it was walked again or is itself gone")
+                else:
+                    p.update(status="unknown", why="no transition of the new graph leads to it, but a screen that led to it "
+                             "was not walked again (or the seed never explored it), so it may still exist")
+        self.diffs = {}
+        self.base_screens = []
+        self.base_by_pair = {}
+        self.todo = {}  # screen id -> its pair, until compared
+        for p in pairs:
+            if p["status"] == "gone" and p["base"] in seed_by_id:
+                self.base_screens.append(self.stage_base_captures(seed_by_id[p["base"]]))
+                continue
+            if not (p["id"] and p["base"]):
+                continue
+            if new.screens[p["id"]].get("origin") != "walked":
+                continue
+            bs = self.stage_base_captures(seed_by_id[p["base"]])
+            self.base_screens.append(bs)
+            self.base_by_pair[p["id"]] = bs
+            self.todo[p["id"]] = p
+
+    def stage_base_captures(self, bs):
         bc = dict(bs)
         caps = {}
         for name, rel in (bs.get("captures") or {}).items():
-            src = os.path.join(src_dir, rel)
+            src = os.path.join(self.src_dir, rel)
             if not os.path.isfile(src):
                 continue
-            dst = os.path.join(out, "base-screens", bs["id"], name + ".png")
+            dst = os.path.join(self.out, "base-screens", bs["id"], name + ".png")
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             try:
                 os.link(src, dst)
@@ -2540,20 +2594,14 @@ def compare_with_seed(new, seed, src_dir, doc, args, out):
         bc["captures"] = caps
         return bc
 
-    diffs = {}
-    base_screens = []
-    inst = new.instances[0] if new.instances else None
-    for p in pairs:
-        if p["status"] == "gone" and p["base"] in seed_by_id:
-            base_screens.append(stage_base_captures(seed_by_id[p["base"]]))
-            continue
-        if not (p["id"] and p["base"]):
-            continue
-        ns = new.screens[p["id"]]
-        if ns.get("origin") != "walked":
-            continue
-        bs = stage_base_captures(seed_by_id[p["base"]])
-        base_screens.append(bs)
+    def compare(self, sid, inst):
+        """Compares one walked screen with its base and prints its `compare` event. Once only."""
+        with self.lock:
+            p = self.todo.pop(sid, None)
+        if p is None:
+            return
+        doc, args, out = self.doc, self.args, self.out
+        ns, bs = self.new.screens[sid], self.base_by_pair[sid]
         ud = ui_diff(bs, ns, above_fold_only=(getattr(args, "diff_controls", "all") == "none"))
         if ud:
             p["ui_diff"] = ud
@@ -2576,13 +2624,18 @@ def compare_with_seed(new, seed, src_dir, doc, args, out):
                                         "detail": f"{p['id']} {c}: no capture in {'the new' if not a_ else 'the base'} build to compare"})
                 continue
             if inst is not None:
-                d[c] = diff_images(inst, os.path.join(out, b_), os.path.join(out, a_), c,
-                                   os.path.join(out, "diff", p["id"]), args.diff_delta, args.diff_pixels, out)
+                try:
+                    d[c] = diff_images(inst, os.path.join(out, b_), os.path.join(out, a_), c,
+                                       os.path.join(out, "diff", p["id"]), args.diff_delta, args.diff_pixels, out)
+                except Gone as e:
+                    # An instance that ends in a comparison must not leave the pair half-compared as "same".
+                    d[c] = {"error": f"the instance ended during the comparison: {e}"}
                 if d[c].get("error"):
                     doc["findings"].append({"kind": "compare", "build": "new", "path": ns["path"],
                                             "detail": f"{p['id']} {c}: the image comparison failed: {d[c]['error']}"})
         if d:
-            diffs[p["id"]] = d
+            with self.lock:
+                self.diffs[p["id"]] = d
         if unstable and p["status"] == "same":
             p["why"] = "animates for ever in " + ", ".join(sorted(unstable)) + ": those captures are not compared"
         if any(x.get("differs") for x in d.values()):
@@ -2592,11 +2645,24 @@ def compare_with_seed(new, seed, src_dir, doc, args, out):
                 p["why"] = look
             elif look not in (p.get("why") or ""):
                 p["why"] = (p["why"] + "; " + look) if p.get("why") else look
-    doc["compare"] = pairs
-    doc["diffs"] = diffs
-    doc["base_screens"] = base_screens
-    doc["base_edges"] = seed.get("edges", [])
-    doc["edge_changes"] = compare_edges(new, seed)
+        ev = {k: p[k] for k in ("id", "base", "status", "why", "ui_diff", "unstable") if p.get(k) is not None or k in ("why",)}
+        if d:
+            ev["diffs"] = d
+        self.new.event("compare", **ev)
+
+    def finish(self, inst):
+        """Compares what no capture callback reached (screens already captured, or no combinations), then fills the doc."""
+        for sid in list(self.todo):
+            self.compare(sid, inst)
+        for p in self.pairs:
+            if p["status"] == "new":
+                self.new.event("compare", id=p["id"], base=None, status="new", why=p["why"])
+        doc = self.doc
+        doc["compare"] = self.pairs
+        doc["diffs"] = self.diffs
+        doc["base_screens"] = self.base_screens
+        doc["base_edges"] = self.seed.get("edges", [])
+        doc["edge_changes"] = compare_edges(self.new, self.seed)
 
 
 def lost_carried(new, seed):
@@ -3250,6 +3316,10 @@ def main():
         else:
             new.explore()
         log(f"[new] {len(new.screens)} screens, {len(new.edges)} transitions in {new.t_explore:.1f} s")
+        sc = None
+        if seed is not None and args.diff_seed:
+            doc_combos = [snapshot.combo_name(c) for c in combos]
+            sc = SeedCompare(new, seed, src_dir, {"combos": doc_combos, "findings": new.findings}, args, out)
         if combos:
             ids = None
             if seed is not None:
@@ -3258,6 +3328,7 @@ def main():
                            and any(snapshot.combo_name(c) not in (new.screens[i].get("captures") or {}) for c in combos)]
                 new.captured_now = set(missing)
                 ids = [i for i in new.order if new.screens[i]["origin"] == "walked"] + missing
+            new.on_captured = sc.compare if sc is not None else None
             new.capture(combos, ids)
             log(f"[new] {len(combos)} combination(s) captured in {new.t_capture:.1f} s")
         if seed is not None:
@@ -3266,8 +3337,9 @@ def main():
         doc["combos"] = [snapshot.combo_name(c) for c in combos]
         doc["screen_titles"] = bool(args.screen_titles)
         doc["snapshot"] = bool(new.use_snapshot)
-        if seed is not None and args.diff_seed:
-            compare_with_seed(new, seed, src_dir, doc, args, out)
+        if sc is not None:
+            sc.doc = doc
+            sc.finish(new.instances[0] if new.instances else None)
         if seed is not None and os.path.basename(src_dir) == ".seed":
             shutil.rmtree(src_dir, ignore_errors=True)
         sweep = None

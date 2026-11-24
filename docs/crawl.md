@@ -247,6 +247,20 @@ walk's first level is the named screens at their own depths). Captures follow th
 its captures are taken. `build` is `new`, or `base` for the other build of a `--base` walk. Every event is one line
 starting with `{`; the human lines never do.
 
+With `--diff-seed` each walked screen also gets a `compare` line as soon as its last capture is taken and compared
+with the seed's (carried screens get none: their `screen` event says `origin: carried`):
+
+```
+{"event": "compare", "build": "new", "id": "Settings-1a2b", "base": "Settings-1a2b", "status": "changed", "why": "text 'Save' -> 'Done'", "ui_diff": {...}, "diffs": {"default": {"differs": true, "pixels": 5120, "map": "diff/Settings-1a2b/default.png"}}}
+```
+
+`ui_diff` and `unstable` are present when the pair has them. A walked screen the seed lacks gets its line after the
+capture stage, with `"base": null` and `"status": "new"`; a screen of the seed nothing reaches now (`gone`) is only in
+`crawl.json`. The lines come while the captures run, so a viewer sees
+a pair when its screen is finished rather than when the whole run ends; the walk itself still ends first (the
+captures follow it), and a screen whose captures were all taken during the walk is compared after the capture stage.
+`crawl.json`'s `compare` and `diffs` are unchanged.
+
 ### Stopping and continuing a walk
 
 A walk cut short says what it left. `crawl.json` has, in every walk:
