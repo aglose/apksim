@@ -161,8 +161,10 @@ class Worker:
             launcher = shutil.which("apksim") or launcher
         spec = self.ctx["spec"]
         # ctx "snapshot"/"fresh" False: scripts/crawl.py starts instances that draw as an ordinary run and keep their data slot.
+        anim_zero = "--anim-scale" not in self.ctx["apksim"]
         cmd = [launcher, "--headless", *(["--snapshot"] if self.ctx.get("snapshot", True) else []),
                *(["--fresh"] if self.ctx.get("fresh", True) else []), "--control", "auto",
+               *(["--anim-scale", "0"] if anim_zero else []),
                "--timezone", spec.get("timezone", "UTC")]
         if spec.get("clock"):
             cmd += ["--clock", spec["clock"]]
@@ -185,7 +187,7 @@ class Worker:
                 port = m and int(m[1])
             except OSError:
                 pass
-            time.sleep(0.1)
+            time.sleep(0.02)
         while port and time.time() < deadline and self.proc.poll() is None:
             try:
                 self.sock = socket.create_connection(("127.0.0.1", port), timeout=2)
@@ -195,18 +197,19 @@ class Worker:
                     break
             except (OSError, Closed):
                 self.close()
-                time.sleep(0.2)
+                time.sleep(0.05)
         if self.file is None:
             code = self.proc.poll()
             raise Closed(f"instance {self.i} " + (f"exited with status {code}" if code is not None else "did not answer")
                          + f" (see {self.log})")
-        self.expect("animscale 0")
+        if not anim_zero:
+            self.expect("animscale 0")
         # Wait for the launch screen's first frame (a cold start can take seconds), but not for it to settle: it may
         # animate for ever while every screen asked for is static. Each capture restarts and settles its own screen.
         while not re.search(r"frames=[1-9]", self.send("stats")):
             if time.time() > deadline:
                 raise Closed(f"instance {self.i} drew no frame within 180 s (see {self.log})")
-            time.sleep(0.1)
+            time.sleep(0.03)
 
     def send(self, cmd):
         self.file.write(cmd + "\n")

@@ -144,6 +144,12 @@ So each replay starts from the data the app had at its launch:
   files alone relaunched 207 times, all for preference defaults, and explored in 850 s against 455-590 s before.
 - `--keep-app-state` replays on the instance as it is (faster; the old behaviour). With `--keep-data` a relaunch is on a new
   copy of the prepared slot.
+- Within a single screen's exploration, when a control leaves the slot's data unchanged from arriving at that screen,
+  the crawler reuses the screen in place (for self-loops, or after a verified `back` / dismiss button returns to the
+  exact same screen and UI signature) or uses a self-verifying warm `restart` (falling back to a full relaunch if the
+  replayed screen's signature differs). Plain walks (without `--base` or `--sweep`) run with GPU rendering, `--max-fps 30`,
+  `--audio off`, `--anim-scale 0` at launch, action-level work stealing across workers, waypoint-guided intermediate
+  replays for animating screens, and inline capture of the default combination (`phone-light-en-US-1`) for depth >= 1.
 
 What it does not cover: state an app keeps in memory only (a static that a tap changed and nothing writes) outlives a
 `restart`, as before. External storage is at a device's path, `/storage/emulated/0`, in every instance
