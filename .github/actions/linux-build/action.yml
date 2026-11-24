@@ -30,10 +30,19 @@ runs:
       shell: bash
       env:
         JAVA_HOME: ${{ env.JAVA_HOME_17_X64 || env.JAVA_HOME_17_ARM64 }}
+      # Maven Central answers 429 (Too Many Requests) to busy runner pools now and then: a failed fetch is tried again
+      # after a pause (what was fetched stays in Gradle's cache), up to three times.
       run: |
-        gradle -q deps --console=plain
+        fetch() {
+          for wait in 20 60 0; do
+            gradle -q "$@" --console=plain && return 0
+            [ "$wait" = 0 ] && return 1
+            echo "::warning::gradle $* failed; trying again in $wait s"; sleep "$wait"
+          done
+        }
+        fetch deps
         for a in work/lib/*.aar; do unzip -p "$a" classes.jar > "${a%.aar}.jar"; done
-        if [ "$RUNNER_ARCH" = ARM64 ]; then gradle -q linuxArm64Runtime --console=plain; fi
+        if [ "$RUNNER_ARCH" = ARM64 ]; then fetch linuxArm64Runtime; fi
     - name: Compile the runtime
       if: inputs.runtime == 'true'
       shell: bash
