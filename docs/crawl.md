@@ -97,12 +97,16 @@ screen's subtree:
 - A screen is replayed up to three times before it is explored, the third waiting longer for the start screen.
 - When all three fail, the screen is a `flaky` finding (and `flaky` in `crawl.json`, "FLAKY" on its card), and its
   controls, as the walk saw them when it found the screen, are still tried, each on what the path reaches now: any
-  structure of the same activity will do, and a step whose label changed (`tap-text Ski 3°`, now 4°) is tried as the tap
-  at its coordinates when it was recorded. What they lead to is followed as from any screen, so screens below a flaky one
-  are found, and may be flaky in turn. Edges tried on another structure carry a note saying so. A control of a flaky
-  screen that leads to a screen of the same activity with the same controls (labels, numbers left out: a refresh) is an
-  edge back to it, not a new screen. A control that worked when its screen replayed and does not now is tried on what
-  the path reaches now too.
+  structure of the same activity will do, as long as it is not another screen the walk knows and shares a control with
+  the screen as first seen (in a single-activity app every screen is "the same activity"). A step whose label changed
+  (`tap-text Ski 3°`, now 4°) is tried as the tap at its coordinates when it was recorded, but only on a control there
+  now that the skip list allows: a layout that moved never puts a Delete or Sign out under the old point. What the
+  controls lead to is followed as from any screen, so screens below a flaky one are found, and may be flaky in turn.
+  Edges tried on another structure carry a note saying so. A control of a flaky screen that leads to a screen of the
+  same activity with the same controls and title (numbers left out: a refresh) is an edge back to it, not a new screen.
+  A control that worked when its screen replayed and does not now is tried on what the path reaches now too.
+- A flaky screen is captured the same way, where its path leads now, so its picture may show other data.
+- A screen that never settles (an endless animation) pays the full `settle 6000` on each retry: ~7.5 s per failed step.
 - `scripts/crawl-replay-check.py` (CI's quick checks, no apksim) walks a stand-in app with each of these.
 6. `--base`: the other build is walked and captured the same way (`--base-option "--setting global:K=V"` gives its launches
    options of their own, and with no `--base` the same APK is the base: "what does this setting change"). Screens are

@@ -4,12 +4,16 @@
 The stand-in plays a live-data app: its Home has an "Alerts" button that does nothing until its data has loaded (a
 tap-text step that fails once), a "Weather" screen whose structure changes at every visit (a replay never reaches the
 structure first seen), a "Refresh" there that shows Weather again with other data, and a "Today 7°" button whose label
-changes once it has been used (a stored tap-text step that never matches again). The walk must:
+changes once it has been used (a stored tap-text step that never matches again). "News 5" changes its label once used
+and moves down a row, a "Sign out" taking its old place; "Feed" leads to Feed once and to Alerts after. The walk must:
 
 - reach Alerts and its detail: a failed step is tried again after a longer wait;
 - mark Weather flaky and still try its controls, finding Forecast and its day, and Resorts and its resort; Refresh
   leads back to Weather, not to a new screen;
-- mark Today flaky and reach it by the button's coordinates, finding Hourly.
+- mark Today flaky and reach it by the button's coordinates, finding Hourly;
+- never tap Sign out at News' old coordinates (News is flaky and explored no further);
+- not take Alerts for Feed (Feed is flaky and has no transitions);
+- capture the flaky Weather where its path leads now.
 
 Exit status 1 on any failed expectation.
 """
@@ -36,6 +40,10 @@ class StandIn(crawl.Instance):
         self.settles = 0          # settles since the last restart: Alerts loads after two
         self.weather_visits = 0
         self.today_used = False   # Home's "Today 7°" reads "Today 9°" once Today has been shown
+        self.news_used = False    # Home's "News 5" reads "News 6" a row lower once News has been shown, Sign out above
+        self.feed_used = False    # Home's "Feed" leads to Alerts once Feed has been shown
+        self.signed_out = 0
+        self.stage = tempfile.mkdtemp(prefix="crawl-replay-check-stage-")
         self.log = os.devnull
         self.baseline = self.slot = self.proc = self.file = self.sock = None
 
@@ -59,19 +67,24 @@ class StandIn(crawl.Instance):
         """(label, target, works) of the current screen, top to bottom."""
         s = self.screen
         if s == "Home":
+            news = [("Sign out", "SignedOut", True), ("News 6", "News", True)] if self.news_used else [("News 5", "News", True)]
             return [("Weather", "Weather", True), ("Alerts", "Alerts", self.settles >= 2),
-                    ("Today 9°" if self.today_used else "Today 7°", "Today", True)]
+                    ("Today 9°" if self.today_used else "Today 7°", "Today", True),
+                    ("Feed", "Alerts" if self.feed_used else "Feed", True)] + news
         if s == "Weather":
             return [("Forecast", "Forecast", True), (f"Ski {self.weather_visits}°", "Resorts", True), ("Refresh", "Weather", True)]
         return {"Alerts": [("Alert 1", "AlertDetail", True)], "Forecast": [("Day 1", "Day", True)],
-                "Resorts": [("Resort A", "Resort", True)], "Today": [("Hourly", "Hourly", True)]}.get(s, [])
+                "Resorts": [("Resort A", "Resort", True)], "Today": [("Hourly", "Hourly", True)],
+                "News": [("Story", "Story", True)], "Feed": [("Article", "Article", True)]}.get(s, [])
 
     def go(self, target):
         self.screen = target
         if target == "Weather":
             self.weather_visits += 1
-        if target == "Today":
-            self.today_used = True
+        self.today_used |= target == "Today"
+        self.news_used |= target == "News"
+        self.feed_used |= target == "Feed"
+        self.signed_out += target == "SignedOut"
 
     def tree(self):
         recs = ["0\tFrameLayout\t\tv\t0,0,800,1600\t\t\t", f"1\tTextView\t{self.screen}\tv\t0,0,800,100\t{self.screen}\t\t"]  # the id: a structure per screen
@@ -105,6 +118,10 @@ class StandIn(crawl.Instance):
                 if 200 + 200 * k <= y < 350 + 200 * k and works:
                     self.go(target)
             return "ok"
+        if cmd.startswith("shot "):
+            with open(cmd.split()[1], "wb") as f:
+                f.write(self.screen.encode())
+            return "ok"
         return "ok"  # clock, pick cancel
 
 
@@ -116,6 +133,9 @@ def main():
     ex.instances = [StandIn(ex.ctx)]
     try:
         ex.explore()
+        weather = [ex.screens[i] for i in ex.order if ex.screens[i]["title"] == "Weather"]
+        if weather:
+            ex.capture_task(ex.instances[0], (weather[0], [dict(crawl.DEFAULT_COMBO)]))
     finally:
         ex.close()
     titles = {}
@@ -147,6 +167,18 @@ def main():
     refresh = [e for e in ex.edges if e["action"] == "Refresh"]
     check(bool(refresh) and all(e["to"] == w.get("id") for e in refresh), "Refresh is an edge back to Weather",
           str(refresh))
+    check(ex.instances[0].signed_out == 0, "Sign out, now at News' old place, is never tapped",
+          f"tapped {ex.instances[0].signed_out} times")
+    news = one("News")
+    check(news is not None and bool(news.get("flaky")) and one("Story") is None,
+          "News, whose label and place changed, is flaky and not explored on another control", str(news))
+    feed = one("Feed")
+    feed_edges = [e for e in ex.edges if feed and e["from"] == feed["id"]]
+    check(feed is not None and bool(feed.get("flaky")) and not feed_edges,
+          "Feed, whose path now leads to Alerts, is flaky and Alerts' controls are not taken for its", str(feed_edges))
+    caps = w.get("captures") or {}
+    check(len(caps) == 1 and os.path.exists(os.path.join(out, next(iter(caps.values())))),
+          "the flaky Weather is captured where its path leads now", str(caps))
     if failures:
         print(f"{len(failures)} check(s) failed")
         sys.exit(1)

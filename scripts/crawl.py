@@ -293,8 +293,23 @@ class Instance(snapshot.Worker):
             except ReplayFailed:
                 if not alt or alt == cmd:
                     raise
-                self.expect_ok(alt)
+                self.tap_checked(alt)
         self.settle()
+
+    def tap_checked(self, cmd):
+        """A tap by coordinates standing in for a label that is gone: only on a control there now that the skip list
+        allows (a layout that moved must not put a Delete or Sign out under the old point)."""
+        m = re.fullmatch(r"tap (-?\d+) (-?\d+)", cmd)
+        if m:
+            x, y = int(m[1]), int(m[2])
+            here = [a for a in candidates(parse_tree(self.say("nodes tree")), self.ctx["skip_re"], True)
+                    if a["kind"] == "control" and a["box"][0] <= x < a["box"][2] and a["box"][1] <= y < a["box"][3]]
+            if not here:
+                raise ReplayFailed(f"{cmd!r}: no control there now")
+            inner = min(here, key=lambda a: (a["box"][2] - a["box"][0]) * (a["box"][3] - a["box"][1]))
+            if inner["skipped"]:
+                raise ReplayFailed(f"{cmd!r}: the control there now is {inner['label']!r} ({inner['skipped']})")
+        return self.expect_ok(cmd)
 
     # --- reading
     def observe(self):
@@ -817,7 +832,7 @@ class Explorer:
                     "stage": self.stage, "snapshot": True, "fresh": not args.keep_data, "screens": [],
                     "record": lambda r: None, "crashes": self.findings, "stable_ms": args.stable_ms, "name": name,
                     "keep_state": args.keep_app_state, "restore": self.kept.restore if self.kept else None, "relaunches": [0], "relaunch_files": {}, "first_values": {}, "lock": threading.Lock(),
-                    "spawn": (SPAWN, STOPPING)}
+                    "spawn": (SPAWN, STOPPING), "skip_re": self.skip_re}
         self.instances = []
         self.deps_map = None     # --record-deps: DepsMap, once the probed packages are known
         self.start_deps = None   # --record-deps: the app-start span, read from the first instance
@@ -1161,7 +1176,16 @@ class Explorer:
         same activity, or be behind a label that live data changed (its path's taps tried by their coordinates)."""
         if not lenient:
             return inst.reach_screen(screen, extra)
-        return inst.reach_screen(screen, extra, alt=self.alt_paths.get(screen["id"]), lenient=True)
+        got = inst.reach_screen(screen, extra, alt=self.alt_paths.get(screen["id"]), lenient=True)
+        if got.get("drift"):
+            # Any screen of the activity would pass (one activity holds every screen of a Compose app): not another
+            # screen the walk knows, and one with some of the controls the screen had when it was found.
+            if got["id"] in self.screens:
+                raise ReplayFailed(f"replay reached {got['id']}, another screen, not {screen['id']}")
+            mine = self.control_set(self.first_recs.get(screen["id"]) or [])
+            if mine and not mine & self.control_set(got["recs"]):
+                raise ReplayFailed(f"replay reached {got['id']}, which has none of {screen['id']}'s controls")
+        return got
 
     def explore_screen(self, inst, screen):
         """Tries every control of a screen. Returns its actions, edges (action -> observed screen) and findings."""
@@ -1290,7 +1314,7 @@ class Explorer:
                     except ReplayFailed:
                         a["cmd"] = alt
                         steps = prep + a["prefix"] + [a["cmd"]]
-                        inst.expect_ok(a["cmd"])
+                        inst.tap_checked(a["cmd"])
                 inst.settle()
                 inst.say("pick cancel")
                 to = inst.observe()
@@ -1314,7 +1338,7 @@ class Explorer:
         if len(acts) > args.max_actions:
             findings.append({"kind": "note", "detail": f"{screen['id']}: {len(acts)} controls, the first {args.max_actions} tried",
                              "path": screen["path"], "build": self.name})
-        # A flaky screen's control that leads to the same controls in the same activity (a refresh, a tab of itself) is
+        # A flaky screen's control that leads to the same controls and title in the same activity (a refresh) is
         # this screen with other data, not a new screen: followed, each would be a new flaky screen, level after level.
         mine = self.control_set(here["recs"]) if lenient else None
         for e in edges:
@@ -1322,7 +1346,8 @@ class Explorer:
             if to["id"] in aliases:
                 e["to"] = {"id": screen["id"]}
             elif mine and to.get("recs") is not None and to.get("activity") == screen["activity"] \
-                    and self.control_set(to["recs"]) == mine:
+                    and self.control_set(to["recs"]) == mine \
+                    and re.sub(r"\d+", "#", title_of(to["recs"])) == re.sub(r"\d+", "#", title_of(here["recs"])):
                 e["to"] = {"id": screen["id"]}
                 e["note"] = "the same controls with other data (this screen is flaky)"
         return {"actions": [{k: a[k] for k in ("label", "cmd", "kind", "box", "skipped", "scrolls")} for a in acts],
@@ -1365,7 +1390,8 @@ class Explorer:
                 try:
                     inst.reach_screen(screen)
                 except ReplayFailed:
-                    inst.reach_screen(screen)
+                    # A flaky screen (or one below it) is captured where its path leads now, as it was explored.
+                    self.arrive(inst, screen, lenient=bool(screen.get("flaky")))
                 inst.configure(combo)
                 settled = inst.settle()
                 screen["settled"] = settled if "settled" not in screen else settled and screen["settled"]
