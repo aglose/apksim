@@ -2038,7 +2038,7 @@ public final class Serve {
    * view-only link's key to tell it, or null. Again for a tab that rejoins (issue 529), with `"rejoined":true`.
    */
   private String info(Session x, String shareKey, boolean rejoined) {
-    return "i {\"id\":" + Http.q(x.id) + ",\"app\":" + Http.q(x.app.name()) + ",\"device\":" + Http.q(x.device)
+    return "i {\"id\":" + Http.q(x.id) + ",\"app\":" + Http.q(x.app.name()) + (x.deviceSerial() != null ? deviceSizeField(x.deviceSerial()) : ",\"device\":" + Http.q(x.device))
         + ",\"idleLimitS\":" + idleSeconds + ",\"logcat\":" + (beam || allowLogcat) + (beam && x.deviceSerial() == null ? ",\"keep\":" + x.keep : "")
         // Issue 626: a session on a real device says so, and which.
         + (x.deviceSerial() != null ? ",\"target\":\"device\",\"targetDevice\":" + deviceInfoJson(x.deviceSerial()) : "")
@@ -2874,7 +2874,14 @@ public final class Serve {
   /** `targetDevice` of a device session's `i` message. */
   String deviceInfoJson(String serial) {
     DeviceTarget.Device d = deviceInfo.get(serial);
-    return "{\"serial\":" + Http.q(serial) + ",\"model\":" + Http.q(d == null ? "" : d.model()) + ",\"sdk\":" + (d == null ? 0 : d.sdk()) + "}";
+    return "{\"serial\":" + Http.q(serial) + ",\"model\":" + Http.q(d == null ? "" : d.model()) + ",\"sdk\":" + (d == null ? 0 : d.sdk())
+        + (d != null && d.width() > 0 && d.height() > 0 ? ",\"width\":" + d.width() + ",\"height\":" + d.height() : "") + "}";
+  }
+
+  /** Issue 641: a device session's `device` field is the attached device's own size, never the simulator's preset ("phone"); none when unknown. */
+  private String deviceSizeField(String serial) {
+    DeviceTarget.Device d = deviceInfo.get(serial);
+    return d != null && d.width() > 0 && d.height() > 0 ? ",\"device\":\"" + d.width() + "x" + d.height() + "\"" : "";
   }
 
   private void beamStart(Http.Request r, String o, OutputStream out) throws IOException {
