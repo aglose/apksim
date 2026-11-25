@@ -24,7 +24,6 @@ c.execute("insert into events values(1)")
 c.commit()
 b = crawl.sqlite_tables(p)
 assert b["t"] == a["t"] and b["events"] != a["events"], b
-assert crawl.BOOKKEEPING.search("databases/x.db-wal") and crawl.BOOKKEEPING.search("databases/x.db-journal")
 open(os.path.join(d, "n"), "w").write("x")
 assert crawl.sqlite_tables(os.path.join(d, "n")) is None
 ig = ["databases/a.db#events", "shared_prefs/*.xml#last*", "databases/b*.db"]
@@ -32,4 +31,17 @@ assert crawl.data_ignored(ig, "databases/a.db", "events")
 assert not crawl.data_ignored(ig, "databases/a.db", "t") and not crawl.data_ignored(ig, "databases/a.db")
 assert crawl.data_ignored(ig, "shared_prefs/x.xml", "last_seen")
 assert crawl.data_ignored(ig, "databases/b1.db") and crawl.data_ignored(ig, "databases/b1.db", "t")
+# Reordered rows are no change; an unreadable database keeps its -wal in the comparison.
+c.execute("vacuum"); c2 = crawl.sqlite_tables(p)
+assert c2 == b, (c2, b)
+import types
+enc = os.path.join(d, "databases"); os.makedirs(enc)
+for n, body in (("e.db", b"x" * 100), ("e.db-wal", b"w"), ("ok.db-wal", b"w")):
+    open(os.path.join(enc, n), "wb").write(body)
+shutil_copy = __import__("shutil").copy; shutil_copy(p, os.path.join(enc, "ok.db"))
+inst = types.SimpleNamespace(ctx={}, slot_dirs=lambda: [d])
+state = crawl.Instance.data_state.__get__(inst)
+inst.say = lambda *a: ""
+st = state()
+assert "databases/e.db-wal" in st and "databases/ok.db-wal" not in st and isinstance(st["databases/ok.db"], dict), sorted(st)
 print("crawl-data-check: all passed")

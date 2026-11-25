@@ -190,7 +190,7 @@ class ReplayFailed(Exception):
 
 # Files in a data slot that no screen shows, left out of Instance.data_state (paths relative to the slot).
 BOOKKEEPING = re.compile(r"(^|/)(cache|code_cache)/|^files/profileInstalled$|^no_backup/androidx\.work\.workdb|-shm$|"
-                         r"-wal$|-journal$|(^|/)\.lock$")
+                         r"(^|/)\.lock$")
 
 # Tables a SQLite database keeps for its framework, not for a screen (Room's bookkeeping, SQLite's own).
 SQLITE_BOOKKEEPING = {"room_master_table", "android_metadata", "sqlite_sequence", "room_table_modification_log"}
@@ -216,7 +216,29 @@ def shared_prefs(path):
     return out
 
 
+_SQLITE_CACHE = {}
+
+
+def _stat_key(path):
+    try:
+        st = os.stat(path)
+        return (st.st_size, st.st_mtime_ns)
+    except OSError:
+        return None
+
+
 def sqlite_tables(path):
+    """sqlite_tables_read, kept while the database file and its -wal and -journal keep their size and date."""
+    key = (path, _stat_key(path), _stat_key(path + "-wal"), _stat_key(path + "-journal"))
+    hit = _SQLITE_CACHE.get(path)
+    if hit and hit[0] == key:
+        return hit[1]
+    out = sqlite_tables_read(path)
+    _SQLITE_CACHE[path] = (key, out)
+    return out
+
+
+def sqlite_tables_read(path):
     """A SQLite database's content, {table: hash of its rows}, read through a read-only connection (which reads the -wal
     beside it too), or None when it is not a database or cannot be opened (then Instance.data_state uses size and date).
     A write-ahead log changes with any write, a checkpoint or Room's invalidation tracker included; only the rows say
@@ -237,11 +259,11 @@ def sqlite_tables(path):
         for t in names:
             if t in SQLITE_BOOKKEEPING or t.startswith("sqlite_"):
                 continue
-            h = hashlib.sha1()
+            # Rows are added up, not chained: a rewrite that reorders them (VACUUM) is no change.
+            total = 0
             for row in con.execute('select * from "%s"' % t.replace('"', '""')):
-                h.update(repr(row).encode("utf-8", "replace"))
-                h.update(b"\n")
-            out[t] = h.hexdigest()
+                total += int.from_bytes(hashlib.sha1(repr(row).encode("utf-8", "replace")).digest(), "big")
+            out[t] = "%x" % (total % (1 << 160))
         return out
     except sqlite3.Error:
         return None
@@ -473,12 +495,13 @@ class Instance(snapshot.Worker):
     def data_state(self):
         """What the slot holds, {file: state}: a SharedPreferences file as its values ({key: value}), any other as
         (size, mtime), so a write anywhere changes it; a SQLite database as its tables' content ({table: hash}, see
-        sqlite_tables: its -wal and -journal are left out). Left out: what no screen reads (BOOKKEEPING): an app's caches,
+        sqlite_tables: its -wal and -journal are left out, unless it cannot be read: then they are compared like any file). Left out: what no screen reads (BOOKKEEPING): an app's caches,
         AndroidX's profile installer (which writes once some seconds after every start, so each new launch would want
         another), WorkManager's own database, SQLite's shared memory index (-shm, which readers write too), the slot's
         lock."""
         out = {}
         ignore = self.ctx.get("data_ignore") or ()
+        read_dbs = set()
         for root in self.slot_dirs():
             for d, dirs, files in os.walk(root):
                 dirs.sort()
@@ -487,10 +510,15 @@ class Instance(snapshot.Worker):
                     rel = os.path.relpath(p, root)
                     if BOOKKEEPING.search(rel) or data_ignored(ignore, rel):
                         continue
+                    base = rel[:-4] if rel.endswith("-wal") else rel[:-8] if rel.endswith("-journal") else None
+                    if base is not None and (root, base) in read_dbs:
+                        continue    # a database read by its content: its log says nothing more
                     if rel.startswith("shared_prefs/"):
                         prefs = shared_prefs(p) if n.endswith(".xml") else None
                     else:
                         prefs = sqlite_tables(p)
+                        if prefs is not None:
+                            read_dbs.add((root, rel))
                     if prefs is not None:
                         if ignore:
                             prefs = {k: v for k, v in prefs.items() if not data_ignored(ignore, rel, k)}
