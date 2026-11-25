@@ -53,7 +53,8 @@ the app is back on its own connections.
 --network-ignore-query NAMES query parameters left out of the match (cache busters, timestamps); case-sensitive
 --network-ignore-header NAMES request headers left out of the match when it includes headers
 --network-unmatched POLICY   what an unmatched replay request gets: fail (default: 599 response, logged, and in a
-                             test run the test fails) or respond (599 only)
+                             test run the test fails), respond (599 only), or fetch:OUT (with --network replay: sent to
+                             the real server, answered, and appended to OUT; below)
 --network-replay-timing T    none (default: answer at once) or recorded (wait as long as the server took)
 --network-host H=ADDR[:PORT] send connections for host H to ADDR (and PORT) instead: a fixture server for an address
                              compiled into the app (repeatable, comma-separated; IPv6 as [::1] or [::1]:8443)
@@ -68,7 +69,27 @@ the app is back on its own connections.
 
 Any of these turns the network layer on; without them nothing changes (one static check per hooked call). Replay
 and conditions launches are handed to a warm standby; a recording launches cold, since its sandbox must allow writing
-the recording: that file and `FILE.apksim-tmp` beside it (written, then renamed over it), nothing else in its folder. `-Dapksim.networkTrace=true` (`--jvm`) logs every exchange.
+the recording: that file and `FILE.apksim-tmp` beside it (written, then renamed over it), nothing else in its folder. A
+replay with `--network-unmatched fetch:OUT` launches cold for the same reason (its sandbox allows OUT and
+`OUT.apksim-tmp`), unless OUT is inside the state folder, which a standby may write. `-Dapksim.networkTrace=true` (`--jvm`) logs every exchange.
+
+### Fetching what a recording lacks
+
+`--network replay IN --network-unmatched fetch:OUT` answers what IN has from IN, exactly as a replay does, and sends a
+request IN lacks to the real server instead of answering it 599: to the host in the request's own URL (looked up with
+the system's DNS, since replaying gives the app placeholders), or where `--network-host` maps that host; over TLS for
+https, with the app's own TLS factory as when recording (and `--network-trust` for a fixture's certificate). It is sent on
+a connection of its own (`Connection: close`), the answer is read whole (30 s per read), written to the app with
+`X-Apksim-Replay: fetched`, and appended to OUT as `--network record` would keep it: the same HAR, the same redaction
+(`--network-redact`), gzip stored decoded, the server's certificate chain. OUT holds only what this launch fetched, never
+IN's entries; like a recording it is written about 300 ms after each exchange and on the way out (`OUT.apksim-tmp`, then
+renamed), and `network save` writes it now. A repeat of a fetched request in the same launch (the same match key, so
+`--network-match` and the ignore options apply) is answered from what was fetched, and two connections asking at once
+wait for one fetch: the server sees each request once. Fetched requests are not unmatched; the status line counts them
+(`N replayed, M fetched, K unmatched`: M requests reached a server; a repeat answered from one counts as replayed). What still cannot be answered is unmatched as with `fail`: a connection that is not
+HTTP/1.1, a server that refuses, does not answer or times out, a body over 32 MB either way, a `101` upgrade. This is for
+walks (`crawl.py`) that need every launch to see the same answers while new screens keep asking for new things: merge OUT
+into the next launch's IN. The policy needs `--network replay`; without it the launch stops with an error.
 
 ## Control command
 
@@ -76,7 +97,7 @@ the recording: that file and `FILE.apksim-tmp` beside it (written, then renamed 
 `DeviceControls`, and the Features > Network menu):
 
 ```
-network                      mode, file, profile, counts (recorded / replayed / unmatched)
+network                      mode, file, profile, counts (recorded / replayed / fetched / unmatched)
 network online|offline       offline: DNS fails (UnknownHostException), connects fail (ENETUNREACH), open
                              connections are closed, the JDK's lookup cache is flushed (both ways, as Android flushes
                              its resolver's), and ConnectivityManager loses its default network (callbacks get onLost;
@@ -85,7 +106,7 @@ network 3g|lossy             profiles below
 network latency MS           extra round-trip time
 network bandwidth KBPS       down and up
 network unmatched [clear]    unmatched replay requests since the test started (or launch), and forget them
-network save                 write the recording now (it is also written 300 ms after each exchange and on exit)
+network save                 write the recording (or fetch:OUT) now (it is also written 300 ms after each exchange and on exit)
 network reconnect            close the app's open connections, as a change of network does; the app makes them again
                              (after `rec on net` in a running app: connections opened before it are not read, below)
 network wifi [on|off|toggle] Wi-Fi's switch (alone: its state and signal)
@@ -401,6 +422,13 @@ network wifi off")` (or `svc wifi disable`) lasts until the next test's setup (`
   permessage-deflate, fragmented); a body cut short, a request never answered, a connect refused; HttpsURLConnection
   with no proxy in between; bytes that are not HTTP; which hosts a rule sends through the engine; a relayed
   connection keeping its own TLS; and 80 MB written in 31 ms while the decoder stood still for 4 s.
+- `scripts/check-net-fetch.sh` (`FetchCheck`; CI's quick checks): `--network-unmatched fetch:OUT` against servers on the
+  same machine: a request IN has answered from IN (the server never asked); ones it lacks fetched over plain HTTP and TLS
+  (a POST body, gzip, chunked, a 404, a host looked up by its real name) and kept in OUT with Authorization and Set-Cookie
+  redacted; a repeat on the same connection, a new one, or two at once reaching the server once; a server that is down
+  and a connection that is not HTTP giving the 599 and an unmatched entry; the status line's counts; OUT written within
+  a second without a save, holding the fetched exchanges alone and loading as a recording; IN unchanged; and the policy
+  without `--network replay` stopping the launch.
 - `scripts/media-protocols-check.py APK` (by hand, needs a LAN address): the test app's gRPC (grpc-okhttp over TLS
   and plain h2), WebSocket (wss with permessage-deflate, and ws) and HLS screens against a fixture server built from
   gRPC-java's and OkHttp's own servers, with `--rec net`: every call must succeed and the recording must hold the gRPC

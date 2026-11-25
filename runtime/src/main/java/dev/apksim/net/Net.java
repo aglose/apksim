@@ -77,6 +77,11 @@ public final class Net {
   static Conditions launchConditions = Conditions.ONLINE;
   /** Where exchanges are kept (a file, or the flight recorder's and inspector's memory), or what replay answers from. */
   static volatile Recording recording;
+  /**
+   * `--network-unmatched fetch:FILE` with `--network replay`: where a request the replayed recording lacks is fetched from the
+   * real server and kept (only those exchanges), and what a repeat of one is answered from; null otherwise.
+   */
+  static volatile Recording fetched;
   /** Started when the first connection needs it ({@link #engine()}); null until then. */
   static volatile NetEngine engine;
   /** Exchanges the tap added to the recording. */
@@ -166,6 +171,12 @@ public final class Net {
       }
     }
     else if (t != null) trust = Path.of(t);
+    String unmatchedPolicy = System.getProperty("apksim.networkUnmatched", "fail");
+    boolean fetch = unmatchedPolicy.startsWith("fetch:");
+    if (fetch && (spec == null || !spec.startsWith("replay:"))) {
+      throw new IllegalStateException("[apksim] network setup: --network-unmatched fetch:FILE needs --network replay FILE"
+          + " (it fetches what that recording lacks)");
+    }
     if (spec == null && profile == null && hosts == null) return;
     try {
       for (String h : list(hosts)) {
@@ -180,7 +191,8 @@ public final class Net {
         if (addr.startsWith("[") && addr.endsWith("]")) addr = addr.substring(1, addr.length() - 1);
         hostMap.put(h.substring(0, eq), InetSocketAddress.createUnresolved(addr, hasPort ? Integer.parseInt(to.substring(colon + 1)) : 0));
       }
-      failUnmatched = !"respond".equals(System.getProperty("apksim.networkUnmatched", "fail"));
+      // fetch: what cannot be fetched (not HTTP, a server that does not answer) is unmatched as with fail.
+      failUnmatched = !"respond".equals(unmatchedPolicy);
       recordedTiming = "recorded".equals(System.getProperty("apksim.networkReplayTiming", "none"));
       replayMark = !"off".equals(System.getProperty("apksim.networkReplayMark", "on"));
       if (profile != null) launchConditions = Conditions.parse(profile);
@@ -199,6 +211,16 @@ public final class Net {
           case "replay" -> {
             mode = Mode.REPLAY;
             recording = Recording.load(file, match);
+            if (fetch) {
+              Path out = Path.of(unmatchedPolicy.substring("fetch:".length()));
+              if (out.toString().isEmpty()) throw new IllegalArgumentException("--network-unmatched fetch: needs a file");
+              if (out.toAbsolutePath().normalize().equals(file.toAbsolutePath().normalize())) {
+                throw new IllegalArgumentException("--network-unmatched fetch:FILE must not be the replayed recording itself");
+              }
+              Recording f = new Recording(out, match);
+              f.tapless = true;
+              fetched = f;
+            }
           }
           default -> throw new IllegalArgumentException("--network takes record FILE or replay FILE, not " + m);
         }
@@ -208,7 +230,7 @@ public final class Net {
       if (mode == Mode.REPLAY || !hostMap.isEmpty() || conditions.shaped()) engine();
       // Saved on the way out by Standby.halt (Runtime.halt runs no hooks), and here on an ordinary exit too:
       // Ctrl-C, or the app calling System.exit.
-      if (mode == Mode.LIVE && recording != null) Runtime.getRuntime().addShutdownHook(new Thread(Net::flush, "apksim-net-save"));
+      if (mode == Mode.LIVE && recording != null || fetched != null) Runtime.getRuntime().addShutdownHook(new Thread(Net::flush, "apksim-net-save"));
       retap();
       log("network " + describe());
     } catch (Exception e) {
@@ -347,10 +369,16 @@ public final class Net {
   private static volatile boolean dirty, flushPending;
   private static final Object saveLock = new Object();
 
+  /** The file this launch writes: a recording (--network record), or what replay fetched (--network-unmatched fetch:FILE). */
+  private static Recording saved() {
+    if (mode == Mode.REPLAY) return fetched;
+    Recording r = recording;
+    return r == null || r.path == null ? null : r;  // no file: the flight recorder's, in memory
+  }
+
   /** The recording changed: its file is written 300 ms from now (once for all that changes meanwhile). */
   static void changed() {
-    Recording r = recording;
-    if (r == null || r.path == null || mode != Mode.LIVE) return;
+    if (saved() == null) return;
     dirty = true;
     if (flushPending) return;
     flushPending = true;
@@ -362,8 +390,8 @@ public final class Net {
   }
 
   static void flushNow() {
-    Recording r = recording;
-    if (r == null || r.path == null || mode != Mode.LIVE) return;  // no file: the flight recorder's, in memory
+    Recording r = saved();
+    if (r == null) return;
     synchronized (saveLock) {
       try {
         if (dirty || !java.nio.file.Files.exists(r.path)) {
@@ -397,7 +425,10 @@ public final class Net {
   static String describe() {
     StringBuilder b = new StringBuilder();
     Recording r = recording;
-    if (mode == Mode.REPLAY) b.append("replaying ").append(r.path).append(" (").append(r.entries.size()).append(" entries)");
+    if (mode == Mode.REPLAY) {
+      b.append("replaying ").append(r.path).append(" (").append(r.entries.size()).append(" entries)");
+      if (fetched != null) b.append(", fetching what it lacks into ").append(fetched.path);
+    }
     else if (r == null) b.append("live");
     else if (r.path == null) b.append("capturing for the flight recorder (in memory").append(r.keep ? "" : ", paused").append(")");
     else b.append("recording to ").append(r.path);
@@ -569,15 +600,16 @@ public final class Net {
    * right after it.
    */
   public static void flush() {
-    Recording r = recording;
-    if (r == null || r.path == null || mode != Mode.LIVE) return;
+    if (saved() == null) return;
     drain(2000);
     flushNow();
   }
 
   private static String counts() {
     NetEngine e = engine;
-    if (mode == Mode.REPLAY) return e == null ? "" : e.replayed.get() + " replayed, " + e.missed.get() + " unmatched";
+    if (mode == Mode.REPLAY) {
+      return e == null ? "" : e.replayed.get() + " replayed, " + (fetched != null ? e.fetched.get() + " fetched, " : "") + e.missed.get() + " unmatched";
+    }
     if (recording != null) return (tapped.get() + (e == null ? 0 : e.recorded.get())) + " recorded";
     return e == null ? "" : e.relayed.get() + " connections relayed";
   }
@@ -604,8 +636,8 @@ public final class Net {
         return Inspector.detail(a);
       }
       case "save" -> {
-        Recording r = recording;
-        if (mode != Mode.LIVE || r == null || r.path == null) return "error: not recording to a file";
+        Recording r = saved();
+        if (r == null) return "error: not recording to a file";
         drain(500);
         dirty = true;
         flushNow();

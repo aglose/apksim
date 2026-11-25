@@ -1441,6 +1441,12 @@ its certificate). Any option turns it on; without one, the hooks cost one static
   failed for an unmatched request gets a failure bundle with `--bundles`, through `Bundles.listenerFailure`); a test
   changes conditions with `executeShellCommand("apksim network offline")`. Recording launches cold (its sandbox must
   allow writing the file and `FILE.apksim-tmp`, and only those, not the folder); replay and conditions launch warm.
+- `--network-unmatched fetch:OUT` (with `--network replay IN`; docs/network.md "Fetching what a recording lacks"): a
+  request IN lacks is sent to the real server by the engine (`NetEngine.fetch`: its own connection, the system's DNS via
+  `NetResolver.systemLookup`, `--network-host` honoured, the app's TLS factory), answered with `X-Apksim-Replay: fetched`
+  and kept in `Net.fetched` (OUT, saved as a recording is, `Recording.tapless`); a repeat is answered from it (one fetch
+  per match key, `fetchLocks`); failures are unmatched as with `fail`. Launches cold unless OUT is under STATE.
+  `scripts/check-net-fetch.sh` (`FetchCheck`, CI quick checks).
 - Not covered: Ktor CIO and other NIO `SocketChannel` clients, `new Socket(host, port)`, Cronet's native stack
   (docs/network.md says what it would need), replay of WebSockets and of HTTP/2-only clients such as gRPC (recorded,
   messages included; the replay engine speaks HTTP/1.1). Checks: `scripts/check-net-tap.sh` (`TapCheck`, CI's quick

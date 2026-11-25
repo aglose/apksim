@@ -157,6 +157,8 @@ jobs:
         run: scripts/check-net-tap.sh
       - name: h2 tunnel check (a client offering h2 gets the server's ALPN choice, with no rule and through the engine)
         run: scripts/check-h2-tunnel.sh
+      - name: network fetch check (a replay fetches and records what its recording lacks; repeats fetched once; failures unmatched)
+        run: scripts/check-net-fetch.sh
       - name: journey.py check (its start, and steps' timing, against a stand-in apksim)
         run: python3 scripts/journey-start-check.py
       - name: crawl.py replay check (flaky screens explored, steps retried; a stand-in app, no apksim)
