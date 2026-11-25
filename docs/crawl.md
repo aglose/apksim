@@ -398,6 +398,13 @@ moves) and its children; consecutive children with the same structure (the rows 
 list of 3 rows and one of 30 are one screen. Text is not in it, so a list with different rows, a counter and a clock
 are one screen; neither are sizes or colours.
 
+A text that is not a control and has nothing under it (a label) is placed where its parent is, not by its own centre:
+its box is as wide as its text, so a longer one ("Massachusetts, United States" where another place has "Florida,
+United States") would move into the next third and make a detail screen per item. Walks write this as `"screen_ids": 2`
+in `crawl.json`; walks before it made ids from every node's own centre (`1`, a `crawl.json` with no `screen_ids`). A
+seeded walk makes ids the way its seed did, so the screens it walks again are compared with the seed's; a whole walk
+made after an update has other ids than one made before it for screens with such labels.
+
 Where it takes two screens for one:
 
 - A node that appears or goes: a message under a button, an error line, an expanded row. The same screen in two

@@ -128,19 +128,31 @@ def screen_size(recs):
     return max(w, 1), max(h, 1)
 
 
-def canon(recs, kids, i, w, h, scrolling):
+# How a screen's id is made (canon), written to crawl.json as "screen_ids". 1: every record placed by its own centre.
+# 2: a text with nothing under it, not a control, is placed where its parent is, so a label whose text is longer ("Massachusetts,
+# United States" against "Florida, United States") does not move into the next third and make another screen. A seeded
+# walk makes ids the way its seed did (load_seed), so it is compared with the seed's screens.
+SCREEN_IDS = 2
+
+
+def canon(recs, kids, i, w, h, scrolling, at=None):
     """A record's structure as a string: class, id, the flags that say what it is for (not its state), where it sits
     coarsely (a third of the width; top, middle or bottom of the height, not inside a scroller, whose content moves),
-    and its children, with runs of identical consecutive siblings (the rows of a list) written once."""
+    and its children, with runs of identical consecutive siblings (the rows of a list) written once. [at] is the
+    parent's place, which a text with no children that is not a control takes (SCREEN_IDS 2): its box follows its
+    text's length, where a control's place is part of the layout."""
     r = recs[i]
-    cx, cy = r.centre()
-    col = min(2, max(0, cx * 3 // w))
+    if SCREEN_IDS >= 2 and at is not None and r.text and not kids.get(i) and not any(c in r.flags for c in "cle"):
+        col, cy = at
+    else:
+        cx, cy = r.centre()
+        col = min(2, max(0, cx * 3 // w))
     row = "-" if scrolling else ("T" if cy < h * 0.15 else "B" if cy > h * 0.85 else "M")
     flags = "".join(c for c in STRUCT_FLAGS if c in r.flags)
     inner = scrolling or "s" in r.flags
     parts = []
     for k in kids.get(i, []):
-        s = canon(recs, kids, k, w, h, inner)
+        s = canon(recs, kids, k, w, h, inner, (col, cy))
         if parts and parts[-1][0] == s:
             parts[-1][1] += 1
         else:
@@ -3280,6 +3292,8 @@ def load_seed(args, out, combos):
     if list(seed.get("combos", [])) != names:
         fail(f"--seed: the seed was captured in {seed.get('combos', [])} and this walk captures {names}: give the seed's "
              "matrix, or walk in full (carried screens keep the seed's captures)")
+    global SCREEN_IDS
+    SCREEN_IDS = int(seed.get("screen_ids", 1))  # the seed's screens keep their ids, and walked ones are compared with them
     if bool(seed.get("screen_titles", False)) != bool(args.screen_titles):
         fail("--seed: the seed and this walk differ in --screen-titles, so their screen ids do not match: give both the "
              "same setting")
@@ -3373,6 +3387,8 @@ def on_stop(signum, frame):
                                      + f": {len(doc['unexplored'])} screen(s) not explored")
             doc["stopped"] = True
             doc["combos"] = [snapshot.combo_name(c) for c in STOP["combos"]]
+            doc["screen_titles"] = TITLES_ARE_IDENTITY
+            doc["screen_ids"] = SCREEN_IDS  # a resume (--seed on this walk) makes its ids the same way
             doc["seconds"]["total"] = round(time.time() - STOP["t0"], 1)
             with open(os.path.join(STOP["out"], "crawl.json.part"), "w") as f:
                 json.dump(doc, f, indent=1)
@@ -3451,6 +3467,7 @@ def main():
         doc = new.doc()
         doc["combos"] = [snapshot.combo_name(c) for c in combos]
         doc["screen_titles"] = bool(args.screen_titles)
+        doc["screen_ids"] = SCREEN_IDS
         doc["snapshot"] = bool(new.use_snapshot)
         if sc is not None:
             sc.doc = doc
