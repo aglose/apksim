@@ -152,7 +152,7 @@ RUN --mount=type=bind,source=train.apk,target=/tmp/train.apk \
 ARG VERSION=
 LABEL org.opencontainers.image.version=$VERSION
 # The cache is stamped with the release it was built for (the launcher compares app.aot.release with work/release).
-RUN if [ -n "$VERSION" ]; then echo "$VERSION" > /opt/apksim/work/release; cp /opt/apksim/work/release /opt/apksim/work/app.aot.release; fi
+RUN if [ -n "$VERSION" ]; then echo "$VERSION" > /opt/apksim/work/release; [ ! -f /opt/apksim/work/app.aot ] || cp /opt/apksim/work/release /opt/apksim/work/app.aot.release; fi
 ENV PATH=/opt/apksim:/opt/apksim/scripts:$PATH
 WORKDIR /work
 ENTRYPOINT ["apksim"]

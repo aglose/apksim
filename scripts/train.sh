@@ -54,8 +54,9 @@ fi
 # removed only by its owner.
 CONF="$STATE/app.aotconf.$$"
 NEW="$STATE/app.aot.new.$$"
+REL="$STATE/app.aot.release.$$"
 DL="$STATE/testapp.download.$$"
-trap 'rm -f "$CONF" "$NEW" "$DL"; [[ "$(cat "$STATE/train.pid" 2>/dev/null)" == "$$" ]] && rm -f "$STATE/train.pid"; true' EXIT
+trap 'rm -f "$CONF" "$NEW" "$REL" "$DL"; [[ "$(cat "$STATE/train.pid" 2>/dev/null)" == "$$" ]] && rm -f "$STATE/train.pid"; true' EXIT
 # An installed release does not ship the test app (22 MB of its download): the first training fetches it from the
 # release, checked against the hash the release carries (work/testapp.sha256), and keeps it in STATE.
 # APKSIM_DOWNLOAD_URL points at a mirror or a local folder (file://), as for install.sh.
@@ -108,6 +109,9 @@ stage create --jvm -XX:AOTMode=create --jvm "-XX:AOTConfiguration=$CONF" --jvm "
 # Into place by rename, so running instances keep the cache they mapped; the root last, as launches check it.
 mv -f "$NEW" "$STATE/app.aot"
 # An installed release's cache is for that release too (the launcher compares app.aot.release with work/release).
-if [[ -f "$ROOT/work/release" ]]; then cp "$ROOT/work/release" "$STATE/app.aot.release"; else : > "$STATE/app.aot.release"; fi
+# Written through a temp file rather than `cp`: work/release in a read-only install (Homebrew) is 0444, so a copied
+# stamp would be read-only and the next training would fail to overwrite it.
+if [[ -f "$ROOT/work/release" ]]; then cat "$ROOT/work/release" > "$REL"; else : > "$REL"; fi
+mv -f "$REL" "$STATE/app.aot.release"
 printf '%s' "$ROOT" > "$STATE/app.aot.root"
 ls -la "$STATE/app.aot"
