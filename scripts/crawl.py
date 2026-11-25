@@ -3,7 +3,7 @@
 
 Usage: crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] [--max-seconds S] [--max-depth N]
                 [--skip-text REGEX]... [--tap-unlabeled] [--fill TEXT] [--matrix AXIS=V,V]... [--matrix-file SPEC.json]
-                [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--standby] [--keep-data] [--keep-app-state]
+                [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--standby] [--keep-data] [--keep-app-state] [--data-ignore PATTERN]...
                 [--base-option "APKSIM OPTIONS"] [--sweep LIST ...] [--seed RUN (--only ID,... | --only-file PATH)]
                 [--events] [--screen-titles] [-- APKSIM_OPTION...]
 
@@ -27,7 +27,7 @@ line of JSON per finished screen and level on stdout.
 """
 import xml.etree.ElementTree as ET
 import argparse, base64, concurrent.futures, difflib, hashlib, html, itertools, json, os, re, shlex, shutil, signal, subprocess, sys
-import tempfile, threading, time
+import fnmatch, sqlite3, tempfile, threading, time, urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import snapshot  # noqa: E402  (scripts/snapshot.py: instances, matrix axes, captures)
@@ -190,7 +190,10 @@ class ReplayFailed(Exception):
 
 # Files in a data slot that no screen shows, left out of Instance.data_state (paths relative to the slot).
 BOOKKEEPING = re.compile(r"(^|/)(cache|code_cache)/|^files/profileInstalled$|^no_backup/androidx\.work\.workdb|-shm$|"
-                         r"(^|/)\.lock$")
+                         r"-wal$|-journal$|(^|/)\.lock$")
+
+# Tables a SQLite database keeps for its framework, not for a screen (Room's bookkeeping, SQLite's own).
+SQLITE_BOOKKEEPING = {"room_master_table", "android_metadata", "sqlite_sequence", "room_table_modification_log"}
 
 
 _MISSING = object()
@@ -211,6 +214,51 @@ def shared_prefs(path):
             v = tuple(sorted(c.text or "" for c in e)) if e.tag == "set" else (e.text or "")
         out[e.get("name")] = (e.tag, v)
     return out
+
+
+def sqlite_tables(path):
+    """A SQLite database's content, {table: hash of its rows}, read through a read-only connection (which reads the -wal
+    beside it too), or None when it is not a database or cannot be opened (then Instance.data_state uses size and date).
+    A write-ahead log changes with any write, a checkpoint or Room's invalidation tracker included; only the rows say
+    whether a screen would show something else."""
+    try:
+        with open(path, "rb") as f:
+            if f.read(16) != b"SQLite format 3\0":
+                return None
+    except OSError:
+        return None
+    try:
+        con = sqlite3.connect("file:" + urllib.parse.quote(path) + "?mode=ro", uri=True, timeout=2)
+    except sqlite3.Error:
+        return None
+    try:
+        out = {}
+        names = [r[0] for r in con.execute("select name from sqlite_master where type = 'table' order by name")]
+        for t in names:
+            if t in SQLITE_BOOKKEEPING or t.startswith("sqlite_"):
+                continue
+            h = hashlib.sha1()
+            for row in con.execute('select * from "%s"' % t.replace('"', '""')):
+                h.update(repr(row).encode("utf-8", "replace"))
+                h.update(b"\n")
+            out[t] = h.hexdigest()
+        return out
+    except sqlite3.Error:
+        return None
+    finally:
+        con.close()
+
+
+def data_ignored(patterns, rel, key=None):
+    """Whether --data-ignore PATTERN names the file `rel` (fnmatch) as a whole, or with a key `rel#key` (a
+    SharedPreferences key or a database table)."""
+    for pat in patterns:
+        f, _, k = pat.partition("#")
+        if not fnmatch.fnmatchcase(rel, f):
+            continue
+        if not k if key is None else (not k or fnmatch.fnmatchcase(key, k)):
+            return True
+    return False
 
 
 EVENT_LOCK = threading.Lock()
@@ -424,21 +472,28 @@ class Instance(snapshot.Worker):
 
     def data_state(self):
         """What the slot holds, {file: state}: a SharedPreferences file as its values ({key: value}), any other as
-        (size, mtime), so a write anywhere changes it. Left out: what no screen reads (BOOKKEEPING): an app's caches,
+        (size, mtime), so a write anywhere changes it; a SQLite database as its tables' content ({table: hash}, see
+        sqlite_tables: its -wal and -journal are left out). Left out: what no screen reads (BOOKKEEPING): an app's caches,
         AndroidX's profile installer (which writes once some seconds after every start, so each new launch would want
         another), WorkManager's own database, SQLite's shared memory index (-shm, which readers write too), the slot's
         lock."""
         out = {}
+        ignore = self.ctx.get("data_ignore") or ()
         for root in self.slot_dirs():
             for d, dirs, files in os.walk(root):
                 dirs.sort()
                 for n in sorted(files):
                     p = os.path.join(d, n)
                     rel = os.path.relpath(p, root)
-                    if BOOKKEEPING.search(rel):
+                    if BOOKKEEPING.search(rel) or data_ignored(ignore, rel):
                         continue
-                    prefs = shared_prefs(p) if rel.startswith("shared_prefs/") and n.endswith(".xml") else None
+                    if rel.startswith("shared_prefs/"):
+                        prefs = shared_prefs(p) if n.endswith(".xml") else None
+                    else:
+                        prefs = sqlite_tables(p)
                     if prefs is not None:
+                        if ignore:
+                            prefs = {k: v for k, v in prefs.items() if not data_ignored(ignore, rel, k)}
                         out[rel] = prefs
                         continue
                     try:
@@ -960,6 +1015,7 @@ class Explorer:
                     "fresh": not args.keep_data, "screens": [],
                     "record": lambda r: None, "crashes": self.findings, "stable_ms": args.stable_ms, "name": name,
                     "keep_state": args.keep_app_state, "restore": self.kept.restore if self.kept else None,
+                    "data_ignore": list(args.data_ignore or []),
                     "relaunches": [0], "relaunch_files": {}, "first_values": {}, "unsettled": set(),
                     "record_deps": bool(args.record_deps), "lock": threading.Lock(),
                     "spawn": (SPAWN, STOPPING), "skip_re": self.skip_re}
@@ -3104,6 +3160,10 @@ def parse(argv):
                         "apksim keeps one standby per folder, so with -j N the relaunches share it and one that finds it "
                         "booting or taken launches cold; APKSIM_STANDBY=0 forces cold")
     p.add_argument("--keep-data", action="store_true", help="start from a prepared data slot (the one this run's --data-slots names, else default): each instance runs on a copy of it, made again at each relaunch, and the slot itself is not written")
+    p.add_argument("--data-ignore", action="append", default=[], metavar="PATTERN",
+                   help="what the app writes at every action that no screen reads, left out of the data a replay is checked "
+                        "against: a file of the data slot (fnmatch), or FILE#TABLE / FILE#KEY for a database table or a "
+                        "SharedPreferences key (repeatable; `relaunch_files` names what to put here)")
     p.add_argument("--keep-app-state", action="store_true",
                    help="replay on an instance whose app has written to its data since its launch (faster; walks can "
                         "then differ: by default such an instance is launched again on an emptied slot first)")
