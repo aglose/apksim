@@ -13,7 +13,7 @@ Status: item 1 of the roadmap, checked on the test app (`scripts/crawl-check.py`
 ```bash
 scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] [--max-seconds S] [--max-depth N]
                  [--skip-text REGEX]... [--tap-unlabeled] [--fill TEXT] [--matrix AXIS=V,V]... [--matrix-file SPEC.json]
-                 [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--keep-data] [--keep-app-state]
+                 [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--standby] [--keep-data] [--keep-app-state]
                  [--base-option "APKSIM OPTIONS"] [--seed RUN (--only ID,ID... | --only-file PATH) [--diff-seed [--diff-controls changed|none|all]]]
                  [--events] [--screen-titles] [--record-deps [--deps-packages PKG,PKG]]
                  [-- APKSIM_OPTION...]
@@ -214,7 +214,7 @@ directly against the seed's `crawl.json` and `screens/` without re-walking the b
 - To keep PR diffs fast (a few seconds for a single affected screen), `observe_at` keeps each worker parked on its
   reached screen so `discover_screen` reuses it without a second replay or relaunch, the worker pool caps at
   `min(-j, len(--only))`, teardown runs in parallel, and GPU-rendered `--diff-seed` runs opt into apksim's warm standby
-  JVM when available (`APKSIM_STANDBY=0` forces a cold launch).
+  JVM when available (`APKSIM_STANDBY=0` forces a cold launch). `--standby` gives any GPU-rendered walk the same hand-over (a plain or `--seed` walk, whose relaunches are the most numerous). It does nothing with `--base`, `--base-option` or `--sweep`, which render with `--snapshot`. A standby a walk starts stays up for an hour (`apksim --stop-standbys`), and the walk uses the folder's own standby. apksim keeps one standby per folder, so with `-j N` the instances share it and a relaunch that finds it taken launches cold.
 
 A carried screen that the new graph no longer leads to from a start is not `same`. Its `compare` entry is `gone`
 (`id` null, `base` its id, with `why`) when every screen that led to it in the seed was walked again or is itself
@@ -376,7 +376,7 @@ What to know:
   three tenths have one- or two-letter names (renaming with no mapping file), writes `"deps_unreliable": "why"` at the
   top level. `sources` are still written from what the DEX names, but a reader must not select screens by them then
   (walk everything again, or crawl a debug build for maps); `classes` and `resources` stand. No mapping file is read yet.
-- Cost: probes need a cold launch (crawl instances are cold anyway) and probed classes have their own class cache, so
+- Cost: probes need a cold launch (`--record-deps` launches stay cold even with `--standby`, as `-Dapksim.deps` is not a warm option) and probed classes have their own class cache, so
   the first walk with `--record-deps` after a build translates every class once more. See "Measured" for walk times.
 
 ## What a screen is

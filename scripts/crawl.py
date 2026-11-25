@@ -3,7 +3,7 @@
 
 Usage: crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] [--max-seconds S] [--max-depth N]
                 [--skip-text REGEX]... [--tap-unlabeled] [--fill TEXT] [--matrix AXIS=V,V]... [--matrix-file SPEC.json]
-                [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--keep-data] [--keep-app-state]
+                [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--standby] [--keep-data] [--keep-app-state]
                 [--base-option "APKSIM OPTIONS"] [--sweep LIST ...] [--seed RUN (--only ID,... | --only-file PATH)]
                 [--events] [--screen-titles] [-- APKSIM_OPTION...]
 
@@ -954,7 +954,9 @@ class Explorer:
         use_snapshot = bool(args.base or args.base_option or args.sweep) if snapshot_override is None else bool(snapshot_override)
         self.use_snapshot = use_snapshot
         self.ctx = {"spec": {"timezone": "UTC", "clock": CLOCK}, "apk": apk, "apksim": self.options, "out": out,
-                    "stage": self.stage, "snapshot": use_snapshot, "standby": bool(getattr(args, "diff_seed", False) and not use_snapshot),
+                    "stage": self.stage, "snapshot": use_snapshot,
+                    "standby": bool((getattr(args, "diff_seed", False) or getattr(args, "standby", False)) and not use_snapshot),
+                    "standby_opt_in": bool(getattr(args, "standby", False) and not use_snapshot),
                     "fresh": not args.keep_data, "screens": [],
                     "record": lambda r: None, "crashes": self.findings, "stable_ms": args.stable_ms, "name": name,
                     "keep_state": args.keep_app_state, "restore": self.kept.restore if self.kept else None,
@@ -3096,6 +3098,11 @@ def parse(argv):
     p.add_argument("--no-captures", action="store_true")
     p.add_argument("--setting", action="append", default=[])
     p.add_argument("--sdcard-file", action="append", default=[])
+    p.add_argument("--standby", action="store_true",
+                   help="hand each launch and relaunch to apksim's warm standby JVM when one is up (GPU-rendered walks only; "
+                        "--diff-seed implies it; a --base, --base-option or --sweep walk renders with --snapshot and stays cold). "
+                        "apksim keeps one standby per folder, so with -j N the relaunches share it and one that finds it "
+                        "booting or taken launches cold; APKSIM_STANDBY=0 forces cold")
     p.add_argument("--keep-data", action="store_true", help="start from a prepared data slot (the one this run's --data-slots names, else default): each instance runs on a copy of it, made again at each relaunch, and the slot itself is not written")
     p.add_argument("--keep-app-state", action="store_true",
                    help="replay on an instance whose app has written to its data since its launch (faster; walks can "
