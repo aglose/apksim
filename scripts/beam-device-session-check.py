@@ -187,6 +187,8 @@ def on_device(apksim, apk, serial, keep_app):
         check(first is not None and (first[4], first[5]) == (d.get("width"), d.get("height")), f"at the device's size ({first[4:6] if first else None})")
         check(info.get("target") == "device" and info.get("targetDevice", {}).get("serial") == serial and info.get("rec") is False
               and info.get("inspect") is False and "keep" not in info, f"the i message names the device ({info})")
+        check(info.get("device") == f"{d['width']}x{d['height']}" and info.get("targetDevice", {}).get("width") == d["width"]
+              and info.get("targetDevice", {}).get("height") == d["height"], f"the i message gives the device's size, not a preset ({info.get('device')})")
         s.pump(3)
         n = len(s.frames)
         w, h = d["width"], d["height"]

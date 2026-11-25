@@ -1456,7 +1456,7 @@ as more than one command, and two more for a real phone, where they would reach 
 the animation and font scales, `am start`/`am broadcast` only with the app's `-n` or `-p`; `cat` only of a file in the
 app's own folders (through `run-as`, so a debuggable build). Output is kept to 256 KB (adb is stopped past it).
 
-**Session info.** `i` has `"target": "device"` and `"targetDevice": {"serial", "model", "sdk", "width", "height"}` (the size as `GET /beam/devices` lists it, left out when unknown), `device` the device's own size (`"1920x1080"`, never the simulator's preset name; left out when unknown), `rec: false`,
+**Session info.** `i` has `"target": "device"` and `"targetDevice": {"serial", "model", "sdk", "width", "height"}` (the size as `GET /beam/devices` lists it, left out when unknown), `device` the device's own size as `wm size` gives it (`"1920x1080"`; the first frame's header is the authoritative size when it is turned, never the simulator's preset name; left out when unknown), `rec: false`,
 `inspect: false`, `inspectAllowed: false`, `audio: "off"` and no `keep`. Only the bridge's own lines (at the start of a
 line) are read from its output: the app's logcat lines there are the device's to write, so none of an instance's markers
 (data slot, permissions) is taken from them, and the bridge prints them behind `[logcat] `.
