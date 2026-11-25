@@ -217,6 +217,7 @@ def shared_prefs(path):
 
 
 _SQLITE_CACHE = {}
+_NOT_SQLITE = object()
 
 
 def _stat_key(path):
@@ -234,19 +235,23 @@ def sqlite_tables(path):
     if hit and hit[0] == key:
         return hit[1]
     out = sqlite_tables_read(path)
-    _SQLITE_CACHE[path] = (key, out)
+    if out is _NOT_SQLITE:
+        _SQLITE_CACHE[path] = (key, None)
+        return None
+    if out is not None:
+        _SQLITE_CACHE[path] = (key, out)
     return out
 
 
 def sqlite_tables_read(path):
     """A SQLite database's content, {table: hash of its rows}, read through a read-only connection (which reads the -wal
-    beside it too), or None when it is not a database or cannot be opened (then Instance.data_state uses size and date).
-    A write-ahead log changes with any write, a checkpoint or Room's invalidation tracker included; only the rows say
-    whether a screen would show something else."""
+    beside it too), _NOT_SQLITE when it is not a database, or None when a database cannot be opened (then
+    Instance.data_state uses size and date and keeps its -wal/-journal). A write-ahead log changes with any write, a
+    checkpoint or Room's invalidation tracker included; only the rows say whether a screen would show something else."""
     try:
         with open(path, "rb") as f:
             if f.read(16) != b"SQLite format 3\0":
-                return None
+                return _NOT_SQLITE
     except OSError:
         return None
     try:
@@ -256,6 +261,8 @@ def sqlite_tables_read(path):
     try:
         out = {}
         names = [r[0] for r in con.execute("select name from sqlite_master where type = 'table' order by name")]
+        # SQLite does not enforce UTF-8 in TEXT columns; reading them as bytes avoids OperationalError on raw bytes.
+        con.text_factory = bytes
         for t in names:
             if t in SQLITE_BOOKKEEPING or t.startswith("sqlite_"):
                 continue
@@ -511,8 +518,8 @@ class Instance(snapshot.Worker):
                     if BOOKKEEPING.search(rel) or data_ignored(ignore, rel):
                         continue
                     base = rel[:-4] if rel.endswith("-wal") else rel[:-8] if rel.endswith("-journal") else None
-                    if base is not None and (root, base) in read_dbs:
-                        continue    # a database read by its content: its log says nothing more
+                    if base is not None and ((root, base) in read_dbs or data_ignored(ignore, base)):
+                        continue    # a database read by its content or ignored: its log says nothing more
                     if rel.startswith("shared_prefs/"):
                         prefs = shared_prefs(p) if n.endswith(".xml") else None
                     else:
@@ -531,7 +538,8 @@ class Instance(snapshot.Worker):
                     out[rel] = (st.st_size, st.st_mtime_ns)
         # Kept by the instance, not the slot, and outliving `restart` too: a permission request no one answered (the
         # walk never answers one) and runtime grants made since the launch.
-        out["<permission>"] = self.say("permission")
+        if not data_ignored(ignore, "<permission>"):
+            out["<permission>"] = self.say("permission")
         return out
 
     def changed_files(self):

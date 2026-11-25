@@ -149,7 +149,7 @@ So each replay starts from the data the app had at its launch:
   per table, leaving out Room's `room_master_table` and `room_table_modification_log`, `android_metadata` and
   `sqlite_sequence`; the `-wal` and `-journal` files themselves are not compared (a write-ahead log changes with a
   checkpoint or an invalidation tracker's row, which no screen shows). A database that cannot be opened is compared by
-  size and date. `relaunch_files` then names the table that changed (`databases/app.db#events`), as it names a preference's key.
+  size and date, with its `-wal` and `-journal`. `relaunch_files` then names the table that changed (`databases/app.db#events`), as it names a preference's key.
 - `--data-ignore PATTERN` (repeatable) leaves out what an app writes at every action and no screen reads: a file of the slot
   (`fnmatch`, `databases/analytics.db`), a table (`databases/app.db#events`) or a preference key
   (`shared_prefs/x.xml#last_seen*`). Put there what `relaunch_files` shows a walk relaunching for.
