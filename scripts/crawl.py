@@ -2566,18 +2566,25 @@ class SeedCompare:
         self.todo = {}  # screen id -> its pair, until compared
         for p in pairs:
             if p["status"] == "gone" and p["base"] in seed_by_id:
-                self.base_screens.append(self.stage_base_captures(seed_by_id[p["base"]]))
+                bs = self.stage_base_captures(seed_by_id[p["base"]])
+                if not any(b is bs for b in self.base_screens):
+                    self.base_screens.append(bs)
                 continue
             if not (p["id"] and p["base"]):
                 continue
             if new.screens[p["id"]].get("origin") != "walked":
                 continue
             bs = self.stage_base_captures(seed_by_id[p["base"]])
-            self.base_screens.append(bs)
+            if not any(b is bs for b in self.base_screens):
+                self.base_screens.append(bs)
             self.base_by_pair[p["id"]] = bs
             self.todo[p["id"]] = p
 
     def stage_base_captures(self, bs):
+        # Two pairs can name one base screen (a kept id and a screen that replaces it): stage it once.
+        staged = self.__dict__.setdefault("_staged_base", {})
+        if bs["id"] in staged:
+            return staged[bs["id"]]
         bc = dict(bs)
         caps = {}
         for name, rel in (bs.get("captures") or {}).items():
@@ -2586,12 +2593,17 @@ class SeedCompare:
                 continue
             dst = os.path.join(self.out, "base-screens", bs["id"], name + ".png")
             os.makedirs(os.path.dirname(dst), exist_ok=True)
-            try:
-                os.link(src, dst)
-            except OSError:
-                shutil.copyfile(src, dst)
+            if not os.path.exists(dst):
+                try:
+                    os.link(src, dst)
+                except OSError:
+                    try:
+                        shutil.copyfile(src, dst)
+                    except shutil.SameFileError:
+                        pass
             caps[name] = f"base-screens/{bs['id']}/{name}.png"
         bc["captures"] = caps
+        staged[bs["id"]] = bc
         return bc
 
     def compare(self, sid, inst):
