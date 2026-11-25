@@ -15,7 +15,12 @@
 #   Publishing the release moves :latest to it (`image-latest`). The package must be public once (its settings on
 #   GitHub) for other repositories' CI to pull it without a token.
 #   Before (0.39), one job per architecture ran every check in turn and arm64 waited for amd64: ~85 min; now ~20.
-# - Pull requests that change the packaging or the image build and check them without releasing.
+# - Pull requests check what they can break without releasing (`changes` decides): the Mac package when they change
+#   what it is built from or ships, the images and their legs only when they change how the images are built (ci.yml
+#   already builds and checks the amd64 image, and the arm64 one for changes that can differ there, on every code
+#   change). `release-checks` passes when every job that ran passed, so it can be a required check; a path filter on
+#   the workflow would leave it pending for ever on the pull requests it skips.
+# - A new push to a pull request cancels its older run, as ci.yml's do; tag and release runs always finish.
 name: release
 on:
   push:
@@ -23,26 +28,51 @@ on:
   release:
     types: [published]
   pull_request:
-    paths:
-      - .github/workflows/release.yml
-      - scripts/package-release.sh
-      - scripts/setup.sh
-      - scripts/train.sh
-      - apksim
-      - install.sh
-      - packaging/**
-      - docker/**
-      - scripts/docker-build.sh
-      - scripts/*.py
-      - .github/actions/linux-build/**
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  package:
+  # What a pull request changed (tags and manual runs run everything):
+  # - package: what the Mac package is built from or ships (the launcher, setup, training, packaging, the scripts).
+  # - image: how the release images are built and checked (this file, docker/, the image build script, the Linux build
+  #   action). Other changes reach the same image through ci.yml's legs.
+  # If the diff step fails, its outputs are empty and everything runs.
+  changes:
     if: github.event_name != 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      package: ${{ steps.diff.outputs.package }}
+      image: ${{ steps.diff.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          package=true image=true
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            files=$(git diff --no-renames --name-only "$BASE...$HEAD_SHA")
+            img='^(\.github/workflows/release\.yml|docker/|scripts/docker-build\.sh$|\.github/actions/linux-build/)'
+            pkg='^(\.github/workflows/release\.yml|scripts/(package-release|setup|train)\.sh|apksim|install\.sh|scripts/[^/]+\.py)$|^packaging/'
+            printf '%s\n' "$files" | grep -qE "$img" || image=false
+            printf '%s\n' "$files" | grep -qE "$pkg" || package=false
+          fi
+          { echo "package=$package"; echo "image=$image"; } >> "$GITHUB_OUTPUT"
+          echo "package: $package, image: $image"
+
+  package:
+    needs: changes
+    if: ${{ !cancelled() && github.event_name != 'release' && needs.changes.outputs.package != 'false' }}
     runs-on: macos-15  # Apple Silicon
     timeout-minutes: 60
     steps:
@@ -115,7 +145,8 @@ jobs:
 
   # The test app's APKs, once, for both images (each trains its startup cache on the app) and the checks.
   apks:
-    if: github.event_name != 'release'
+    needs: changes
+    if: ${{ !cancelled() && github.event_name != 'release' && needs.changes.outputs.image != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -133,7 +164,7 @@ jobs:
           retention-days: 2
 
   image:
-    if: github.event_name != 'release'
+    if: ${{ !cancelled() && github.event_name != 'release' && needs.apks.result == 'success' }}
     needs: apks
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 30
@@ -177,7 +208,7 @@ jobs:
   # replay (replay, bisect, journeys, coverage, screenshot tests), crawl, and the androidTest suite in two shards, run as
   # another repository's CI would run it: one container, the image's own instrument.py.
   check:
-    if: github.event_name != 'release'
+    if: ${{ !cancelled() && github.event_name != 'release' && needs.image.result == 'success' }}
     needs: image
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 30
@@ -239,6 +270,21 @@ jobs:
             smoke/*.png
             smoke/*.log
             tests/junit.xml
+
+  # For a required check: passes when `changes` passed and every job it chose passed (a skipped one counts as passed).
+  release-checks:
+    needs: [changes, package, apks, image, check]
+    if: ${{ !cancelled() && github.event_name != 'release' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every release check that ran passed
+        env:
+          RESULTS: ${{ needs.changes.result }} ${{ needs.package.result }} ${{ needs.apks.result }} ${{ needs.image.result }} ${{ needs.check.result }}
+        run: |
+          echo "changes, package, apks, image, check: $RESULTS"
+          test "${{ needs.changes.result }}" = success
+          for r in $RESULTS; do case "$r" in success|skipped) ;; *) exit 1 ;; esac; done
 
   # Nothing is pushed until both images passed every leg and the Mac package passed its check. Each image is pushed from a
   # runner of its own architecture, as before.
