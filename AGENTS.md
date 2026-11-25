@@ -2398,7 +2398,7 @@ timings): say in the PR what was checked locally (`bench.py`, `drive.py` runs).
 - **Credentials:** never type or paste the owner's real passwords. 1Password autofill only works in Chrome, not this
   window. The owner signs in themselves: Cmd+V in the window pastes the clipboard.
 - **After any Java change, run `scripts/train.sh`** or timings silently get worse (no AOT). The cache is tied to the
-  folder path (`work/app.aot.root`), and the launcher warns if it was built elsewhere.
+  folder path (`work/app.aot.root`), and the launcher warns if it was built elsewhere. An installed release's cache is also stamped with its release (`app.aot.release`, written by `train.sh`): a cache whose stamp differs from `work/release`, is missing, or is older than `work/apksim.jar` counts as another folder (launch without it, retrain in the background), so an install that keeps its path across upgrades does not pass the JVM a refused cache at every launch (issue 645).
 - `scripts/build.sh` fails on compile errors. Check its output before trusting a run. It compiles for Java 22
   (`--release 22`: `gl/` uses the foreign function API).
 - **A worktree needs `work/` of its own:** link `work/lib` and `work/media` from the main checkout, but copy

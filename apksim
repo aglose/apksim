@@ -29,14 +29,28 @@ else STATE="$ROOT/work"; fi
 # Standbys are per install and state folder.
 KEY="$ROOT"; [[ "$STATE" != "$ROOT/work" ]] && KEY="$ROOT:$STATE"
 CLIENT="$ROOT/work/runtime/apksim-client"
-# An installed release builds the startup cache in the background (once, and after an upgrade: a new folder), from the
+# The install folder the startup cache was built for, or "" when it is no cache for this one. An installed release also
+# records the release it was built for (app.aot.release): an install that keeps its path across upgrades (a bundled
+# engine, install.sh into a fixed folder) has the same root with a new apksim.jar, which the JVM refuses at every launch
+# ("timestamp has changed"; issue 645). A cache with no stamp (built before this) counts as another folder, once.
+read_aot_root() {
+  AOT_ROOT=""
+  [[ -z "${APKSIM_NOCACHE:-}" && -f "$STATE/app.aot" ]] || return 0
+  { read -r AOT_ROOT < "$STATE/app.aot.root"; } 2>/dev/null || true
+  [[ "$AOT_ROOT" == "$ROOT" && -f "$ROOT/work/release" ]] || return 0
+  local built="" now=""
+  { read -r built < "$STATE/app.aot.release"; } 2>/dev/null || true
+  { read -r now < "$ROOT/work/release"; } 2>/dev/null || true
+  if [[ -z "$built" || "$built" != "$now" || "$ROOT/work/apksim.jar" -nt "$STATE/app.aot" ]]; then AOT_ROOT=""; fi
+}
+# An installed release builds the startup cache in the background (once, and after an upgrade: a new folder or release), from the
 # first launch that finds app.aot.root naming another folder, or when the beam agent starts. Detached, so the launch goes
 # ahead without it. A source checkout builds it with scripts/train.sh.
 start_training() {
-  local aot_root="" train_pid=""
+  local train_pid=""
   [[ -f "$ROOT/work/release" && "$OS" == Darwin && -z "${APKSIM_NOCACHE:-}" ]] || return 0
-  if [[ -f "$STATE/app.aot" ]]; then { read -r aot_root < "$STATE/app.aot.root"; } 2>/dev/null || true; fi
-  [[ "$aot_root" != "$ROOT" ]] || return 0
+  read_aot_root
+  [[ "$AOT_ROOT" != "$ROOT" ]] || return 0
   { read -r train_pid < "$STATE/train.pid"; } 2>/dev/null || true
   if [[ -z "$train_pid" ]] || ! kill -0 "$train_pid" 2>/dev/null; then
     mkdir -p "$STATE"
@@ -642,8 +656,7 @@ done
 # The startup cache records file paths, so it fits only the install it was built for (app.aot.root). An installed
 # release builds it in the background on its first launch, and after an upgrade (a new folder); this launch goes ahead
 # without it. A source checkout builds it with scripts/train.sh.
-AOT_ROOT=""
-if [[ -z "${APKSIM_NOCACHE:-}" && -f "$STATE/app.aot" ]]; then { read -r AOT_ROOT < "$STATE/app.aot.root"; } 2>/dev/null || true; fi
+read_aot_root
 # (Not again when the client hands a launch back for a cold start: APKSIM_STANDBY=cold. Not from a beamed launch either:
 # the detached training would inherit its sandbox, which refuses the writes the record stage makes (issue 559); the
 # beam agent starts it itself, unsandboxed, when it starts.)
