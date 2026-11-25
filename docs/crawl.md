@@ -214,7 +214,7 @@ directly against the seed's `crawl.json` and `screens/` without re-walking the b
 - To keep PR diffs fast (a few seconds for a single affected screen), `observe_at` keeps each worker parked on its
   reached screen so `discover_screen` reuses it without a second replay or relaunch, the worker pool caps at
   `min(-j, len(--only))`, teardown runs in parallel, and GPU-rendered `--diff-seed` runs opt into apksim's warm standby
-  JVM when available (`APKSIM_STANDBY=0` forces a cold launch).
+  JVM when available (`APKSIM_STANDBY=0` forces a cold launch). `--standby` gives any GPU-rendered walk the same hand-over (a plain or `--seed` walk, whose relaunches are the most numerous); apksim keeps one standby per folder, so with `-j N` the instances share it and a relaunch that finds it taken launches cold.
 
 A carried screen that the new graph no longer leads to from a start is not `same`. Its `compare` entry is `gone`
 (`id` null, `base` its id, with `why`) when every screen that led to it in the seed was walked again or is itself
