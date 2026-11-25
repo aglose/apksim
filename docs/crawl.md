@@ -13,7 +13,7 @@ Status: item 1 of the roadmap, checked on the test app (`scripts/crawl-check.py`
 ```bash
 scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] [--max-seconds S] [--max-depth N]
                  [--skip-text REGEX]... [--tap-unlabeled] [--fill TEXT] [--matrix AXIS=V,V]... [--matrix-file SPEC.json]
-                 [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--standby] [--keep-data] [--keep-app-state]
+                 [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--standby] [--keep-data] [--keep-app-state] [--data-ignore PATTERN]...
                  [--base-option "APKSIM OPTIONS"] [--seed RUN (--only ID,ID... | --only-file PATH) [--diff-seed [--diff-controls changed|none|all]]]
                  [--events] [--screen-titles] [--record-deps [--deps-packages PKG,PKG]]
                  [-- APKSIM_OPTION...]
@@ -145,6 +145,14 @@ So each replay starts from the data the app had at its launch:
   preferences). Each costs a cold launch (one or two seconds); an app that writes on its own at every turn (a log
   file, a timer's record) costs one per replay. On a podcast app's settings (38 screens, ~300 transitions) comparing
   files alone relaunched 207 times, all for preference defaults, and explored in 850 s against 455-590 s before.
+- A SQLite database is compared by its rows, not its files (Python's `sqlite3`, read-only, which reads the `-wal` too): a hash
+  per table, leaving out Room's `room_master_table` and `room_table_modification_log`, `android_metadata` and
+  `sqlite_sequence`; the `-wal` and `-journal` files themselves are not compared (a write-ahead log changes with a
+  checkpoint or an invalidation tracker's row, which no screen shows). A database that cannot be opened is compared by
+  size and date, with its `-wal` and `-journal`. `relaunch_files` then names the table that changed (`databases/app.db#events`), as it names a preference's key.
+- `--data-ignore PATTERN` (repeatable) leaves out what an app writes at every action and no screen reads: a file of the slot
+  (`fnmatch`, `databases/analytics.db`), a table (`databases/app.db#events`) or a preference key
+  (`shared_prefs/x.xml#last_seen*`). Put there what `relaunch_files` shows a walk relaunching for.
 - `--keep-app-state` replays on the instance as it is (faster; the old behaviour). With `--keep-data` a relaunch is on a new
   copy of the prepared slot.
 - Within a single screen's exploration, when a control leaves the slot's data unchanged from arriving at that screen,
