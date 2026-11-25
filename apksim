@@ -567,6 +567,8 @@ if [[ -n "$STANDBY_ON" && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKS
       # Recording launches cold: its sandbox must let it write the recording's folder (a standby's is fixed).
       -Dapksim.network=replay:*|-Dapksim.networkProfile=*|-Dapksim.networkRedact=*|-Dapksim.networkMatch=*) ;;
       -Dapksim.networkIgnoreQuery=*|-Dapksim.networkIgnoreHeader=*|-Dapksim.networkUnmatched=*) ;;
+      # Class probes and resource hits (crawl.py --record-deps): Probes.reload reads them as the standby takes the launch.
+      -Dapksim.deps=*|-Dapksim.deps.packages=*) ;;
       -Dapksim.networkReplayTiming=*|-Dapksim.networkReplayMark=*|-Dapksim.networkHost=*|-Dapksim.networkTrust=*|-Dapksim.networkTrace=*|-Dapksim.networkInspect=*|-Dapksim.networkInspectRules=*) ;;
       *) WARM_OK=""; COLD_OPT="the option ${e%%=*}" ;;
     esac

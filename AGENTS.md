@@ -357,7 +357,7 @@ Read README.md for results and limits; this file covers how to work on the code.
   - `org.robolectric.res.android.CppAssetManager2` (apksim's copy of Robolectric 4.17's, ahead of it on the class
     path) and `ResourceHits`: two hook lines (`GetResource`, and `GetBag(int, List)` before its cache) record every
     resource id the framework resolves, for the `deps resources` command and `crawl.py --record-deps`. Off unless
-    `-Dapksim.deps=true` in a running instance (a `static final`; test runs never). Re-copy the file and put the two
+    `-Dapksim.deps=true` in a running instance (read at start and again by `Probes.reload` as a standby takes the launch, so `--record-deps --standby` is warm; test runs never). Re-copy the file and put the two
     lines back at every Robolectric upgrade.
   - `MappedResources`, `org.robolectric.res.android.CppApkAssets` and `ResourceString` (apksim's copies of
     Robolectric 4.17's, ahead of them on the class path): a `resources.arsc` is a mapped file, not a `byte[]` on the
