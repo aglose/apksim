@@ -13,7 +13,7 @@ Status: item 1 of the roadmap, checked on the test app (`scripts/crawl-check.py`
 ```bash
 scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] [--max-seconds S] [--max-depth N]
                  [--skip-text REGEX]... [--tap-unlabeled] [--fill TEXT] [--matrix AXIS=V,V]... [--matrix-file SPEC.json]
-                 [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--keep-data] [--keep-app-state]
+                 [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--standby] [--keep-data] [--keep-app-state]
                  [--base-option "APKSIM OPTIONS"] [--seed RUN (--only ID,ID... | --only-file PATH) [--diff-seed [--diff-controls changed|none|all]]]
                  [--events] [--screen-titles] [--record-deps [--deps-packages PKG,PKG]]
                  [-- APKSIM_OPTION...]
