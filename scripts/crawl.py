@@ -1066,6 +1066,16 @@ class NetFreeze:
             if m:
                 self.merge(m.group(1))
 
+    def finish(self):
+        """At the end of the walk: everything fetched merged, and the launches' copies of the recording gone."""
+        self.merge_all()
+        for n in os.listdir(self.dir):
+            if n.startswith("replay-"):
+                try:
+                    os.remove(os.path.join(self.dir, n))
+                except OSError:
+                    pass
+
 
 NET = None  # --freeze-network: the walk's NetFreeze (main)
 
@@ -1220,7 +1230,7 @@ class Explorer:
         if self.kept:
             self.kept.remove()
         if NET is not None:
-            NET.merge_all()
+            NET.finish()
         shutil.rmtree(self.stage, ignore_errors=True)
 
     def run_on_pool(self, tasks, fn):
@@ -3411,6 +3421,7 @@ def walk_settings():
     """What crawl.json records of how the walk read its screens, so a seeded walk reads them the same way."""
     d = {"clock": CLOCK}
     if NET is not None:
+        NET.merge_all()  # what launches fetched so far (a running one writes its file again when it ends: merged at close)
         doc = NetFreeze.read(NET.master)
         d["network"] = {"recording": "network.har", "entries": len(doc["log"]["entries"]) if doc else 0,
                         "fetched": NET.fetched}

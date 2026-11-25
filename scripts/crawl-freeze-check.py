@@ -6,7 +6,8 @@
 - What a launch fetched is merged in at its next launch and at the end: requests new to the recording added, a request
   it already has kept as it was (the first answer wins), so two instances that fetched the same thing agree from then on.
 - A fetched file that is cut short (a launch killed while writing) is left out, not merged half.
-- crawl.json records the clock and the recording (walk_settings).
+- crawl.json records the clock and the recording (walk_settings), counting what launches fetched until then.
+- At the end the launches' copies of the recording are removed.
 
 Exit status 1 on any failed expectation.
 """
@@ -85,10 +86,13 @@ def main():
     seeded.merge_all()
     check(len(entries(net.master)) == 3 and len(entries(seeded.master)) == 4, "the seed's own recording is not written")
 
+    write(os.path.join(net.dir, "fetched-new-3.har"), har(entry("https://api.example/late", "L")))
     crawl.NET, crawl.CLOCK = net, "2026-11-25T21:04:00Z"
     ws = crawl.walk_settings()
-    check(ws.get("clock") == "2026-11-25T21:04:00Z" and ws.get("network", {}).get("entries") == 3,
-          "crawl.json records the clock and the recording", str(ws))
+    check(ws.get("clock") == "2026-11-25T21:04:00Z" and ws.get("network", {}).get("entries") == 4,
+          "crawl.json records the clock and the recording, with what launches fetched until then", str(ws))
+    net.finish()
+    check(not [n for n in os.listdir(net.dir) if n.startswith("replay-")], "the launches' copies are removed at the end")
     crawl.NET = None
     if failures:
         print(f"{len(failures)} check(s) failed")
