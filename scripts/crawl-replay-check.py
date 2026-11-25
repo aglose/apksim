@@ -205,10 +205,45 @@ def main():
     caps = w.get("captures") or {}
     check(len(caps) == 1 and os.path.exists(os.path.join(out, next(iter(caps.values())))),
           "the flaky Weather is captured where its path leads now", str(caps))
+    deterministic()
     if failures:
         print(f"{len(failures)} check(s) failed")
         sys.exit(1)
     print("all checks passed")
+
+
+def deterministic():
+    """The same app walked with --deterministic: only routes that replay to the same screen are walked."""
+    out = tempfile.mkdtemp(prefix="crawl-replay-check-det-")
+    args = crawl.parse(["stand-in.apk", "--out", out, "-j", "1", "--max-depth", "6", "--deterministic"])
+    ex = crawl.Explorer("new", "stand-in.apk", args, out, [])
+    ex.ctx.update(patience_s=0, stable_ms=0)
+    ex.instances = [StandIn(ex.ctx)]
+    try:
+        ex.explore()
+    finally:
+        ex.close()
+    titles = {}
+    for sid in ex.order:
+        titles.setdefault(ex.screens[sid]["title"], []).append(ex.screens[sid])
+    print("--deterministic screens: " + ", ".join(f"{sid} ({ex.screens[sid]['title']}{', flaky' if ex.screens[sid].get('flaky') else ''})"
+                                                  for sid in ex.order))
+
+    def one(title):
+        return (titles.get(title) or [None])[0]
+
+    check(one("Alerts") is not None and one("AlertDetail") is not None,
+          "--deterministic: a step that fails until data loads is still waited for (Alerts and its detail)")
+    w = one("Weather")
+    check(w is not None and bool(w.get("flaky")) and "--deterministic" in (w.get("flaky") or ""),
+          "--deterministic: Weather, whose replay never reaches it, is flaky and says it was not walked", str(w and w.get("flaky")))
+    for t in ("Forecast", "Resorts", "Hourly"):
+        check(one(t) is None, f"--deterministic: {t}, behind a route that does not replay, is not walked")
+    w_edges = [e for e in ex.edges if w and e["from"] == w["id"]]
+    check(not w_edges, "--deterministic: no control of Weather is tried where its path leads now", str(w_edges)[:300])
+    check(ex.instances[0].signed_out == 0, "--deterministic: Sign out is never tapped")
+    check(any(w and f["kind"] == "flaky" and f["detail"].startswith(w["id"]) for f in ex.findings),
+          "--deterministic: a flaky finding names Weather")
 
 
 if __name__ == "__main__":
