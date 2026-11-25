@@ -48,7 +48,9 @@ final class NetEngine {
   /** Live connections, both sides: going offline closes the client's and the server's. */
   private final Set<Conn> open = ConcurrentHashMap.newKeySet();
   final AtomicInteger recorded = new AtomicInteger(), replayed = new AtomicInteger(), missed = new AtomicInteger(),
-      relayed = new AtomicInteger();
+      relayed = new AtomicInteger(), fetched = new AtomicInteger();
+  /** One lock per request key being fetched (--network-unmatched fetch:FILE): the same request is sent once, the rest wait for its answer. */
+  private final java.util.Map<String, Object> fetchLocks = new ConcurrentHashMap<>();
   private SSLSocketFactory upstreamTls;
 
   void start() throws IOException {
@@ -1300,9 +1302,9 @@ final class NetEngine {
       }
       streamRequestBody(req, OutputStream.nullOutputStream());
       Recording.Entry e = Net.recording.find(req.method, req.url, req.headers, req.bodySha);
+      if (e == null && Net.fetched != null) return fetch(req, startWall);
       Conditions.sleep(Net.conditions.rtt() + (e != null && Net.recordedTiming ? e.wait : 0));
       if (e == null || e.truncated) {
-        missed.incrementAndGet();
         String msg;
         if (e != null) {
           // Its body was over the recording's 32 MB: answering 200 with what is not there would pass for a download.
@@ -1313,16 +1315,7 @@ final class NetEngine {
           msg = "network replay: no recorded response for " + req.method + " " + req.url
               + (closest == null ? "" : "\n         closest: " + closest);
         }
-        Net.log(msg);
-        Net.unmatched.add(msg.replace("\n         ", "; "));
-        byte[] body = (msg + "\n").getBytes(StandardCharsets.UTF_8);
-        String head = "HTTP/1.1 599 No Recorded Response\r\nX-Apksim-Replay: unmatched\r\nContent-Type: text/plain; charset=utf-8\r\n"
-            + "Content-Length: " + body.length + "\r\n\r\n";
-        cout.write(head.getBytes(StandardCharsets.ISO_8859_1));
-        if (!req.method.equals("HEAD")) cout.write(body);
-        cout.flush();
-        inspectReplay(req, startWall, 599, List.of(new String[] {"Content-Type", "text/plain; charset=utf-8"}, new String[] {"X-Apksim-Replay", "unmatched"}), body);
-        return true;
+        return unmatched(req, startWall, msg);
       }
       replayed.incrementAndGet();
       writeRecorded(req, e);
@@ -1330,8 +1323,273 @@ final class NetEngine {
       return true;
     }
 
+    /** The 599 a request nothing can answer gets: logged, listed by `network unmatched`, and (policy fail) failing a test. */
+    boolean unmatched(Request req, long startWall, String msg) throws IOException {
+      missed.incrementAndGet();
+      Net.log(msg);
+      Net.unmatched.add(msg.replace("\n         ", "; "));
+      byte[] body = (msg + "\n").getBytes(StandardCharsets.UTF_8);
+      String head = "HTTP/1.1 599 No Recorded Response\r\nX-Apksim-Replay: unmatched\r\nContent-Type: text/plain; charset=utf-8\r\n"
+          + "Content-Length: " + body.length + "\r\n\r\n";
+      cout.write(head.getBytes(StandardCharsets.ISO_8859_1));
+      if (!req.method.equals("HEAD")) cout.write(body);
+      cout.flush();
+      inspectReplay(req, startWall, 599, List.of(new String[] {"Content-Type", "text/plain; charset=utf-8"}, new String[] {"X-Apksim-Replay", "unmatched"}), body);
+      return true;
+    }
+
+    /**
+     * A request the replayed recording lacks, with `--network-unmatched fetch:FILE` (docs/network.md): sent to the real
+     * server at its own URL (or where --network-host maps its host), the answer read whole, written to the app and kept in
+     * FILE as a recording keeps it. A repeat of it in this launch is answered from what was fetched (the first answer wins:
+     * the server sees it once, even when two connections ask at the same time). What cannot be fetched (a server not
+     * there, no answer in time, an answer over 32 MB) is unmatched, as without the policy.
+     */
+    boolean fetch(Request req, long startWall) throws IOException {
+      Recording out = Net.fetched;
+      String key = out.key(req.method, req.url, req.headers, req.bodySha);
+      Object lock = fetchLocks.computeIfAbsent(key, k -> new Object());
+      synchronized (lock) {
+        Recording.Entry prior = out.find(req.method, req.url, req.headers, req.bodySha);
+        if (prior != null) {
+          Conditions.sleep(Net.conditions.rtt());
+          replayed.incrementAndGet();
+          writeRecorded(req, prior, "fetched");
+          inspectReplay(req, startWall, prior.status, prior.respHeaders, prior.respBody);
+          return true;
+        }
+        Recording.Entry live;
+        // The app may have the answer before FILE is written: saving on the way out waits for it, as for record().
+        inFlight.incrementAndGet();
+        try {
+          try {
+            live = fetchFromServer(req, startWall);
+          } catch (IOException | RuntimeException x) {
+            String why = x.getMessage() == null ? x.getClass().getSimpleName() : x.getClass().getSimpleName() + ": " + x.getMessage();
+            String closest = Net.recording.closest(req.method, req.url, req.headers, req.bodySha);
+            return unmatched(req, startWall, "network replay: no recorded response for " + req.method + " " + req.url
+                + ", and fetching it failed: " + why.replaceAll("[\\r\\n]", " ") + (closest == null ? "" : "\n         closest: " + closest));
+          }
+          Conditions.sleep(Net.conditions.rtt());
+          fetched.incrementAndGet();
+          // The app gets the server's headers as they came; FILE (and a repeat) gets them redacted, as a recording keeps them.
+          writeRecorded(req, live, "fetched");
+          live.respHeaders = redacted(live.respHeaders);
+          out.add(live);
+          if (Boolean.getBoolean("apksim.networkTrace")) Net.log("network fetch: " + live.status + " " + live.method + " " + live.url);
+          inspectReplay(req, startWall, live.status, live.respHeaders, live.respBody);
+          Net.changed();
+          return true;
+        } finally {
+          if (inFlight.decrementAndGet() == 0) synchronized (inFlight) { inFlight.notifyAll(); }
+        }
+      }
+    }
+
+    /** One request sent on a connection of its own (closed after it) and the answer read whole, as a recorded entry with the server's own headers. */
+    Recording.Entry fetchFromServer(Request req, long startWall) throws IOException {
+      if (Net.conditions.offline()) throw new java.net.ConnectException("connect failed: ENETUNREACH (Network is unreachable)");
+      if (req.bodyTruncated) throw new IOException("a request body over 32 MB is not fetched");
+      URI u = URI.create(req.url);
+      boolean https = "https".equalsIgnoreCase(u.getScheme());
+      String h = u.getHost();
+      if (h == null) throw new IOException("no host in " + req.url);
+      if (h.startsWith("[") && h.endsWith("]")) h = h.substring(1, h.length() - 1);
+      int p = u.getPort() > 0 ? u.getPort() : https ? 443 : 80;
+      long t0 = System.nanoTime();
+      Socket s = fetchConnect(h, p);
+      long connected = System.nanoTime();
+      try {
+        s.setSoTimeout(30_000);
+        if (https) s = fetchTls(s, h, p);
+        String target = (u.getRawPath() == null || u.getRawPath().isEmpty() ? "/" : u.getRawPath()) + (u.getRawQuery() == null ? "" : "?" + u.getRawQuery());
+        StringBuilder head = new StringBuilder(req.method).append(' ').append(target).append(" HTTP/1.1\r\n");
+        boolean hostSent = false;
+        for (String[] x : req.headers) {
+          String n = x[0].toLowerCase(Locale.ROOT);
+          // One request on a connection of its own: nothing of the app's connection to the engine (or its proxy) goes on.
+          if (HOP_HEADERS.contains(n) && !n.equals("host") || n.startsWith("proxy-")) continue;
+          hostSent |= n.equals("host");
+          head.append(x[0]).append(": ").append(x[1]).append("\r\n");
+        }
+        if (!hostSent) head.append("Host: ").append(u.getRawAuthority()).append("\r\n");
+        byte[] body = req.hasBody ? req.body : null;
+        if (body != null) head.append("Content-Length: ").append(body.length).append("\r\n");
+        head.append("Connection: close\r\n\r\n");
+        OutputStream o = s.getOutputStream();
+        o.write(head.toString().getBytes(StandardCharsets.ISO_8859_1));
+        if (body != null) o.write(body);
+        o.flush();
+        long sent = System.nanoTime();
+        InputStream in = new BufferedInputStream(s.getInputStream());
+        Response resp = readHead(in);
+        while (resp.status >= 100 && resp.status < 200 && resp.status != 101) resp = readHead(in);
+        if (resp.status == 101) throw new IOException("the server switched protocols, which cannot be kept");
+        long waited = System.nanoTime();
+        Capture cap = new Capture(MAX_BODY);
+        String te = resp.header("Transfer-Encoding");
+        String cl = resp.header("Content-Length");
+        if (req.method.equals("HEAD") || resp.status == 204 || resp.status == 304) {
+          // no body
+        } else if (te != null && te.toLowerCase(Locale.ROOT).contains("chunked")) {
+          copyChunked(in, OutputStream.nullOutputStream(), cap);
+        } else if (cl != null) {
+          copy(in, OutputStream.nullOutputStream(), cap, Long.parseLong(cl.trim()), true);
+        } else {
+          copy(in, OutputStream.nullOutputStream(), cap, Long.MAX_VALUE, false);
+        }
+        if (cap.truncated()) throw new IOException("the answer is over 32 MB, too big to keep");
+        long done = System.nanoTime();
+        Recording.Entry e = new Recording.Entry();
+        e.wallMs = startWall;
+        e.started = java.time.Instant.ofEpochMilli(startWall).toString();
+        e.method = req.method;
+        e.url = req.url;
+        e.httpVersion = req.version;
+        e.reqHeaders = redacted(req.headers);
+        e.reqBody = req.hasBody ? req.body : null;
+        e.reqSha = req.bodySha;
+        e.status = resp.status;
+        e.statusText = resp.text;
+        e.respHeaders = resp.headers;
+        byte[] bytes = cap.kept();
+        if ("gzip".equalsIgnoreCase(resp.header("Content-Encoding"))) {
+          // Stored decoded, as a recording stores it (re-encoded for a client that accepts gzip); one that does not decode is kept as sent.
+          try (InputStream gz = new GZIPInputStream(new ByteArrayInputStream(bytes))) {
+            byte[] decoded = gz.readNBytes(MAX_BODY + 1);
+            if (decoded.length <= MAX_BODY) {
+              bytes = decoded;
+              e.gzip = true;
+            }
+          } catch (IOException notGzip) {
+            // stored as sent
+          }
+        }
+        e.respBody = bytes;
+        e.connect = (connected - t0) / 1_000_000;
+        e.send = (sent - connected) / 1_000_000;
+        e.wait = (waited - sent) / 1_000_000;
+        e.receive = (done - waited) / 1_000_000;
+        e.timeMs = (done - t0) / 1_000_000;
+        return e;
+      } finally {
+        synchronized (this) {
+          if (up == s) up = null;
+        }
+        try { s.close(); } catch (IOException ignored) { }
+      }
+    }
+
+    /** A head read from a fetch's own connection. */
+    private Response readHead(InputStream in) throws IOException {
+      byte[] statusLine = readLineBytes(in);
+      if (statusLine == null) throw new IOException("the server closed the connection without answering");
+      Response r = new Response();
+      String[] p = trimEol(statusLine).split(" ", 3);
+      if (p.length < 2 || !p[0].startsWith("HTTP/")) throw new IOException("not an HTTP answer: " + trimEol(statusLine));
+      r.status = Integer.parseInt(p[1].trim());
+      r.text = p.length > 2 ? p[2] : "";
+      while (true) {
+        byte[] lb = readLineBytes(in);
+        if (lb == null) throw new IOException("the server closed the connection in its headers");
+        String l = trimEol(lb);
+        if (l.isEmpty()) break;
+        int colon = l.indexOf(':');
+        if (colon > 0) r.headers.add(new String[] {l.substring(0, colon).trim(), l.substring(colon + 1).trim()});
+      }
+      return r;
+    }
+
+    /**
+     * The fetch's own connection, to where --network-host maps the host or to the host's real addresses (the system's DNS:
+     * replaying, this process's own lookups give placeholders). It is this connection's upstream while it lasts, so going
+     * offline or the app closing its connection closes it.
+     */
+    private Socket fetchConnect(String h, int p) throws IOException {
+      InetSocketAddress m = Net.hostMap.get(h.toLowerCase(Locale.ROOT));
+      List<InetSocketAddress> to = new ArrayList<>();
+      if (m != null) {
+        to.add(new InetSocketAddress(m.getHostString(), m.getPort() > 0 ? m.getPort() : p));
+      } else {
+        for (InetAddress a : NetResolver.systemLookup(h)) to.add(new InetSocketAddress(InetAddress.getByAddress(h, a.getAddress()), p));
+      }
+      IOException failed = null;
+      for (InetSocketAddress a : to) {
+        if (a.isUnresolved()) {
+          failed = new java.net.UnknownHostException(a.getHostString());
+          continue;
+        }
+        try {
+          Socket s = connectTo(a);
+          adopt(s);
+          return s;
+        } catch (IOException x) {
+          if (failed == null) failed = x; else failed.addSuppressed(x);
+        }
+      }
+      throw failed != null ? failed : new java.net.UnknownHostException(h);
+    }
+
+    /**
+     * TLS for a fetch: the app's own factory when it lent one (its trust decides, as recording), else the engine's (the JDK's
+     * trust store); a server the app refuses gets through only when --network-trust vouches for its chain. The server's
+     * chain is kept with FILE, so a replay of it presents the real certificates.
+     */
+    private Socket fetchTls(Socket raw, String h, int p) throws IOException {
+      try {
+        SSLSocket s;
+        try {
+          s = tlsOver(raw, appTls != null ? appTls : upstreamTls(), h, p);
+        } catch (javax.net.ssl.SSLException refused) {
+          if (!Net.hasTrust()) throw refused;
+          raw.close();
+          Socket again = fetchConnect(h, p);
+          try {
+            again.setSoTimeout(30_000);
+            s = tlsOver(again, upstreamTls(), h, p);
+            if (!issuedByTrust(chain(s))) throw refused;
+          } catch (Exception x) {
+            again.close();
+            throw x;
+          }
+          Net.log("network fetch: " + h + " refused by the app's TLS (" + refused.getMessage() + "), accepted for --network-trust");
+        }
+        adopt(s);
+        Net.fetched.certificates(tlsHost != null ? tlsHost : h, chain(s));
+        return s;
+      } catch (IOException x) {
+        throw x;
+      } catch (Exception x) {
+        throw new IOException(x.getMessage(), x);
+      }
+    }
+
+    private SSLSocket tlsOver(Socket raw, SSLSocketFactory factory, String h, int p) throws IOException {
+      SSLSocket s = (SSLSocket) factory.createSocket(raw, h, p, true);
+      SSLParameters params = s.getSSLParameters();
+      params.setEndpointIdentificationAlgorithm("HTTPS");
+      s.setSSLParameters(params);
+      s.startHandshake();
+      return s;
+    }
+
+    private List<String> chain(SSLSocket s) throws IOException {
+      List<String> chain = new ArrayList<>();
+      try {
+        for (Certificate cert : s.getSession().getPeerCertificates()) chain.add(Base64.getEncoder().encodeToString(cert.getEncoded()));
+      } catch (java.security.cert.CertificateEncodingException x) {
+        throw new IOException(x);
+      }
+      return chain;
+    }
+
     /** A recorded response, as the client asked for it (gzip only if it accepts it), at the download bandwidth. */
     void writeRecorded(Request req, Recording.Entry e) throws IOException {
+      writeRecorded(req, e, "recorded");
+    }
+
+    /** `mark`: what X-Apksim-Replay says (recorded, or fetched for an answer --network-unmatched fetch: got from the server). */
+    void writeRecorded(Request req, Recording.Entry e, String mark) throws IOException {
       if (Boolean.getBoolean("apksim.networkTrace")) Net.log("network replay: " + e.status + " " + e.method + " " + e.url);
       byte[] body = e.respBody;
       String accept = req.header("Accept-Encoding");
@@ -1359,7 +1617,7 @@ final class NetEngine {
       // A HEAD answer keeps the length the server gave (its body was never there to measure).
       String recordedLength = e.header(e.respHeaders, "Content-Length");
       if (!none) h.append("Content-Length: ").append(req.method.equals("HEAD") && recordedLength != null ? recordedLength : String.valueOf(body.length)).append("\r\n");
-      h.append(Net.replayMark ? "X-Apksim-Replay: recorded\r\n\r\n" : "\r\n");
+      h.append(Net.replayMark ? "X-Apksim-Replay: " + mark + "\r\n\r\n" : "\r\n");
       cout.write(h.toString().getBytes(StandardCharsets.ISO_8859_1));
       if (!none && !req.method.equals("HEAD")) new Paced(cout, true).write(body, 0, body.length);
       cout.flush();

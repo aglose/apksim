@@ -329,10 +329,13 @@ final class Recording {
     return certificates.get(host.toLowerCase(Locale.ROOT));
   }
 
+  /** What replay fetched (--network-unmatched fetch:FILE): the engine's exchanges alone, nothing of the tap's. */
+  volatile boolean tapless;
+
   void save() throws IOException {
     // Asked of the tap's thread before this recording is locked: that thread adds entries under the same lock.
-    List<Entry> more = Tap.unfinished();
-    List<Object> connections = Tap.connections(w -> true);
+    List<Entry> more = tapless ? List.of() : Tap.unfinished();
+    List<Object> connections = tapless ? null : Tap.connections(w -> true);
     String json;
     synchronized (this) {
       List<Entry> all = new ArrayList<>(entries);

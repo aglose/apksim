@@ -22,6 +22,7 @@ public final class NetResolver extends InetAddressResolverProvider {
   @Override
   public InetAddressResolver get(Configuration configuration) {
     InetAddressResolver builtin = configuration.builtinResolver();
+    system = builtin;
     return new InetAddressResolver() {
       @Override
       public Stream<InetAddress> lookupByName(String host, LookupPolicy policy) throws UnknownHostException {
@@ -113,6 +114,28 @@ public final class NetResolver extends InetAddressResolverProvider {
     if (address == null) return unresolved.contains(h);
     String stands = hostByAddress.get(address);
     return stands != null && unresolved.contains(stands);
+  }
+
+  /** The JDK's own resolver, past everything above (set when the JVM first asks for a resolver). */
+  private static volatile InetAddressResolver system;
+
+  /**
+   * The host's real addresses, as the system's DNS has them, whatever replaying would answer (placeholders): what a request
+   * the recording lacks is fetched from (--network-unmatched fetch:FILE).
+   */
+  static InetAddress[] systemLookup(String host) throws UnknownHostException {
+    InetAddressResolver r = system;
+    if (r == null) {
+      try {
+        InetAddress.getByName("localhost");  // the first lookup makes the JDK load its resolver, and so this provider
+      } catch (UnknownHostException ignored) {
+        // still none: the JDK's lookup below
+      }
+      r = system;
+    }
+    if (r == null) return InetAddress.getAllByName(host);
+    return r.lookupByName(host, InetAddressResolver.LookupPolicy.of(InetAddressResolver.LookupPolicy.IPV4 | InetAddressResolver.LookupPolicy.IPV6))
+        .toArray(InetAddress[]::new);
   }
 
   /** The host a placeholder address stands for, or null. */
