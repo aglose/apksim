@@ -107,5 +107,7 @@ stage record --jvm -XX:AOTMode=record --jvm "-XX:AOTConfiguration=$CONF" --jvm -
 stage create --jvm -XX:AOTMode=create --jvm "-XX:AOTConfiguration=$CONF" --jvm "-XX:AOTCache=$NEW" ${AOT_BASE:+--jvm "-XX:SharedBaseAddress=$AOT_BASE"} "${HEADLESS[@]+"${HEADLESS[@]}"}" --exit-after-first-frame "$APK"
 # Into place by rename, so running instances keep the cache they mapped; the root last, as launches check it.
 mv -f "$NEW" "$STATE/app.aot"
+# An installed release's cache is for that release too (the launcher compares app.aot.release with work/release).
+if [[ -f "$ROOT/work/release" ]]; then cp "$ROOT/work/release" "$STATE/app.aot.release"; else : > "$STATE/app.aot.release"; fi
 printf '%s' "$ROOT" > "$STATE/app.aot.root"
 ls -la "$STATE/app.aot"
