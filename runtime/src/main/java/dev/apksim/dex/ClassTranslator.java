@@ -25,8 +25,6 @@ public final class ClassTranslator implements Opcodes {
   static final boolean DEBUG_INFO = Boolean.getBoolean("apksim.debugInfo");
   /** -Dapksim.peephole=false writes methods as translated, for A/B runs (it changes the class cache's key too). */
   public static final boolean PEEPHOLE = !DEBUG_INFO && Boolean.parseBoolean(System.getProperty("apksim.peephole", "true"));
-  /** Test-impact recording (-Dapksim.deps): probes at method starts, see {@link Probes}. Off, classes are unchanged. */
-  static final boolean RECORDING = Probes.ON;
   /** Coverage (-Dapksim.coverage): counters per method and line, see {@link Coverage}. Off, classes are unchanged. */
   static final boolean COVERAGE = Coverage.ON;
   private static final int VIS_RUNTIME = 1;
@@ -134,7 +132,7 @@ public final class ClassTranslator implements Opcodes {
     if ((access & ACC_PROTECTED) != 0) classAccess |= ACC_PUBLIC;
     if ((access & ACC_INTERFACE) == 0) classAccess |= ACC_SUPER;
     cw.visit(V1_8, classAccess, name, signature, sup, interfaces);
-    probe = RECORDING && Probes.probed(name);
+    probe = Probes.ON && Probes.probed(name);
     isIface = (access & ACC_INTERFACE) != 0;
     if (COVERAGE && Coverage.selects(name)) {
       cov = new Coverage.Slots();

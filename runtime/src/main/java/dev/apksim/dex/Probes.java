@@ -19,8 +19,18 @@ import java.util.Set;
  * the epoch in a ClassValue.
  */
 public final class Probes {
-  /** -Dapksim.deps=true: Instrument reports what each test reached, on stdout (see Instrument.DepsListener). */
-  public static final boolean ON = Boolean.getBoolean("apksim.deps");
+  /**
+   * -Dapksim.deps=true: Instrument reports what each test reached, on stdout (see Instrument.DepsListener). Not final:
+   * a warm launch (Standby) sets the property after the JVM booted, and {@link #reload} reads it again before any app
+   * class is translated (nothing translates a class while a standby waits).
+   */
+  public static boolean ON = Boolean.getBoolean("apksim.deps");
+
+  /** Read -Dapksim.deps again: a standby taking a launch that asked for the probes (crawl.py --record-deps --standby). */
+  public static void reload() {
+    ON = Boolean.getBoolean("apksim.deps");
+    dev.apksim.ResourceHits.reload();
+  }
 
   /**
    * Read by every probed method. Moved on by {@link #mark}, on the main thread, between tests. Volatile so a worker

@@ -384,7 +384,7 @@ What to know:
   three tenths have one- or two-letter names (renaming with no mapping file), writes `"deps_unreliable": "why"` at the
   top level. `sources` are still written from what the DEX names, but a reader must not select screens by them then
   (walk everything again, or crawl a debug build for maps); `classes` and `resources` stand. No mapping file is read yet.
-- Cost: probes need a cold launch (`--record-deps` launches stay cold even with `--standby`, as `-Dapksim.deps` is not a warm option) and probed classes have their own class cache, so
+- Cost: `--record-deps` launches can be warm (`--standby`: the standby reads `-Dapksim.deps` as it takes the launch, `Probes.reload`, before any app class is translated), and probed classes have their own class cache, so
   the first walk with `--record-deps` after a build translates every class once more. See "Measured" for walk times.
 
 ## What a screen is
