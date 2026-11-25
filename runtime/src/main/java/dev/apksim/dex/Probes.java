@@ -24,7 +24,7 @@ public final class Probes {
    * a warm launch (Standby) sets the property after the JVM booted, and {@link #reload} reads it again before any app
    * class is translated (nothing translates a class while a standby waits).
    */
-  public static boolean ON = Boolean.getBoolean("apksim.deps");
+  public static volatile boolean ON = Boolean.getBoolean("apksim.deps");
 
   /** Read -Dapksim.deps again: a standby taking a launch that asked for the probes (crawl.py --record-deps --standby). */
   public static void reload() {

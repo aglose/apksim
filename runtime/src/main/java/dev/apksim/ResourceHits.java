@@ -14,7 +14,7 @@ public final class ResourceHits {
    * Running instances only: `instrument.py --record-deps` test runs probe classes too, and nothing there reads resources,
    * so the hook on the hot resource path stays off (the launcher sets apksim.instrument on the JVM's command line).
    */
-  public static boolean ON = Boolean.getBoolean("apksim.deps") && System.getProperty("apksim.instrument") == null;
+  public static volatile boolean ON = Boolean.getBoolean("apksim.deps") && System.getProperty("apksim.instrument") == null;
 
   /** Read again by a standby taking a launch (see {@code Probes.reload}). */
   public static void reload() {
