@@ -108,6 +108,11 @@ screen's subtree:
   Edges tried on another structure carry a note saying so. A control of a flaky screen that leads to a screen of the
   same activity with the same controls and title (numbers left out: a refresh) is an edge back to it, not a new screen.
   A control that worked when its screen replayed and does not now is tried on what the path reaches now too.
+- Each control of a screen is tried from a new launch that replays the screen's path. When that replay misses the screen
+  three times in a row (`ARRIVE_MISSES`: it lands on another screen the walk knows, as when a live list's order
+  changes), the screen's other controls are not given a launch each to find that out again: they are `FAILED` edges
+  noted "not tried", and the screen is a `flaky` finding saying so. A replay that reaches the screen starts the count
+  again.
 - A flaky screen is captured the same way, where its path leads now, so its picture may show other data.
 - A screen that never settles (an endless animation) pays the full `settle 6000` on each retry: ~7.5 s per failed step.
 - `scripts/crawl-replay-check.py` (CI's quick checks, no apksim) walks a stand-in app with each of these.

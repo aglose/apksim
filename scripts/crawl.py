@@ -52,6 +52,7 @@ DISMISS_LABELS = frozenset({"back", "navigate up", "close", "cancel", "not now",
 LAUNCH_CONFIG_FLAGS = frozenset({"--device", "--dark", "--appearance", "--locale", "--font-scale", "--activity"})
 TIME_RE = re.compile(r"\b\d{1,2}:\d{2}\b")
 PSEUDO = ("EXIT", "CRASH", "SKIPPED", "FAILED")  # where an edge leads when it does not lead to a screen
+ARRIVE_MISSES = 3  # replays in a row that miss a screen before its other controls are given up (each is a launch)
 
 
 def fail(msg, code=2):
@@ -1677,7 +1678,7 @@ class Explorer:
         entries = [{"screen": s, "discovered": False, "here": None, "sig": None, "prep": [], "acts": [],
                     "aliases": set(), "deps": None, "flaky": None, "lenient": False, "failed": False,
                     "todo": [], "next_pos": 0, "edges_by_idx": {}, "findings": [], "truncated": False,
-                    "back_failed": False, "relaunch_needed": False} for s in level]
+                    "back_failed": False, "relaunch_needed": False, "arrive_misses": 0} for s in level]
         cond = threading.Condition()
         undiscovered = list(entries)
         discovered = []
@@ -1756,6 +1757,7 @@ class Explorer:
                 note = None
                 lenient = entry["lenient"]
                 wp = self.waypoints.get(screen["id"])
+                arrived = False
                 try:
                     if not (at_screen and not a["prefix"]):
                         reused = False
@@ -1785,6 +1787,9 @@ class Explorer:
                                     entry["aliases"].add(got["id"])
                                 note = "tried on another structure of this screen (its replay is flaky)"
                             state_at_s = inst.data_state() if inst.from_launch_data() else None
+                    arrived = True
+                    with cond:
+                        entry["arrive_misses"] = 0
                     at_screen = False
                     try_restart = False
                     try:
@@ -1820,6 +1825,23 @@ class Explorer:
                     with cond:
                         entry["edges_by_idx"][act_idx] = {"label": a["label"], "cmd": a["cmd"], "kind": "control",
                                                           "to": {"id": "FAILED"}, "steps": steps, "note": str(e)}
+                        if not arrived:
+                            # The screen's path, not this control, failed. A flaky screen's replay that lands elsewhere
+                            # tends to land there every time: after a few in a row, its other controls are not given a
+                            # launch each to find that out again (they are FAILED edges with the same note).
+                            entry["arrive_misses"] += 1
+                            if entry["arrive_misses"] >= ARRIVE_MISSES:
+                                note = f"not tried: {entry['arrive_misses']} replays in a row missed the screen ({e})"
+                                while entry["next_pos"] < len(entry["todo"]):
+                                    i, rest = entry["todo"][entry["next_pos"]]
+                                    entry["next_pos"] += 1
+                                    entry["edges_by_idx"][i] = {"label": rest["label"], "cmd": rest["cmd"], "kind": "control",
+                                                                "to": {"id": "FAILED"}, "steps": prep + rest["prefix"] + [rest["cmd"]],
+                                                                "note": note}
+                                entry["flaky"] = entry["flaky"] or note
+                                if not any(f.get("detail", "").startswith(f"{screen['id']}: controls not tried") for f in entry["findings"]):
+                                    entry["findings"].append({"kind": "flaky", "path": screen["path"], "build": self.name,
+                                                              "detail": f"{screen['id']}: controls not tried after {ARRIVE_MISSES} replays in a row missed it ({e})"})
                     at_screen = False
                     try_restart = False
                     continue
