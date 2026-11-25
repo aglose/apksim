@@ -151,7 +151,8 @@ RUN --mount=type=bind,source=train.apk,target=/tmp/train.apk \
 # A release build names its version (`apksim --version` and the label); set after training, which it does not change.
 ARG VERSION=
 LABEL org.opencontainers.image.version=$VERSION
-RUN if [ -n "$VERSION" ]; then echo "$VERSION" > /opt/apksim/work/release; fi
+# The cache is stamped with the release it was built for (the launcher compares app.aot.release with work/release).
+RUN if [ -n "$VERSION" ]; then echo "$VERSION" > /opt/apksim/work/release; cp /opt/apksim/work/release /opt/apksim/work/app.aot.release; fi
 ENV PATH=/opt/apksim:/opt/apksim/scripts:$PATH
 WORKDIR /work
 ENTRYPOINT ["apksim"]
