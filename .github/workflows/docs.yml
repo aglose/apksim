@@ -1,5 +1,5 @@
 # The documentation site: https://apksim.web.app (Firebase Hosting, Google Cloud project "apksim").
-# scripts/docs-site.py assembles the pages from website/pages, the README's sections and docs/*.md, and Zensical
+# scripts/docs-site.py assembles the pages from website/pages/*.md, website/docs/*.md and docs/*.md, and Zensical
 # builds them.
 # - A pull request that touches a source only builds, failing on a link between pages with no target.
 # - A push to main that touches a source, and every published release, deploys the whole site: a copy of the docs per
@@ -16,14 +16,12 @@ on:
   push:
     branches: [main]
     paths:
-      - 'README.md'
       - 'docs/**'
       - 'website/**'
       - 'scripts/docs-site.py'
       - '.github/workflows/docs.yml'
   pull_request:
     paths:
-      - 'README.md'
       - 'docs/**'
       - 'website/**'
       - 'scripts/docs-site.py'
