@@ -634,3 +634,215 @@
     max-height: 11.5rem;
   }
 }
+
+/* ---- Beam page ---- */
+.beam-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1.15fr);
+  gap: 2rem;
+  align-items: center;
+  margin: 0.5rem 0 2.4rem;
+}
+.beam-hero-copy h1 {
+  margin: 0 0 0.75rem;
+}
+.beam-browser-mock {
+  border: 0.05rem solid var(--md-default-fg-color--lightest);
+  border-radius: 0.75rem;
+  overflow: hidden;
+  background: var(--apk-row);
+  box-shadow: 0 0.9rem 2rem -1.2rem rgba(0, 0, 0, 0.45);
+}
+.beam-chrome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.55rem 0.8rem;
+  background: var(--apk-head);
+  border-bottom: 0.05rem solid var(--md-default-fg-color--lightest);
+  font-size: 0.68rem;
+  color: var(--md-default-fg-color--light);
+}
+.beam-dots {
+  display: inline-flex;
+  gap: 0.3rem;
+}
+.beam-dots i {
+  display: block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--md-default-fg-color--lighter);
+  opacity: 0.5;
+}
+.beam-url {
+  font-family: var(--md-code-font-family);
+  font-size: 0.65rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.beam-url strong {
+  color: var(--md-accent-fg-color);
+}
+.beam-badge {
+  font-size: 0.62rem;
+  font-weight: 700;
+  padding: 0.14rem 0.48rem;
+  border-radius: 999px;
+  background: var(--md-accent-fg-color--transparent);
+  color: var(--md-accent-fg-color);
+  white-space: nowrap;
+}
+.beam-stage {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 1rem;
+  align-items: center;
+  padding: 1rem;
+  background: radial-gradient(circle at 25% 50%, var(--md-accent-fg-color--transparent), transparent 65%), var(--apk-row);
+}
+.beam-stage-shot {
+  margin: 0;
+  display: flex;
+  justify-content: center;
+}
+.beam-stage-shot p {
+  margin: 0;
+}
+.beam-stage-shot img {
+  display: block;
+  width: auto;
+  max-height: 14.5rem;
+  filter: drop-shadow(0 0.7rem 1.1rem rgba(0, 0, 0, 0.28));
+}
+.beam-stage-side {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.beam-node {
+  padding: 0.5rem 0.7rem;
+  border-radius: 0.45rem;
+  border: 0.05rem solid var(--md-default-fg-color--lightest);
+  background: var(--md-default-bg-color);
+}
+.beam-node--active {
+  border-color: var(--md-accent-fg-color);
+  background: var(--md-accent-fg-color--transparent);
+}
+.beam-node--muted {
+  opacity: 0.72;
+}
+.beam-node-k {
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--md-accent-fg-color);
+}
+.beam-node--muted .beam-node-k {
+  color: var(--md-default-fg-color--lighter);
+}
+.beam-node-v {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--md-default-fg-color);
+  line-height: 1.35;
+}
+.beam-arrow {
+  text-align: center;
+  font-family: var(--md-code-font-family);
+  font-size: 0.62rem;
+  color: var(--md-default-fg-color--light);
+}
+
+/* 3-step horizontal flow */
+.beam-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.9rem;
+  margin: 1rem 0 1.8rem;
+}
+.beam-step {
+  border: 0.05rem solid var(--md-default-fg-color--lightest);
+  border-radius: 0.55rem;
+  background: var(--apk-row);
+  padding: 1rem;
+  font-size: 0.76rem;
+  line-height: 1.6;
+}
+.beam-step p {
+  margin: 0.35rem 0 0;
+  color: var(--md-default-fg-color--light);
+}
+.beam-step p:first-of-type {
+  color: var(--md-default-fg-color);
+  font-size: 0.84rem;
+}
+.beam-step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.55rem;
+  height: 1.55rem;
+  border-radius: 50%;
+  background: var(--md-accent-fg-color--transparent);
+  border: 0.06rem solid var(--md-accent-fg-color);
+  color: var(--md-accent-fg-color);
+  font-size: 0.72rem;
+  font-weight: 700;
+  margin-bottom: 0.4rem;
+}
+
+/* 2-column setup & security grids */
+.beam-setup,
+.beam-security {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin: 1rem 0 1.8rem;
+}
+.beam-setup-card,
+.beam-sec-col {
+  border: 0.05rem solid var(--md-default-fg-color--lightest);
+  border-radius: 0.55rem;
+  background: var(--apk-row);
+  padding: 1rem 1.1rem;
+  font-size: 0.76rem;
+  line-height: 1.6;
+}
+.beam-setup-card > p,
+.beam-sec-col > p {
+  margin: 0.35rem 0 0.6rem;
+  color: var(--md-default-fg-color--light);
+}
+.beam-setup-card > p:first-of-type {
+  color: var(--md-default-fg-color);
+  font-size: 0.86rem;
+  margin-top: 0.15rem;
+}
+.beam-sec-col ul {
+  margin: 0.5rem 0 0;
+  padding-left: 1.1rem;
+  color: var(--md-default-fg-color--light);
+}
+.beam-sec-col li strong {
+  color: var(--md-default-fg-color);
+}
+
+@media screen and (max-width: 59.9375em) {
+  .beam-hero,
+  .beam-steps,
+  .beam-setup,
+  .beam-security {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .beam-stage {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .beam-stage-shot img {
+    max-height: 12rem;
+  }
+}

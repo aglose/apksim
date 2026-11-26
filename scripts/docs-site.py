@@ -81,8 +81,8 @@ README_REPLACED = {
     "Quick start": "quickstart.md",
     "The simulator window": "simulator-window.md",
 }
-# Internal docs under docs/ that are not published on the documentation site.
-DOCS_SKIP = {"ios-simulator-parity.md"}
+# Internal docs under docs/ that are not published on the documentation site (or replaced by website/pages/).
+DOCS_SKIP = {"ios-simulator-parity.md", "beam.md"}
 
 FENCE = re.compile(r"^(\s*)(```+|~~~+)")
 LIST_ITEM = re.compile(r"^(\s*)([-*+]|\d+[.)])\s+\S")
