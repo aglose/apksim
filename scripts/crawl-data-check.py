@@ -106,4 +106,28 @@ with tempfile.TemporaryDirectory(prefix="crawl-data-check-") as d:
         assert crawl.sqlite_tables(clone_p) == crawl.sqlite_tables_read(clone_p)
     finally:
         cc.close()
+    # Background startup-sync tables rewritten on >=3 distinct fresh launches at shallow depth stop triggering relaunches,
+    # while tables only mutated by explicit user actions (never during shallow navigation) keep triggering relaunches.
+    import threading
+    s_ctx = {"lock": threading.Lock(), "first_values": {}, "nav_values": {}, "startup_writes": {}}
+    base = {"databases/app.db": {"sync_cache": "v0", "user_items": "u0"}}
+    fake_now = {"databases/app.db": {"sync_cache": "v1", "user_items": "u0"}}
+    probe = types.SimpleNamespace(
+        ctx=s_ctx, baseline=base, i=0, generation=1,
+        data_state=lambda use_cache=False: fake_now,
+    )
+    learn = crawl.Instance.learn_defaults.__get__(probe)
+    changed = crawl.Instance.changed_files.__get__(probe)
+    for gen in (1, 2):
+        probe.generation = gen
+        fake_now = {"databases/app.db": {"sync_cache": f"ts-{gen}", "user_items": "u0"}}
+        learn(nav_depth=1)
+        assert changed() == ["databases/app.db#sync_cache"], f"gen {gen}: {changed()}"
+    probe.generation = 3
+    fake_now = {"databases/app.db": {"sync_cache": "ts-3", "user_items": "u0"}}
+    learn(nav_depth=1)
+    assert changed() == [], f"expected startup sync table ignored after 3 launches, got {changed()}"
+    # User mutation on a different table still triggers a relaunch.
+    fake_now = {"databases/app.db": {"sync_cache": "ts-4", "user_items": "u1"}}
+    assert changed() == ["databases/app.db#user_items"], changed()
 print("crawl-data-check: all passed")

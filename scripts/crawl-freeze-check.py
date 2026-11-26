@@ -93,6 +93,20 @@ def main():
           "crawl.json records the clock and the recording, with what launches fetched until then", str(ws))
     net.finish()
     check(not [n for n in os.listdir(net.dir) if n.startswith("replay-")], "the launches' copies are removed at the end")
+    # With APKSIM_HOME set, NetFreeze keeps per-launch fetch files under APKSIM_HOME/tmp so --standby stays warm.
+    fake_home = tempfile.mkdtemp(prefix="crawl-freeze-home-")
+    old_home = os.environ.get("APKSIM_HOME")
+    try:
+        os.environ["APKSIM_HOME"] = fake_home
+        st_net = crawl.NetFreeze(tempfile.mkdtemp(prefix="crawl-freeze-out-"))
+        check(os.path.realpath(st_net.dir).startswith(os.path.realpath(os.path.join(fake_home, "tmp")) + os.sep),
+              "per-launch fetch files live under APKSIM_HOME/tmp for warm standby", st_net.dir)
+        st_net.finish()
+    finally:
+        if old_home is None:
+            os.environ.pop("APKSIM_HOME", None)
+        else:
+            os.environ["APKSIM_HOME"] = old_home
     crawl.NET = None
     if failures:
         print(f"{len(failures)} check(s) failed")
