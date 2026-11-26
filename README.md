@@ -327,7 +327,7 @@ at all. The app runs and renders the same in each; click the Dock icon to bring 
 | Option | Effect |
 |---|---|
 | `--permissions ask\|grant\|deny` | Runtime permission prompts; `grant` is like `adb install -g` |
-| `--biometrics enrolled` | Start with a fingerprint enrolled |
+| `--biometrics enrolled\|auto` | Start with a fingerprint enrolled (`auto` also answers every `BiometricPrompt` with a match, for headless walks and tests) |
 | `--soft-keyboard` | Draw a soft keyboard for text fields, with real IME insets |
 | `--status-bar on\|off`, `--nav-bar gesture\|off` | Whether the device has a status bar and a gesture navigation bar (default: phone, foldable and tablet have both, desktop and TV neither). A bar that is off is not drawn and gives the app no inset |
 | `--fresh` | Erase the app's data first, with the data slot's `/sdcard` and Settings values: a new device with the app just installed |
@@ -626,7 +626,7 @@ Three things to know before scripting:
 | Device | `device [NAME\|WxH[@d]]`, `skin [NAME\|off]` (a stored skin around the screen), `size WxH`, `window WxH`, `window click X Y` (a click through the window, in points), `window front\|show\|background\|minimize\|hide` (`window` alone: its state), `rotate left\|right\|portrait\|landscape`, `zoom actual\|fit\|in\|out`, `home` / `resume`, `lock` / `unlock` |
 | Settings | `appearance dark\|light\|toggle`, `locale TAG`, `fontscale N\|+\|-`, `timezone [ZONE]`, `animscale 10\|1\|0\|toggle`, `keyboard soft on\|off`, `bars [status on\|off] [nav gesture\|off]`, `config` |
 | Network | `network` (mode and counts), `network online\|offline\|3g\|lossy`, `network latency MS`, `network bandwidth KBPS`, `network unmatched [clear]`, `network save` |
-| Device state | `permission [allow\|deny\|grant NAME\|revoke NAME\|reset]`, `biometrics [enroll\|unenroll\|match\|nomatch\|cancel]`, `bluetooth [on\|off\|toggle]`, `location LAT LNG\|run\|bike\|drive\|gpx FILE\|none`, `memory [moderate\|low\|critical]` |
+| Device state | `permission [allow\|deny\|grant NAME\|revoke NAME\|reset]`, `biometrics [enroll\|unenroll\|auto\|match\|nomatch\|cancel]`, `bluetooth [on\|off\|toggle]`, `location LAT LNG\|run\|bike\|drive\|gpx FILE\|none`, `memory [moderate\|low\|critical]` |
 | App lifecycle | `open URL` (deep link), `recreate` (a configuration change), `process-death` (save state, then rebuild from it), `pick FILE...\|cancel` |
 | Background work | `jobs [run ID]`, `services`, `alarms`, `push key=value...` (an FCM message), `notifications [open N\|last\|clear]` |
 | Capture | `shot FILE.png` (app pixels), `shot --skin FILE.png` (in the skin's frame), `wshot FILE.ppm` (the whole window), `record start [FILE]\|stop`, `clipboard [set TEXT]`, `rec [on\|off [CHANNEL...]]`, `rec save [SECONDS] [FILE]`, `rec checkpoint now\|every SECONDS\|off`, `rec clear` (the flight recorder) |
@@ -842,7 +842,7 @@ A job using the released image:
 - name: Device tests on apksim
   run: |
     mkdir -p out && cp app/build/outputs/apk/debug/*.apk app/build/outputs/apk/androidTest/debug/*.apk out/
-    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.66.1 \
+    docker run --rm -v "$PWD/out:/work" --entrypoint instrument.py ghcr.io/aglose/apksim:0.67.0 \
       app-debug.apk app-debug-androidTest.apk --xml junit.xml --bundles bundles
 - uses: actions/upload-artifact@v4
   if: always()
@@ -917,9 +917,9 @@ How it works, its limits and measurements on a large app: [docs/affected-tests.m
 ```bash
 # record goldens in the Linux image, where CI checks them (spec, APK and goldens in the mounted folder; --out keeps
 # the report there too, outside the goldens folder: without it, it stays in the container)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.66.1 spec.json --update --out snapshots/record
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.67.0 spec.json --update --out snapshots/record
 # compare every screen in every combination; exit 1 on any difference (in CI: the same image, without --update)
-docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.66.1 spec.json --out snapshots/check
+docker run --rm -v "$PWD:/work" --entrypoint snapshot.py ghcr.io/aglose/apksim:0.67.0 spec.json --out snapshots/check
 # a quick local check on a Mac before pushing, against the image's goldens with a one-level tolerance in the spec
 scripts/snapshot.py spec.json -j 4
 ```
