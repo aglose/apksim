@@ -119,7 +119,7 @@ That trade is where both the speed and the limits come from.
 | **Device tests** | Same test APKs, JUnit XML. A large app's 4,107 tests: ~4.7 min on a Mac, 8.3 min in the Linux image under Rosetta | Runs the tests as a device does. The same suite: ~19 min on two CI emulators |
 | **CI cost** | A container on an ordinary runner, with no KVM. In that app's CI, about 55% fewer runner-minutes per pull request | Needs a runner with KVM, or a macOS runner |
 | **Failure triage** | A bundle per failing test: screen, accessibility tree, log, threads, a rerun script | Screenshots and logcat you arrange to collect |
-| **API levels and devices** | API 36 only, whatever the app targets; phone, foldable, tablet, desktop, TV and watch profiles | Any system image, many API levels |
+| **API levels and devices** | Apps targeting any API level run, and behaviour gated on `targetSdk` follows the app's own target (355 platform compat changes). The framework underneath is Android 16 (API 36). Phone, foldable, tablet, desktop, TV and watch profiles | Any system image, many API levels |
 | **System services** | Stand-ins, and no other apps (details below) | The real ones, and Google Play images |
 | **Native libraries** | arm64-v8a on the Mac and in the arm64 Linux image; x86_64 in the x86_64 Linux image (details below) | arm64 or x86_64, matching the system image; 4 KB or 16 KB pages |
 | **Fidelity** | The framework and rendering are Android's own; behaviour that depends on the rest of a device is simulated | A real Android system |
@@ -1254,10 +1254,12 @@ each and the option that drives it, so you can see which of these limits an app 
 - **Background work** does run: started and bound services, JobScheduler and WorkManager, alarms, and FCM pushes
   delivered with `push`.
 
-### One API level
+### One framework level
 
-Everything runs as API 36, whatever the app targets. What an app's `targetSdk` switches on follows the table in
-`compat` (gates are answered per target). Other API levels are not run; docs/api-levels.md is the spike.
+Apps run whatever API level they target: behaviour the platform gates on `targetSdk` follows the app's own target
+(the table `compat` shows, 355 changes answered per target). The framework underneath is always Android 16 (API 36),
+so `Build.VERSION.SDK_INT` is 36 and an older platform's own behaviour is not reproduced; docs/api-levels.md is the
+spike that ran the API 30 framework.
 
 ### Native libraries
 

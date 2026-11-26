@@ -44,8 +44,8 @@ apksim app-debug.apk
 | What runs | The AOSP Android 16 framework and the app's own code, in one process | A whole device: kernel, system server, other apps |
 
 Measured on an M4 Pro. [Performance](performance.md) has the method and more figures, and
-[Features](features.md) the full comparison. An emulator is still the device: apksim has no Play Services and runs
-every app as API 36. [Limitations](limitations.md) lists where it differs.
+[Features](features.md) the full comparison. An emulator is still the device: apksim has no Play Services, and runs apps
+of any target API level on the Android 16 framework. [Limitations](limitations.md) lists where it differs.
 
 ## What you can do with it
 
