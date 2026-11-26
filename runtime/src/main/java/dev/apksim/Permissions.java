@@ -136,6 +136,9 @@ final class Permissions {
       case "reset" -> {
         shadowOf(app).denyPermissions(granted.toArray(new String[0]));
         granted.clear();
+        pending = null;
+        pendingActivity = null;
+        seen = null;
         return "ok";
       }
       default -> {

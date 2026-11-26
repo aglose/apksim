@@ -225,9 +225,10 @@ final class Standby {
    */
   static void spawnNextSoon() {
     if (System.getProperty("apksim.spawnStandby") == null) return;
+    long delay = Long.getLong("apksim.standbySpawnDelayMs", 1000L);
     Thread t = new Thread(() -> {
       try {
-        Thread.sleep(1000);
+        if (delay > 0) Thread.sleep(delay);
       } catch (InterruptedException e) {
         return;
       }

@@ -210,9 +210,13 @@ final class Nodes {
    * (tabs and line breaks in them become spaces).
    */
   static String tree(List<View> roots) {
+    return tree(roots, true);
+  }
+
+  static String tree(List<View> roots, boolean checkTruncation) {
     StringBuilder b = new StringBuilder();
     Rect r = new Rect();
-    TextTruncation.Cache cut = new TextTruncation.Cache();
+    TextTruncation.Cache cut = checkTruncation ? new TextTruncation.Cache() : null;
     walkDepth(roots, (n, depth) -> {
       AccessibilityNodeInfo i = n.info;
       i.getBoundsInScreen(r);
@@ -227,7 +231,7 @@ final class Nodes {
       if (i.isPassword()) f.append('p');
       if (!i.isEnabled()) f.append('d');
       if (i.isVisibleToUser()) f.append('v');
-      if (!n.text().isEmpty() && cut.cutOff(n)) f.append('t');
+      if (cut != null && !n.text().isEmpty() && cut.cutOff(n)) f.append('t');
       b.append(depth).append('\t').append(i.getClassName()).append('\t')
           .append(i.getViewIdResourceName() == null ? "" : i.getViewIdResourceName()).append('\t').append(f).append('\t')
           .append(r.left).append(',').append(r.top).append(',').append(r.right).append(',').append(r.bottom).append('\t')
