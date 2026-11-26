@@ -23,7 +23,7 @@ it, and [How it was built](#how-it-was-built) covers the order it came together 
 
 ## Contents
 
-- [What it offers](#what-it-offers)
+- [What it can do](#what-it-can-do)
 - [System design](#system-design)
 - [Installation](#installation)
 - [Quick start](#quick-start)
@@ -47,7 +47,7 @@ it, and [How it was built](#how-it-was-built) covers the order it came together 
 - [Building from source and contributing](#building-from-source-and-contributing)
 - [License](#license)
 
-## What it offers
+## What it can do
 
 **Run an app**
 
