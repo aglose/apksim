@@ -286,6 +286,20 @@ public class Host {
             settle = next;
             continue;
           }
+          if (cmd.args[0].equals("wait-tree")) {
+            // In-process waypoint wait: waits until the accessibility tree changes and stabilizes (or settles / times out)
+            // and returns `activity\x1dtree` in one round-trip, avoiding client-side ui-tree polling loops.
+            long maxMs = 1500;
+            try {
+              if (cmd.args.length > 1) maxMs = Long.parseLong(cmd.args[1]);
+            } catch (NumberFormatException ex) {
+              cmd.finish("error: usage: wait-tree [MAX_MS]: " + ex.getMessage());
+              continue;
+            }
+            if (waitTree != null) waitTree.pending.finish("error: replaced by another wait-tree");
+            waitTree = new WaitTree(cmd, maxMs, stack.isEmpty() ? "" : Nodes.tree(AccessibleWindows.reported(rootViews()), false));
+            continue;
+          }
           String reply;
           try {
             reply = runCommand(cmd.args);
@@ -411,8 +425,11 @@ public class Host {
         if (settle != null && settle.check(firstFrame ? "no first frame yet" : busy(looper, roots),
             !firstFrame && pendingScript.isEmpty() && drag == null,
             looper.isIdle() && !anyNeedsLayout(roots))) settle = null;
+        if (waitTree != null && waitTree.check(roots,
+            !firstFrame && pendingScript.isEmpty() && drag == null,
+            looper.isIdle() && !anyNeedsLayout(roots))) waitTree = null;
         // Nothing to do until a message is due or something arrives: sleep (idleWait) rather than poll every 2 ms.
-        boolean still = !firstFrame && settle == null && drag == null && pendingScript.isEmpty()
+        boolean still = !firstFrame && settle == null && waitTree == null && drag == null && pendingScript.isEmpty()
             && System.nanoTime() - lastInput > IDLE_AFTER_INPUT_NANOS && Control.QUEUE.isEmpty() && (controls.hidden() || !needsFrame(roots));
         // A replay's journal has its next event due at a time of its own, which idleWait does not know: no idle sleep
         // until it is done (a sleep of up to 40 ms would delay events recorded closer together than that).
@@ -434,6 +451,82 @@ public class Host {
 
   /** The `settle` waiting for the UI to go quiet, if any. Main thread only. */
   private Settle settle;
+
+  /** The `wait-tree` waiting for a post-tap UI transition, if any. Main thread only. */
+  private WaitTree waitTree;
+
+  private final class WaitTree {
+    final Control.Pending pending;
+    final long started = System.nanoTime();
+    final long deadline;
+    final String initialBody;
+    long lastCheck = 0;
+    long lastFrameChecked = -1;
+    String lastChangedBody = null;
+    long changedAt = 0;
+
+    WaitTree(Control.Pending pending, long maxMs, String initialBody) {
+      this.pending = pending;
+      this.deadline = started + maxMs * 1_000_000L;
+      this.initialBody = initialBody;
+    }
+
+    boolean check(List<View> roots, boolean inputDone, boolean layoutIdle) {
+      long now = System.nanoTime();
+      if (now >= deadline) {
+        return reply(roots);
+      }
+      if (!inputDone) return false;
+      // Only sample when layout is idle and either a new frame rendered or 16 ms elapsed since last check.
+      if (!layoutIdle) return false;
+      if (lastCheck != 0 && frames == lastFrameChecked && (now - lastCheck) < 16_000_000L) return false;
+      lastCheck = now;
+      lastFrameChecked = frames;
+      if (stack.isEmpty()) {
+        pending.finish("none");
+        return true;
+      }
+      boolean quietVsync = ShadowChoreographer.getNextVsyncTimeNanos() == 0;
+      String body = Nodes.tree(AccessibleWindows.reported(roots), false);
+      if (!body.equals(initialBody)) {
+        // When no animation frame is pending and layout is idle, the transition is already settled.
+        if (quietVsync) {
+          return finishWith(body);
+        }
+        if (body.equals(lastChangedBody) && (now - changedAt) >= 20_000_000L) {
+          return finishWith(body);
+        }
+        if (!body.equals(lastChangedBody)) {
+          lastChangedBody = body;
+          changedAt = now;
+        }
+        return false;
+      }
+      // If UI never changed and layout + vsync are idle after 35 ms (or 75 ms if animating), return current tree.
+      long idleLimit = quietVsync ? 35_000_000L : 75_000_000L;
+      if ((now - started) >= idleLimit) {
+        return finishWith(body);
+      }
+      return false;
+    }
+
+    private boolean reply(List<View> roots) {
+      if (stack.isEmpty()) {
+        pending.finish("none");
+        return true;
+      }
+      return finishWith(Nodes.tree(AccessibleWindows.reported(roots), false));
+    }
+
+    private boolean finishWith(String body) {
+      String act = stack.peek().get().getClass().getName();
+      settledTreeFrame = frames;
+      settledTreeAct = act;
+      settledTreeBody = body;
+      pending.finish(act + "\u001d" + body);
+      return true;
+    }
+  }
 
   /**
    * `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]`: answers once the UI has been quiet for QUIET_MS (default 200) of real

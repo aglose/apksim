@@ -194,6 +194,7 @@ if [[ "${1:-}" == --spawn-standby ]]; then
   if [[ "$FLAGS" =~ b((\+[0-9]+)+) ]]; then LB="${BASH_REMATCH[1]//+/,}"; export APKSIM_BEAM_LOOPBACK="${LB#,}"; fi
   # wN: per-worker standby slot (crawl.py -j N), so parallel workers do not contend on a single standby JVM.
   if [[ "$FLAGS" =~ w([0-9]+) ]]; then export APKSIM_STANDBY_SLOT="${BASH_REMATCH[1]}"; else unset APKSIM_STANDBY_SLOT; fi
+  if [[ "$FLAGS" == *m* ]]; then export APKSIM_CRAWL_MEM=1; else unset APKSIM_CRAWL_MEM; fi
   # A standby always maps device paths: one launch's APKSIM_DEVICE_PATHS=0 (cold, below) must not reach later launches.
   unset APKSIM_DEVICE_PATHS
   exec "$CLIENT" detach "$SOCK.log" "$ROOT/apksim" "${ARGS[@]}"
@@ -206,7 +207,7 @@ if [[ "${1:-}" == --stop-standbys ]]; then
     rm -f "$SOCK" "$SOCK.pid"
   done
   for S in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-    for BASE in "" n s ns; do
+    for BASE in "" n s ns m nm sm nsm; do
       SOCK="$("$CLIENT" sock "$KEY" "${BASE}w${S}")"
       [[ -f "$SOCK.pid" ]] && kill "$(cat "$SOCK.pid")" 2>/dev/null && echo "stopped standby $(cat "$SOCK.pid")"
       rm -f "$SOCK" "$SOCK.pid"
@@ -528,10 +529,10 @@ if [[ -n "${BUNDLES:-}" ]]; then
 fi
 # Always passed: a standby keeps the properties it booted with, and this launch's must replace them.
 EXTRA+=("-Dapksim.window=${WINDOW_MODE:-${APKSIM_WINDOW:-front}}")
-FLAGS="${NO_NET:+n}${NO_SANDBOX:+s}${APKSIM_NO_CORE:+k}"
+FLAGS="${NO_NET:+n}${NO_SANDBOX:+s}${APKSIM_NO_CORE:+k}${APKSIM_CRAWL_MEM:+m}"
 if [[ "${APKSIM_STANDBY_SLOT:-}" =~ ^[0-9]+$ && -z "${APKSIM_BEAM_SANDBOX:-}" ]]; then
   FLAGS="${FLAGS}w${APKSIM_STANDBY_SLOT}"
-  EXTRA+=("-Dapksim.standbySpawnDelayMs=${APKSIM_STANDBY_SPAWN_DELAY_MS:-0}" "-Dapksim.standbyJitIdle=false")
+  EXTRA+=("-Dapksim.standbySpawnDelayMs=${APKSIM_STANDBY_SPAWN_DELAY_MS:-400}" "-Dapksim.standbyJitIdle=false")
 fi
 # A beamed instance (the agent sets APKSIM_BEAM_SANDBOX, docs/beam.md): a sandbox of its own, so standbys of its own.
 if [[ -n "${APKSIM_BEAM_SANDBOX:-}" ]]; then
@@ -921,8 +922,12 @@ if [[ "$OS" == Linux ]]; then MALLOC_TRIM=(-XX:TrimNativeHeapInterval=5000); fi
 # flag and 1.7 s with it on a simulated 128 GB Mac, 2.3 s and 1.2 s in the Linux image at 256 GB. Asked for, it caps
 # that default heap at ~30 GB instead; on smaller machines the heap is what it was (docs/perf-plan.md, "Memory in the
 # Linux image"). An --jvm -Xmx of 32 GB or more still turns them off, with a warning, and loses the cache.
+HEAP_FLAGS=(-Xmn64m -Xms512m -XX:MetaspaceSize=256m -Xss4m)
+if [[ -n "${APKSIM_CRAWL_MEM:-}" ]]; then
+  HEAP_FLAGS=(-Xmn64m -Xms128m -Xmx512m -XX:MetaspaceSize=128m -XX:MaxHeapFreeRatio=30 -XX:MinHeapFreeRatio=10 -Xss2m)
+fi
 exec "${SANDBOX[@]+"${SANDBOX[@]}"}" "${ENVP[@]+"${ENVP[@]}"}" "$JAVA" "${NOCORE[@]+"${NOCORE[@]}"}" "${CRASHREPORT[@]+"${CRASHREPORT[@]}"}" \
-  -XX:+UnlockDiagnosticVMOptions -XX:+UseSerialGC -XX:+UseCompressedOops -Xmn64m -Xms512m -XX:MetaspaceSize=256m -XX:-BytecodeVerificationRemote -Xss4m \
+  -XX:+UnlockDiagnosticVMOptions -XX:+UseSerialGC -XX:+UseCompressedOops "${HEAP_FLAGS[@]}" -XX:-BytecodeVerificationRemote \
   --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
   --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED \
   --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED \
