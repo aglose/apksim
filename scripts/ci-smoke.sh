@@ -193,6 +193,9 @@ drive nodes | grep -q 'text="Row 3"' || { echo "nodes lacks a View hosted in Com
 drive 'tap-text Row 3' 'wait 800' >/dev/null
 drive nodes | grep -q 'text="tapped: Row 3"' || { echo "tap-text did not reach a View hosted in Compose" >&2; exit 1; }
 echo "Interop: AndroidView rows listed and tapped"
+# A window Android draws in software (android:hardwareAccelerated="false", every window of an app targeting API 13 or
+# lower) reaches the screen and is drawn again after an invalidate; it drew blank before.
+python3 "$ROOT/scripts/software-window-check.py" "$PORT" "$OUT" --instance-dir /work
 # Resources read through AppCompat's per-context caches are the new configuration's after a recreation, which no
 # longer collects in a running instance (Robolectric's System.gc() in ActivityController.configurationChange).
 appcompat_line() { drive nodes | grep -o 'appcompat: activity color=#[0-9a-f]* vector=#[0-9a-f]*, app color=#[0-9a-f]* vector=#[0-9a-f]*' || true; }

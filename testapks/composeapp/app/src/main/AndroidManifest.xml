@@ -413,6 +413,15 @@
                 <data android:scheme="apksim" android:host="floating" />
             </intent-filter>
         </activity>
+        <!-- apksim://software: a window drawn in software, as every window of an app targeting API 13 or lower is. -->
+        <activity android:name=".SoftwareWindowActivity" android:exported="true" android:hardwareAccelerated="false">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="software" />
+            </intent-filter>
+        </activity>
         <!-- apksim://stack: SecondActivity over whatever is running ("Deeper" stacks more), for stack checks. -->
         <activity android:name=".SecondActivity" android:exported="true">
             <intent-filter>

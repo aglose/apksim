@@ -450,7 +450,12 @@ Read README.md for results and limits; this file covers how to work on the code.
     instruction only with debug info), DEX references sit in arrays by index shared across threads' views. That
     halved translation time and allocation; a translator change must leave `translate-all.java`'s output identical
     unless it means to change the bytecode.
-  - `HwRenderer`: Android's real HWUI pipeline (CPU Skia). Dimming is one layer, drawn just under the top-most drawn window with `FLAG_DIM_BEHIND` at its `dimAmount`, as the window manager's Dimmer keeps it (issue 507). `syncAndDraw` runs on its own thread; the main thread
+  - `HwRenderer`: Android's real HWUI pipeline (CPU Skia). A window ViewRootImpl did not make hardware accelerated
+    (no FLAG_HARDWARE_ACCELERATED: every window of an app targeting API 13 or lower, `android:hardwareAccelerated="false"`)
+    has no ThreadedRenderer, so `updateDisplayListIfDirty` records nothing for it and it drew blank; `displayList`
+    records it with `View.draw` into a node of its own while it is dirty (the views keep their software path, the canvas
+    records), and HWUI draws it with the rest. Test app: `apksim://software` (`SoftwareWindowActivity`,
+    `scripts/software-window-check.py`, in `ci-smoke.sh`). Dimming is one layer, drawn just under the top-most drawn window with `FLAG_DIM_BEHIND` at its `dimAmount`, as the window manager's Dimmer keeps it (issue 507). `syncAndDraw` runs on its own thread; the main thread
     waits only for HWUI's sync (the `FrameDrawingCallback`), so recording overlaps raster.
   - `gpu/`: AGSL → Metal. `AgslTranslator` puts uniforms and functions in one MSL struct. `TrackedRuntimeShader`
     renders on the GPU one frame ahead (`submit`/`collect`) and is drawn as a BitmapShader; a shader not drawn for a
@@ -2351,7 +2356,7 @@ outputs are `app/build-t28/outputs/apk/{debug/app-t28-debug.apk,androidTest/debu
 (a build folder of its own: AGP deletes the other APKs of an outputs folder, so the default `app-debug.apk` would
 vanish), the same sources with `src/t28/AndroidManifest.xml` as the debug manifest (legacy Bluetooth permissions only); build
 it last and both tasks together. The property takes any target (below `minSdk` 26 too; every one under 31 gets the
-`src/t28` overlay): apps targeting 14 and up draw, below 14 they run with a blank screen (README "One framework level"). `Target28Test` is its target-dependent checks (run with `-e expectTarget 28`, else skipped
+`src/t28` overlay): every target draws (README "One framework level"; below 14 windows are drawn in software: `HwRenderer.displayList`). `Target28Test` is its target-dependent checks (run with `-e expectTarget 28`, else skipped
 by an assumption; its `probe` prints one `t28.KEY=VALUE` status line per observation, which docs/conformance.md tables for
 API 30, API 36 and apksim, with the full-suite comparison). On API 33+ a target-28 app raises the POST_NOTIFICATIONS prompt,
 which takes the focus from later tests of an emulator run: close it (Back) while the run goes. `scripts/target-gate-check.sh
