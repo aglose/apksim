@@ -122,8 +122,40 @@ final class HwRenderer {
     for (View root : roots) {
       if (!drawn(root)) continue;
       DrawingTime.stamp(root);
-      root.updateDisplayListIfDirty();
+      displayList(root);
     }
+  }
+
+  /**
+   * A software window's recordings, kept while the window lives. A window ViewRootImpl did not make hardware
+   * accelerated (no FLAG_HARDWARE_ACCELERATED: an app targeting API 13 or lower, or android:hardwareAccelerated="false"
+   * on its application or activity) has no ThreadedRenderer, so View.updateDisplayListIfDirty records nothing for it
+   * ({@code canHaveDisplayList} is false) and the window drew blank. On a device ViewRootImpl.drawSoftware draws it
+   * with View.draw into the surface's canvas; here View.draw records it into a node of its own instead, which HWUI
+   * rasterizes with the other windows. The views keep their software path (no display list per view, software
+   * layers as drawing caches, View.isHardwareAccelerated() false); only the canvas they draw on records.
+   */
+  private final java.util.Map<View, RenderNode> softwareNodes = new java.util.WeakHashMap<>();
+
+  /** The window's display list: its own (hardware accelerated), or recorded here from View.draw (software). */
+  RenderNode displayList(View root) {
+    if (root.isHardwareAccelerated()) return root.updateDisplayListIfDirty();
+    RenderNode node = softwareNodes.get(root);
+    if (node == null) {
+      node = RenderNode.create("apksim-software-window", null);
+      softwareNodes.put(root, node);
+    }
+    // View.draw clears the dirty flags it draws, as drawSoftware's does.
+    if (root.isDirty() || !node.hasDisplayList() || node.getWidth() != root.getWidth() || node.getHeight() != root.getHeight()) {
+      node.setPosition(0, 0, root.getWidth(), root.getHeight());
+      RecordingCanvas c = node.beginRecording(root.getWidth(), root.getHeight());
+      try {
+        root.draw(c);
+      } finally {
+        node.endRecording();
+      }
+    }
+    return node;
   }
 
   /** Records the windows bottom-to-top and starts rasterizing them; returns once HWUI has synced. */
@@ -151,8 +183,7 @@ final class HwRenderer {
       int[] at = placer.position(root);
       c.translate(at[0], at[1]);
       DrawingTime.stamp(root);  // legacy view Animations read AttachInfo.mDrawingTime
-      RenderNode node = root.updateDisplayListIfDirty();
-      c.drawRenderNode(node);
+      c.drawRenderNode(displayList(root));
       c.restoreToCount(save);
     }
     rootNode.endRecording();
