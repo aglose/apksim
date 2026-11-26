@@ -5,7 +5,7 @@ Usage: crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] [
                 [--skip-text REGEX]... [--tap-unlabeled] [--fill TEXT] [--matrix AXIS=V,V]... [--matrix-file SPEC.json]
                 [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--standby] [--keep-data] [--keep-app-state] [--data-ignore PATTERN]...
                 [--base-option "APKSIM OPTIONS"] [--sweep LIST ...] [--seed RUN (--only ID,... | --only-file PATH)]
-                [--events] [--screen-titles] [-- APKSIM_OPTION...]
+                [--events] [--screen-titles] [--freeze-network] [--deterministic] [-- APKSIM_OPTION...]
 
 Starts N headless instances (`apksim --headless --snapshot`, as scripts/snapshot.py does) and walks the app level by
 level: each screen reached is replayed from a fresh start, every control on it is tried in turn, and where it leads
@@ -340,6 +340,13 @@ class Instance(snapshot.Worker):
             if self.proc is not None and self.proc.poll() is None:
                 self.quit()
             self.own_options = self.ctx["restore"](self.i)
+        if NET is not None:
+            # --freeze-network: answered from the walk's recording (as it is now), what it lacks fetched and kept. The
+            # last launch must have ended (and written what it fetched) before that is merged.
+            if self.proc is not None and self.proc.poll() is None:
+                self.quit()
+            kept = list(self.own_options) if self.ctx.get("restore") else []
+            self.own_options = kept + NET.options(f"{self.ctx['name']}-{self.i}")
         self.generation += 1
         self.slot = self.baseline = None
         self.log = os.path.join(self.ctx["out"], "logs", f"{self.ctx['name']}-instance-{self.i}.{self.generation}.log")
@@ -979,6 +986,100 @@ class KeptSlot:
                 shutil.rmtree(d, ignore_errors=True)
 
 
+class NetFreeze:
+    """--freeze-network: every launch of the walk answered from one recording, OUT/network.har, so a screen whose content
+    comes from a server shows the same data at each replay. A launch replays the recording as it is when it starts
+    (copied, so a merge cannot change it under the launch) and fetches what it lacks from the server
+    (`--network-unmatched fetch:FILE`); what it fetched is merged into the recording when it ends, the first answer to a
+    request kept (method, URL, body: the engine's default match). A seeded walk starts from its seed's recording."""
+
+    def __init__(self, out, seed_dir=None):
+        self.dir = os.path.join(out, "network")
+        self.master = os.path.join(out, "network.har")
+        self.lock = threading.Lock()
+        os.makedirs(self.dir, exist_ok=True)
+        src = os.path.join(seed_dir, "network.har") if seed_dir else None
+        if src and os.path.abspath(src) != os.path.abspath(self.master) and os.path.isfile(src):
+            shutil.copyfile(src, self.master)
+        if not os.path.isfile(self.master):
+            self.write(self.empty())
+        self.fetched = 0  # entries merged in by this walk
+
+    @staticmethod
+    def empty():
+        return {"log": {"version": "1.2", "creator": {"name": "apksim crawl.py", "version": "1"}, "entries": []}}
+
+    @staticmethod
+    def key(e):
+        req = e.get("request") or {}
+        return (req.get("method"), req.get("url"), ((req.get("postData") or {}).get("text") or ""))
+
+    @staticmethod
+    def read(path):
+        try:
+            with open(path) as f:
+                doc = json.load(f)
+            return doc if isinstance(doc.get("log", {}).get("entries"), list) else None
+        except (OSError, ValueError, AttributeError):
+            return None
+
+    def write(self, doc):
+        tmp = self.master + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(doc, f)
+        os.replace(tmp, self.master)
+
+    def options(self, tag):
+        """The launch options of instance [tag]'s next launch; what its last launch fetched is merged first."""
+        self.merge(tag)
+        replay = os.path.join(self.dir, f"replay-{tag}.har")
+        with self.lock:
+            shutil.copyfile(self.master, replay)
+        return ["--network", "replay", replay, "--network-unmatched", "fetch:" + os.path.join(self.dir, f"fetched-{tag}.har")]
+
+    def merge(self, tag):
+        path = os.path.join(self.dir, f"fetched-{tag}.har")
+        got = self.read(path)
+        if got is None:
+            return
+        with self.lock:
+            doc = self.read(self.master) or self.empty()
+            have = {self.key(e) for e in doc["log"]["entries"]}
+            added = 0
+            for e in got["log"]["entries"]:
+                k = self.key(e)
+                if k not in have:
+                    have.add(k)
+                    doc["log"]["entries"].append(e)
+                    added += 1
+            if added:
+                self.write(doc)
+                self.fetched += added
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+    def merge_all(self):
+        for n in sorted(os.listdir(self.dir)):
+            m = re.fullmatch(r"fetched-(.+)\.har", n)
+            if m:
+                self.merge(m.group(1))
+
+    def finish(self):
+        """At the end of the walk: everything fetched merged, and the launches' copies of the recording gone."""
+        self.merge_all()
+        for n in os.listdir(self.dir):
+            if n.startswith("replay-"):
+                try:
+                    os.remove(os.path.join(self.dir, n))
+                except OSError:
+                    pass
+
+
+NET = None  # --freeze-network: the walk's NetFreeze (main)
+
+
 def copy_tree(src, dst):
     """A copy of a folder, cloned (APFS clonefile, a reflink) where the file system can, else copied."""
     if sys.platform == "darwin":
@@ -1128,6 +1229,8 @@ class Explorer:
                 stop(inst)
         if self.kept:
             self.kept.remove()
+        if NET is not None:
+            NET.finish()
         shutil.rmtree(self.stage, ignore_errors=True)
 
     def run_on_pool(self, tasks, fn):
@@ -1535,6 +1638,13 @@ class Explorer:
                     entry["flaky"] = "ended on arrival"
                     entry["failed"] = True
                     return False, False, None
+        if here is None and args.deterministic:
+            # --deterministic: a route that does not replay to the same screen is not walked past.
+            entry["findings"].append({"kind": "flaky", "detail": f"{screen['id']}: {flaky}; not walked (--deterministic)",
+                                      "path": screen["path"], "build": self.name})
+            entry["flaky"] = f"{flaky}; not walked (--deterministic)"
+            entry["failed"] = True
+            return False, False, None
         if here is None:
             # Not a dead end: the walk reached this screen once, so its controls (as it showed them then) are tried on
             # what its path reaches now in the same activity, and what they lead to is followed. Still flaky.
@@ -1790,7 +1900,7 @@ class Explorer:
                             try:
                                 got = self.arrive(inst, screen, prep + a["prefix"], lenient, waypoints=wp, explore_fast=self.explore_fast)
                             except ReplayFailed:
-                                if lenient:
+                                if lenient or self.args.deterministic:
                                     raise
                                 # It replayed for the screen and not now: try this control where the path leads now.
                                 got = self.arrive(inst, screen, prep + a["prefix"], True, waypoints=wp, explore_fast=self.explore_fast)
@@ -1814,6 +1924,8 @@ class Explorer:
                         try:
                             inst.expect_ok(a["cmd"])
                         except ReplayFailed:
+                            if self.args.deterministic:
+                                raise  # the label is there or not from one launch to the next: its old place is a guess
                             a["cmd"] = alt
                             steps = prep + a["prefix"] + [a["cmd"]]
                             inst.tap_checked(a["cmd"])
@@ -3229,6 +3341,13 @@ def parse(argv):
                         "--diff-seed implies it; a --base, --base-option or --sweep walk renders with --snapshot and stays cold). "
                         "apksim keeps one standby per folder, so with -j N the relaunches share it and one that finds it "
                         "booting or taken launches cold; APKSIM_STANDBY=0 forces cold")
+    p.add_argument("--freeze-network", action="store_true",
+                   help="answer every launch from one recording, OUT/network.har (what it lacks is fetched once and kept), "
+                        "with the clock at the time the recording began, so screens with server data replay the same")
+    p.add_argument("--deterministic", action="store_true",
+                   help="walk only routes that replay to the same screen: a screen whose path leads elsewhere, or a control "
+                        "whose label is gone, is a flaky finding and is not walked past (no tries on what the path leads "
+                        "to now, no taps at a label's old place)")
     p.add_argument("--keep-data", action="store_true", help="start from a prepared data slot (the one this run's --data-slots names, else default): each instance runs on a copy of it, made again at each relaunch, and the slot itself is not written")
     p.add_argument("--data-ignore", action="append", default=[], metavar="PATTERN",
                    help="what the app writes at every action that no screen reads, left out of the data a replay is checked "
@@ -3296,6 +3415,17 @@ def parse(argv):
     elif args.only or args.only_file:
         fail("--only and --only-file name screens of a --seed walk: give --seed RUN")
     return args
+
+
+def walk_settings():
+    """What crawl.json records of how the walk read its screens, so a seeded walk reads them the same way."""
+    d = {"clock": CLOCK}
+    if NET is not None:
+        NET.merge_all()  # what launches fetched so far (a running one writes its file again when it ends: merged at close)
+        doc = NetFreeze.read(NET.master)
+        d["network"] = {"recording": "network.har", "entries": len(doc["log"]["entries"]) if doc else 0,
+                        "fetched": NET.fetched}
+    return d
 
 
 def load_seed(args, out, combos):
@@ -3411,6 +3541,9 @@ def on_stop(signum, frame):
             doc["combos"] = [snapshot.combo_name(c) for c in STOP["combos"]]
             doc["screen_titles"] = TITLES_ARE_IDENTITY
             doc["screen_ids"] = SCREEN_IDS  # a resume (--seed on this walk) makes its ids the same way
+            if NET is not None:
+                NET.merge_all()
+            doc.update(walk_settings())
             doc["seconds"]["total"] = round(time.time() - STOP["t0"], 1)
             with open(os.path.join(STOP["out"], "crawl.json.part"), "w") as f:
                 json.dump(doc, f, indent=1)
@@ -3452,6 +3585,17 @@ def main():
     for d in ("screens", "base-screens", "diff"):
         shutil.rmtree(os.path.join(out, d), ignore_errors=True)
     os.makedirs(out, exist_ok=True)
+    global NET, CLOCK
+    if seed is not None and seed.get("clock"):
+        CLOCK = seed["clock"]  # the seed's screens were read at this time: the ones walked again are too
+    elif args.freeze_network:
+        CLOCK = time.strftime("%Y-%m-%dT%H:%M:00Z", time.gmtime())  # the recording's data is from now
+    if args.freeze_network:
+        if seed is None:
+            shutil.rmtree(os.path.join(out, "network"), ignore_errors=True)
+            if os.path.exists(os.path.join(out, "network.har")):
+                os.remove(os.path.join(out, "network.har"))
+        NET = NetFreeze(out, src_dir if seed is not None else None)
     t0 = time.time()
     snap_override = seed.get("snapshot") if (seed is not None and args.diff_seed and "snapshot" in seed) else None
     new = Explorer("new", apk, args, out, [], combos=combos, snapshot_override=snap_override)
@@ -3490,6 +3634,7 @@ def main():
         doc["combos"] = [snapshot.combo_name(c) for c in combos]
         doc["screen_titles"] = bool(args.screen_titles)
         doc["screen_ids"] = SCREEN_IDS
+        doc.update(walk_settings())
         doc["snapshot"] = bool(new.use_snapshot)
         if sc is not None:
             sc.doc = doc

@@ -59,6 +59,9 @@ scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] 
   compare the walked/new screens directly against the seed's graph and captures (semantic text/control diffs plus pixel
   diff maps) without re-walking the base build, with `--diff-controls changed|none|all` (default `changed`: tap only
   new or renamed controls).
+- `--freeze-network`: every launch answered from one recording of the app's server answers, the clock at the time it
+  began; `--deterministic`: only routes that replay to the same screen are walked (see "Server data and routes that do
+  not replay").
 - `--events`: besides the human lines, which stay as they are (`[new] depth N: ...`), one line of JSON on stdout per
   finished screen, per level, and one at the end (see "Seeded walks").
 - `--record-deps`: per screen, the app classes whose code ran, their source files and the resources resolved, and the
@@ -172,6 +175,31 @@ What it does not cover: state an app keeps in memory only (a static that a tap c
 (`DevicePaths` in AGENTS.md), so a screen that prints it is the same in each. The app's internal folders
 (`getFilesDir`, `getCacheDir`, databases) are still host folders of the instance's slot, so a screen that prints one
 of those still differs between instances.
+
+### Server data and routes that do not replay (`--freeze-network`, `--deterministic`)
+
+A screen that shows what a server sends (weather, a feed, prices) is another screen, or another picture, at each launch:
+its rows come in another order, a label is longer, a card is there or not. Replays then miss their screen, and pull
+request comparisons show changes no commit made. Measured on a weather app walked live: about a third of all replays
+reached the end of their path and found another screen there, and the service began refusing the walk's ~2,500 launches.
+
+- `--freeze-network`: every launch is answered from one recording, `OUT/network.har`. A launch replays a copy of the
+  recording as it is when the launch starts and fetches from the server only what the recording lacks
+  (`--network replay COPY --network-unmatched fetch:FILE`, docs/network.md). What it fetched is merged into the
+  recording when the launch ends, the first answer to a request kept (method, URL and body), so from then on every
+  launch sees that answer. The app's clock is the time the recording began (minute), not the fixed 2026-01-01 09:41, so
+  "in 20 minutes" in a server's answer stays in 20 minutes. `crawl.json` records `clock` and `network` (the recording,
+  its entries, how many this walk added). A seeded walk starts from its seed's `network.har` (copied: the seed's is not
+  written) and runs at its seed's `clock`, so a pull request's walk shows the base's data. Requests the engine cannot
+  answer from a recording (a connection that is not HTTP, WebSocket, a client that offers only HTTP/2) are not frozen.
+  `network.har` holds what the signed-in account was sent: it stays in OUT.
+- `--deterministic`: only routes that replay to the same screen are walked. A screen whose path, replayed three times,
+  leads elsewhere is a `flaky` finding saying it was not walked, and nothing under it is walked; a control whose label
+  is not there at a replay is a `FAILED` edge, not a tap at the label's old place; a control is never tried on what a
+  path leads to instead of its screen. Waiting longer for a screen or a label still loading is kept: that is time, not
+  another route.
+
+Together, a route is walked when it replays with the server's answers held still, and dropped when even then it does not.
 
 ## Seeded walks
 

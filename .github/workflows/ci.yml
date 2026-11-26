@@ -171,6 +171,8 @@ jobs:
         run: python3 scripts/crawl-data-check.py
       - name: crawl.py screen ids (a label's length does not make another screen; a seed's id rule kept; no apksim)
         run: python3 scripts/crawl-ids-check.py
+      - name: crawl.py --freeze-network recording (one recording, first answer kept, seeds copied; no apksim)
+        run: python3 scripts/crawl-freeze-check.py
       - name: Subsystem audit (what the test app refers to, against apksim's status table)
         run: python3 scripts/subsystem-audit-check.py
       - name: Launch options (every launcher option decided for serve, beam and mcp)
