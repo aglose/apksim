@@ -248,7 +248,7 @@ scripts/target-gate-check.sh testapks/composeapp/app/build/outputs/apk/debug/app
 ```
 
 The property (`-Papksim.targetSdk=N`) sets `targetSdk` and builds into `app/build-tN/` as `app-tN-debug.apk` and
-`app-tN-debug-androidTest.apk`; without it nothing changes (`app/build/outputs/apk/debug/app-debug.apk`). Any N works, below the app's `minSdk` 26 too, and every N under 31 gets the `src/t28` overlay (legacy Bluetooth permissions); README "One framework level" has the floor measured this way (targets 14 and up draw; below 14 the screen stays blank). Run the default
+`app-tN-debug-androidTest.apk`; without it nothing changes (`app/build/outputs/apk/debug/app-debug.apk`). Any N works, below the app's `minSdk` 26 too, and every N under 31 gets the `src/t28` overlay (legacy Bluetooth permissions); README "One framework level" has the floor measured this way (every target draws; below 14 in software windows). Run the default
 build first and the target build last, both tasks in one command: a default build after a target one, or one task alone,
 left the other's outputs folder without its androidTest APK in this checkout. The target-28 build also uses
 `src/t28/AndroidManifest.xml` as the debug source set's manifest, which AGP merges over the main one: the legacy
