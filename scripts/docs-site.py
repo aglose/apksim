@@ -53,15 +53,12 @@ RELEASE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 
 # README '## ' heading -> page. A section not listed here stops the build: decide where a new one goes.
 README_PAGES = {
-    "What it can do": "features.md",
     "System design": "system-design.md",
     "Installation": "installation.md",
     "Devices and launch options": "devices-and-launch-options.md",
     "Skins": "using-skins.md",
-    "Automation": "automation.md",
     "adb device": "adb-device.md",
     "In a browser tab": "browser-tab.md",
-    "Instrumented tests and CI": "instrumented-tests.md",
     "Screenshot tests": "screenshot-tests.md",
     "Network: record, replay and conditions": "network-overview.md",
     "Replay, trace viewer and crawler": "replay-trace-crawler.md",
@@ -69,9 +66,7 @@ README_PAGES = {
     "Linux and Docker": "linux-and-docker.md",
     "Debugging": "debugging.md",
     "Configuration reference": "configuration-reference.md",
-    "Performance": "performance.md",
     "How it was built": "how-it-was-built.md",
-    "Limitations": "limitations.md",
     "Building from source and contributing": "building-and-contributing.md",
     "License": "license.md",
 }
@@ -79,10 +74,41 @@ README_PAGES = {
 README_REPLACED = {
     "Contents": "index.md",
     "Quick start": "quickstart.md",
+    "What it can do": "features.md",
     "The simulator window": "simulator-window.md",
+    "Automation": "automation.md",
+    "Instrumented tests and CI": "instrumented-tests.md",
+    "Performance": "performance.md",
+    "Limitations": "limitations.md",
 }
-# Internal docs under docs/ that are not published on the documentation site (or replaced by website/pages/).
-DOCS_SKIP = {"ios-simulator-parity.md", "beam.md"}
+# Internal docs, spikes, and historical plans under docs/ hidden from the website across all versions.
+# They stay in docs/ in git, and any links to them rewrite to GitHub.
+DOCS_HIDDEN = {
+    "ios-simulator-parity.md",
+    "corpus.md",
+    "crawl-deps-spike.md",
+    "plan.md",
+    "perf-plan.md",
+    "roadmap.md",
+    "api-levels.md",
+    "startup-gate.md",
+    "conformance.md",
+    "ci-testbed.md",
+    "uiautomator-engine.md",
+}
+# Docs under docs/ that have a concise, user-facing page in website/pages/ (links still point on-site).
+DOCS_REPLACED = {
+    "beam.md",
+    "serve.md",
+    "pr-preview.md",
+    "network.md",
+    "mcp.md",
+    "flight-recorder.md",
+    "replay.md",
+    "trace-viewer.md",
+    "crawl.md",
+}
+DOCS_SKIP = DOCS_HIDDEN | DOCS_REPLACED
 
 FENCE = re.compile(r"^(\s*)(```+|~~~+)")
 LIST_ITEM = re.compile(r"^(\s*)([-*+]|\d+[.)])\s+\S")
@@ -329,7 +355,7 @@ class Site:
             to, a = self.readme_anchor[anchor]
             return to + ("#" + a if a else "")
         if os.path.dirname(full) == "docs" and os.path.exists(os.path.join(ROOT, full)):
-            if full.endswith(".md") or full.endswith(".svg"):
+            if (full.endswith(".md") and os.path.basename(full) not in DOCS_HIDDEN) or full.endswith(".svg"):
                 return os.path.basename(full) + ("#" + anchor if anchor else "")
         if full.startswith(".."):
             self.problems.append("%s: link leaves the repository: %s" % (page, url))
@@ -418,10 +444,41 @@ def snapshot_tags(rels):
     return sorted(names, key=vkey, reverse=True)
 
 
+def strip_hidden_nav(nav_text, hidden):
+    """Remove nav entries pointing at pages in `hidden`, and prune any section left with no children."""
+    lines = []
+    for line in nav_text.splitlines():
+        m = re.search(r":\s+([\w.-]+\.md)\s*$", line)
+        if m and m.group(1) in hidden:
+            continue
+        lines.append(line)
+    # Prune section headers (lines ending with ':') that no longer have any more-indented children.
+    changed = True
+    while changed:
+        changed = False
+        pruned = []
+        for i, line in enumerate(lines):
+            if line.rstrip().endswith(":"):
+                indent = len(line) - len(line.lstrip(" "))
+                has_child = False
+                for nxt in lines[i + 1:]:
+                    if not nxt.strip():
+                        continue
+                    nxt_indent = len(nxt) - len(nxt.lstrip(" "))
+                    has_child = nxt_indent > indent
+                    break
+                if not has_child:
+                    changed = True
+                    continue
+            pruned.append(line)
+        lines = pruned
+    return "\n".join(lines) + ("\n" if nav_text.endswith("\n") else "")
+
+
 def overlay_ui(dest):
-    """Apply this checkout's site UI (assets, theme/chrome config, and website/pages/*.md) onto an exported
-    release tag so UI improvements reach every version while each tag keeps its own feature docs (README.md,
-    docs/, and nav)."""
+    """Apply this checkout's site UI (assets, theme/chrome config, hidden-page filter, and website/pages/*.md)
+    onto an exported release tag so readability and nav cleanup reach every published version while each tag
+    keeps its own version-specific docs (README.md, docs/, and remaining nav)."""
     shutil.copytree(os.path.join(ROOT, "website", "assets"),
                     os.path.join(dest, "website", "assets"), dirs_exist_ok=True)
     main_cfg_path = os.path.join(ROOT, "website", "mkdocs.yml")
@@ -433,7 +490,7 @@ def overlay_ui(dest):
     marker = "\nnav:\n"
     if marker in main_cfg and marker in tag_cfg:
         main_head = main_cfg.split(marker, 1)[0]
-        tag_nav = tag_cfg.split(marker, 1)[1]
+        tag_nav = strip_hidden_nav(tag_cfg.split(marker, 1)[1], DOCS_HIDDEN)
         tag_cfg = main_head + marker + tag_nav
         with open(tag_cfg_path, "w", encoding="utf-8") as f:
             f.write(tag_cfg)
@@ -441,23 +498,44 @@ def overlay_ui(dest):
     pages_src = os.path.join(ROOT, "website", "pages")
     pages_dst = os.path.join(dest, "website", "pages")
     os.makedirs(pages_dst, exist_ok=True)
+    overlaid = set()
     for name in sorted(os.listdir(pages_src)):
         if name.endswith(".md") and name in listed:
             shutil.copy(os.path.join(pages_src, name), os.path.join(pages_dst, name))
-            dup_doc = os.path.join(dest, "docs", name)
-            if os.path.exists(dup_doc):
-                os.remove(dup_doc)
-    # Older tags' scripts exit on a README_PAGES + website/pages collision; allow overlaid website/pages to win.
+            overlaid.add(name)
+    # Patch the tag's docs-site.py so:
+    # 1. DOCS_HIDDEN pages are skipped on load and links to them rewrite to GitHub (no broken links);
+    # 2. Overlaid website/pages/*.md cleanly replace README_PAGES and docs/*.md without collisions.
     tag_script = os.path.join(dest, "scripts", "docs-site.py")
     if os.path.exists(tag_script):
         with open(tag_script, encoding="utf-8") as f:
             code = f.read()
-        old = 'if name in self.pages:\n                        sys.exit("docs-site: two sources for the page " + name)'
-        new = ('if name in self.pages and not folder.startswith("website"):\n'
-               '                        sys.exit("docs-site: two sources for the page " + name)')
-        if old in code:
-            with open(tag_script, "w", encoding="utf-8") as f:
-                f.write(code.replace(old, new, 1))
+        hidden_decl = (
+            "OVERLAY_HIDDEN = %r\n"
+            "OVERLAY_PAGES = %r\n"
+            "FENCE = re.compile"
+        ) % (sorted(DOCS_HIDDEN), sorted(overlaid))
+        if "OVERLAY_HIDDEN =" not in code:
+            code = code.replace("FENCE = re.compile", hidden_decl, 1)
+        load_marker = 'if name.endswith(".md"):'
+        load_patch = (
+            'if name.endswith(".md"):\n'
+            '                    if folder == "docs" and (name in OVERLAY_HIDDEN or name in OVERLAY_PAGES):\n'
+            '                        continue'
+        )
+        if "name in OVERLAY_HIDDEN" not in code:
+            code = code.replace(load_marker, load_patch, 1)
+        old_coll = 'if name in self.pages:\n                        sys.exit("docs-site: two sources for the page " + name)'
+        new_coll = ('if name in self.pages and not folder.startswith("website"):\n'
+                    '                        sys.exit("docs-site: two sources for the page " + name)')
+        if old_coll in code:
+            code = code.replace(old_coll, new_coll, 1)
+        old_target = 'if full.endswith(".md") or full.endswith(".svg"):'
+        new_target = 'if (full.endswith(".md") and os.path.basename(full) not in OVERLAY_HIDDEN) or full.endswith(".svg"):'
+        if old_target in code:
+            code = code.replace(old_target, new_target, 1)
+        with open(tag_script, "w", encoding="utf-8") as f:
+            f.write(code)
 
 
 def export(tag, dest):
