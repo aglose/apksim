@@ -2,17 +2,16 @@
 """Builds the documentation site (website/mkdocs.yml) from sources that stay where they are.
 
 Pages come from three places, all flat in one folder:
-  website/pages/*.md   written for the site (the landing page, the quick start)
-  README.md            one page per '## ' section named in README_PAGES
-  docs/*.md            as they are
+  website/pages/*.md   shared site pages (landing page, quick start, visual feature guides), overlaid onto all versions
+  website/docs/*.md    version-specific site pages (installation, options, reference), snapshotted per release
+  docs/*.md            deep-dive docs, as they are
 
-They are written for github.com, so on the way in:
-  - links are rewritten: a README anchor to the page its section became, docs/X.md to X.md, any other path in the
-    repository to its page on github.com;
-  - a table's code spans lose the backslash GitHub wants before a |;
+docs/*.md files are written for github.com, so on the way in:
+  - links are rewritten: docs/X.md to X.md, README.md to index.md, any other path in the repository to its page on
+    github.com;
+  - a table's code spans lose the backslash GitHub wants before a | (website/docs/*.md gets this too);
   - lists get what Python-Markdown needs and GitHub does not: a blank line before a list that follows a paragraph,
-    and each
-    nesting level four spaces in, whether the source nests by two or by four.
+    and each nesting level four spaces in, whether the source nests by two or by four.
 
 Usage:
   scripts/docs-site.py [--serve] [--strict] [--out DIR]
@@ -51,36 +50,6 @@ SITE = "https://apksim.web.app/"
 API_RELEASES = "https://api.github.com/repos/aglose/apksim/releases?per_page=100"
 RELEASE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 
-# README '## ' heading -> page. A section not listed here stops the build: decide where a new one goes.
-README_PAGES = {
-    "System design": "system-design.md",
-    "Installation": "installation.md",
-    "Devices and launch options": "devices-and-launch-options.md",
-    "Skins": "using-skins.md",
-    "adb device": "adb-device.md",
-    "In a browser tab": "browser-tab.md",
-    "Screenshot tests": "screenshot-tests.md",
-    "Network: record, replay and conditions": "network-overview.md",
-    "Replay, trace viewer and crawler": "replay-trace-crawler.md",
-    "Agents, Bluetooth LE and scenes": "agents-ble-scenes.md",
-    "Linux and Docker": "linux-and-docker.md",
-    "Debugging": "debugging.md",
-    "Configuration reference": "configuration-reference.md",
-    "How it was built": "how-it-was-built.md",
-    "Building from source and contributing": "building-and-contributing.md",
-    "License": "license.md",
-}
-# Sections the site has its own page for: links to them go there, their text is not copied.
-README_REPLACED = {
-    "Contents": "index.md",
-    "Quick start": "quickstart.md",
-    "What it can do": "features.md",
-    "The simulator window": "simulator-window.md",
-    "Automation": "automation.md",
-    "Instrumented tests and CI": "instrumented-tests.md",
-    "Performance": "performance.md",
-    "Limitations": "limitations.md",
-}
 # Internal docs, spikes, and historical plans under docs/ hidden from the website across all versions.
 # They stay in docs/ in git, and any links to them rewrite to GitHub.
 DOCS_HIDDEN = {
@@ -273,87 +242,61 @@ def changelog(rels, upto=None):
     return lines
 
 
+def format_table_pipes(line):
+    if not line.lstrip().startswith("|"):
+        return line
+    # GitHub reads \| inside a table's code span as |; Python-Markdown shows the backslash
+    # and an option's alternatives (`--window front|nofocus|...`) may wrap after each |
+    parts = re.split(r"(`[^`]*`)", line)
+    for k in range(1, len(parts), 2):
+        code = parts[k][1:-1].replace("\\|", "|")
+        if "|" in code:
+            code = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            parts[k] = "<code>" + code.replace("|", "&#124;<wbr>") + "</code>"
+    return "".join(parts)
+
+
 class Site:
     def __init__(self):
         self.pages = {}      # name -> lines
         self.anchors = {}    # name -> set of anchors
-        self.readme_anchor = {}  # README anchor -> (page, anchor or None)
+        self.origin = {}     # name -> source folder (or "generated")
         self.problems = []
 
     def load(self):
-        with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
-            readme = f.read().split("\n")
-        heads = headings(readme)
-        tops = [h for h in heads if h[1] == 2]
-        for n, (start, _, title, anchor) in enumerate(tops):
-            end = tops[n + 1][0] if n + 1 < len(tops) else len(readme)
-            if title in README_REPLACED:
-                page = README_REPLACED[title]
-                for h in heads:
-                    if start <= h[0] < end:
-                        self.readme_anchor[h[3]] = (page, None)
+        pages_dir = os.path.join("website", "pages")
+        for folder in ("docs", os.path.join("website", "docs"), pages_dir):
+            folder_path = os.path.join(ROOT, folder)
+            if not os.path.isdir(folder_path):
                 continue
-            if title not in README_PAGES:
-                sys.exit("docs-site: README section '%s' has no page: add it to README_PAGES in %s and to "
-                         "website/mkdocs.yml's nav" % (title, os.path.relpath(__file__, ROOT)))
-            page = README_PAGES[title]
-            body = []
-            for i, line, fenced in outside_fences(readme[start:end]):
-                m = None if fenced else HEADING.match(line)
-                body.append(line[1:] if m else line)   # '## X' is the page's title, '### Y' its sections
-            self.pages[page] = body
-            for h in heads:
-                if start <= h[0] < end:
-                    self.readme_anchor[h[3]] = (page, None if h[0] == start else h[3])
-        self.readme_anchor["apksim"] = ("index.md", None)
-        for folder in ("docs", os.path.join("website", "pages")):
-            for name in sorted(os.listdir(os.path.join(ROOT, folder))):
+            for name in sorted(os.listdir(folder_path)):
                 if name.endswith(".md"):
                     if folder == "docs" and name in DOCS_SKIP:
                         continue
-                    if name in self.pages and not (folder.startswith("website") and os.environ.get("APKSIM_UI_OVERLAY")):
+                    if name in self.pages and not (folder == pages_dir and os.environ.get("APKSIM_UI_OVERLAY")):
                         sys.exit("docs-site: two sources for the page " + name)
-                    with open(os.path.join(ROOT, folder, name), encoding="utf-8") as f:
+                    with open(os.path.join(folder_path, name), encoding="utf-8") as f:
                         self.pages[name] = f.read().split("\n")
-                    self.origin = getattr(self, "origin", {})
                     self.origin[name] = folder
         self.repeated = {}   # name -> anchors of a heading whose text an earlier heading of the page has
         for name, lines in self.pages.items():
             heads = headings(lines)
             self.anchors[name] = {h[3] for h in heads}
             self.repeated[name] = {h[3] for h in heads if h[3] != slug(h[2])}
-        # github.com numbers a repeated heading's anchor (#automation-1) and the site's Markdown numbers it another
-        # way, so a link to either lands somewhere else: the README's headings must differ
-        for _, _, title, anchor in headings(readme):
-            if anchor != slug(title):
-                self.problems.append("README.md: two headings named '%s': links to #%s go to the first"
-                                     % (title, slug(title)))
 
     def target(self, page, url):
         """Where a link written in `page`'s source goes on the site."""
         if re.match(r"^[a-z][a-z0-9+.-]*:", url) or url.startswith("//"):
             return url
-        folder = getattr(self, "origin", {}).get(page)   # None: a README section
+        folder = self.origin.get(page)
         path, _, anchor = url.partition("#")
         if folder and folder.startswith("website"):
             return url                                    # written for the site
         if not path:
-            if folder is None:                            # an anchor in the README
-                if anchor not in self.readme_anchor:
-                    self.problems.append("%s: README has no anchor #%s" % (page, anchor))
-                    return url
-                to, a = self.readme_anchor[anchor]
-                return ("" if to == page else to) + ("#" + a if a else "")
             return url
         full = os.path.normpath(os.path.join(folder or "", path))
         if full == "README.md":
-            if not anchor:
-                return "index.md"
-            if anchor not in self.readme_anchor:
-                self.problems.append("%s: README has no anchor #%s" % (page, anchor))
-                return REPO + "#" + anchor
-            to, a = self.readme_anchor[anchor]
-            return to + ("#" + a if a else "")
+            return "index.md" if not anchor else REPO + "#" + anchor
         if os.path.dirname(full) == "docs" and os.path.exists(os.path.join(ROOT, full)):
             if (full.endswith(".md") and os.path.basename(full) not in DOCS_HIDDEN) or full.endswith(".svg"):
                 return os.path.basename(full) + ("#" + anchor if anchor else "")
@@ -367,9 +310,12 @@ class Site:
 
     def convert(self, page):
         lines = self.pages[page]
-        origin = getattr(self, "origin", {}).get(page, "")
-        if origin.startswith("website"):
+        origin = self.origin.get(page, "")
+        if origin == os.path.join("website", "pages"):
             return lines                                  # written for the site's Markdown already
+        if origin == os.path.join("website", "docs"):
+            return [line if fenced else format_table_pipes(line)
+                    for _, line, fenced in outside_fences(lines)]
         if origin == "generated":
             return fix_lists(lines)                       # GitHub's release notes: their links are absolute
         out = []
@@ -379,15 +325,7 @@ class Site:
                 parts = re.split(r"(`[^`]*`)", line)
                 for k in range(0, len(parts), 2):
                     parts[k] = LINK.sub(lambda m: m.group(1) + self.target(page, m.group(2)) + m.group(3), parts[k])
-                if line.lstrip().startswith("|"):
-                    # GitHub reads \| inside a table's code span as |; Python-Markdown shows the backslash
-                    # and an option's alternatives (`--window front|nofocus|...`) may wrap after each |
-                    for k in range(1, len(parts), 2):
-                        code = parts[k][1:-1].replace("\\|", "|")
-                        if "|" in code:
-                            code = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                            parts[k] = "<code>" + code.replace("|", "&#124;<wbr>") + "</code>"
-                line = "".join(parts)
+                line = format_table_pipes("".join(parts))
             out.append(line)
         return fix_lists(out)
 

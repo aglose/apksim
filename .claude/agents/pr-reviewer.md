@@ -45,8 +45,8 @@ told about, read files there; otherwise read them with `gh api` / `git show orig
    covers its inputs.
 5. **Tests and checks**: is the new behaviour covered by a check that would fail without the fix (a test-app test, a
    `scripts/*-check.*`, `ci-smoke.sh`)? Is a new check wired into CI (`.github/workflows/ci.yml`, `ci-smoke.sh`)?
-6. **Docs**: new options, commands, classes or behaviour must be in AGENTS.md (and README/docs where they belong), in
-   the project's style; stale statements the PR makes false.
+6. **Docs**: new options, commands, classes or behaviour must be in AGENTS.md (and `website/docs/`, `website/pages/`,
+   `docs/`, or `README.md` where they belong), in the project's style; stale statements the PR makes false.
 7. Simplification and reuse, only where it clearly matters (duplicate of an existing helper, dead code left behind).
    No style nits.
 

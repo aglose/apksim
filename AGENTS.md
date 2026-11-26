@@ -839,13 +839,14 @@ Read README.md for results and limits; this file covers how to work on the code.
   covers it; `scripts/stub-census.sh`).
 - `website/`, `scripts/docs-site.py`, `.github/workflows/docs.yml`: the documentation site
   (https://apksim.web.app, Zensical with the Material theme, on Firebase Hosting in the Google Cloud project
-  `apksim`: `website/firebase.json`). Nothing is kept twice:
-  `docs-site.py` assembles `work/site/docs` from `website/pages/*.md` (written for the site: the landing page and the
-  quick start), one page per `## ` section of the README (`README_PAGES` in the script) and `docs/*.md` as they are,
-  rewriting links (a README anchor to its page, other repository paths to github.com) and list indentation
+  `apksim`: `website/firebase.json`). `README.md` is a concise summary pointing to the site; the site's pages come
+  from `website/pages/*.md` (shared visual pages overlaid onto every published version), `website/docs/*.md`
+  (version-specific site pages snapshotted per release) and `docs/*.md` (deep-dive docs, excluding `DOCS_HIDDEN` and
+  `DOCS_REPLACED`). `docs-site.py` assembles them into `work/site/docs`, rewriting `docs/*.md` links (other
+  repository paths to github.com) and list indentation
   (Python-Markdown wants a blank line before a list and each nesting level 4 spaces in; the sources nest by 2 or by 4), then builds with
-  `website/mkdocs.yml` into `work/site/out`. A new README section or `docs/*.md` file must be given a place in the
-  script's table or the nav: the build says which. `--strict` (CI) fails on a link between pages with no target;
+  `website/mkdocs.yml` into `work/site/out`. A new `website/pages/*.md`, `website/docs/*.md` or `docs/*.md` file must
+  be given a place in the nav (or `DOCS_HIDDEN`): the build says which. `--strict` (CI) fails on a link between pages with no target;
   `--serve` previews; `--deploy` builds and publishes (the firebase CLI, signed in as the owner, or CI's
   `FIREBASE_SERVICE_ACCOUNT` secret). The published site is versioned as mike lays a MkDocs site out, without a
   branch of built pages: `--all-versions` builds `work/site/tree` with a copy per published release whose tag has the script (a tag whose release is
@@ -866,8 +867,7 @@ Read README.md for results and limits; this file covers how to work on the code.
   test app's look changes.
   The workflow builds on pull requests that touch a source, and deploys every version on a push to `main` that
   touches one and whenever a release is published (which is what moves `/latest/`). Its `build` job is not a required
-  check (ci.yml skips its jobs for these paths), so look at it before merging a docs change. The README's headings
-  must all differ (the build says so): a repeated one takes the first's anchor on github.com.
+  check (ci.yml skips its jobs for these paths), so look at it before merging a docs change.
 - `.github/workflows/ci.yml`: `build` (the runtime, the test app and the Linux image, once, plus the quick checks),
   then five `linux` legs side by side on that image (`app`, `data`, `replay`, `crawl`, `tests`: `scripts/ci-smoke.sh`
   split by `SMOKE_PARTS`, the androidTest runs, affected-check, the observer gate on a subset of UI-heavy classes), and `linux-smoke`, the check every pull request must

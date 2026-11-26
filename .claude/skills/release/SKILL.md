@@ -1,6 +1,6 @@
 ---
 name: release
-description: Merge every open apksim pull request, refresh the docs (README, AGENTS.md, docs/) for what landed, then tag the next version and publish the release. Use when the owner says "release", "cut a release", "merge everything and publish", or "ship it".
+description: Merge every open apksim pull request, refresh the docs (website/, docs/, AGENTS.md, README.md) for what landed, then tag the next version and publish the release. Use when the owner says "release", "cut a release", "merge everything and publish", or "ship it".
 ---
 
 # apksim release
@@ -54,12 +54,13 @@ Work in a fresh worktree from the updated `origin/main`: `git worktree add ../ap
 origin/main`.
 1. List what changed: `git log --first-parent --oneline LAST_TAG..origin/main` (one squash commit per PR; older
    PRs are merge commits) and `git diff --stat LAST_TAG..origin/main`.
-2. Update docs the changes made stale, and only those: README.md (results, features, limits, install and image tags),
-   AGENTS.md (layout, commands, new classes and options), and the matching `docs/*.md`. Match the existing style:
+2. Update docs the changes made stale, and only those: `website/docs/*.md` and `website/pages/*.md` (options,
+   features, results, limits, install and image tags), `README.md` (only if the top-level summary or links changed),
+   `AGENTS.md` (layout, commands, new classes and options), and the matching `docs/*.md`. Match the existing style:
    concrete numbers measured, what was checked, what is not done. Do not invent measurements; if a number needs a
    run, run it or leave the old one and say so.
-3. Image tag and version references: `grep -rn "ghcr.io/aglose/apksim:" README.md docs packaging` and update to
-   the new version where they name the latest release.
+3. Image tag and version references: `grep -rn "ghcr.io/aglose/apksim:" README.md website docs packaging` and update
+   to the new version where they name the latest release.
 4. Run `scripts/hooks/check-private --staged` on the staged change, commit (no trailer), push, open a PR (title like
    "Docs for VERSION: ...", no "Generated with" line), wait for `linux-smoke`, merge as in step 2. An existing open
    docs PR for this release (e.g. `docs-0.19.0`) is merged in step 2 instead; do not duplicate it.
