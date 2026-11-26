@@ -53,7 +53,7 @@ RELEASE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 
 # README '## ' heading -> page. A section not listed here stops the build: decide where a new one goes.
 README_PAGES = {
-    "What it offers": "features.md",
+    "What it can do": "features.md",
     "System design": "system-design.md",
     "Installation": "installation.md",
     "Devices and launch options": "devices-and-launch-options.md",
