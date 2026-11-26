@@ -846,3 +846,132 @@
     max-height: 12rem;
   }
 }
+
+/* ---- Shared feature-page primitives (all versions) ---- */
+.page-hero {
+  margin: 0.35rem 0 1.8rem;
+  padding-bottom: 1.4rem;
+  border-bottom: 0.05rem solid var(--md-default-fg-color--lightest);
+}
+.page-hero h1 {
+  margin: 0 0 0.65rem;
+}
+.page-hero .sim-lead {
+  max-width: var(--apk-prose);
+  margin: 0 0 0.9rem;
+}
+.page-hero .sim-pills {
+  margin-top: 0.85rem;
+}
+.page-hero + h2 {
+  border-top: 0;
+  padding-top: 0;
+  margin-top: 1.2rem;
+}
+
+/* Compact jump strip for multi-section feature pages */
+.page-jumps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 1rem 0 0;
+}
+.page-jumps a {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.24rem 0.65rem;
+  border-radius: 0.35rem;
+  border: 0.05rem solid var(--md-default-fg-color--lightest);
+  background: var(--apk-row);
+  color: var(--md-default-fg-color);
+  text-decoration: none;
+  transition: border-color 0.12s ease, color 0.12s ease, background-color 0.12s ease;
+}
+.page-jumps a:hover {
+  border-color: var(--md-accent-fg-color);
+  background: var(--md-accent-fg-color--transparent);
+  color: var(--md-accent-fg-color);
+}
+
+/* Key-metric stat strip (Home, Features, Performance, Instrumented Tests) */
+.stat-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.8rem;
+  margin: 1.4rem 0 2rem;
+}
+.stat-card {
+  border: 0.05rem solid var(--md-default-fg-color--lightest);
+  border-radius: 0.55rem;
+  background: var(--apk-row);
+  padding: 0.85rem 1rem;
+}
+.stat-value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  color: var(--md-accent-fg-color);
+}
+.stat-label {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--md-default-fg-color);
+  margin-top: 0.25rem;
+}
+.stat-note {
+  font-size: 0.67rem;
+  line-height: 1.45;
+  color: var(--md-default-fg-color--light);
+  margin-top: 0.15rem;
+}
+
+/* Two-column card grid variant & subtle footer link inside feature cards */
+.sim-cards--2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.sim-card {
+  display: flex;
+  flex-direction: column;
+}
+.sim-card-link {
+  margin-top: auto;
+  padding-top: 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.sim-card-link p {
+  margin: 0;
+  font-size: 0.72rem;
+}
+.sim-card-link a {
+  color: var(--md-accent-fg-color);
+  text-decoration: none;
+}
+.sim-card-link a:hover {
+  text-decoration: underline;
+}
+
+/* Compact reference note at bottom of summarized pages */
+.spec-note {
+  font-size: 0.74rem;
+  color: var(--md-default-fg-color--light);
+  border-top: 0.05rem solid var(--md-default-fg-color--lightest);
+  padding-top: 0.9rem;
+  margin-top: 2rem;
+  max-width: var(--apk-prose);
+}
+
+@media screen and (max-width: 59.9375em) {
+  .stat-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .sim-cards--2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media screen and (max-width: 30em) {
+  .stat-strip {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
