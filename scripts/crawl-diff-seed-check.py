@@ -58,4 +58,32 @@ assert ed["removed"] == [] and ed.get("note"), ed
 # A transition a budget kept from being followed: what that screen led to is unknown.
 new.diff_controls = "changed"; new.edges.append(edge("B", "z", None))
 assert crawl.lost_carried(new, seed).get("D") == "unknown"
+
+# --diff-seed variant protection: a PR change on a carried child screen must NOT be silently collapsed
+# into the old carried screen, while a known seed variant alias or non-protected variant still collapses.
+import re, threading
+ex = object.__new__(crawl.Explorer)
+ex.dedup_variants = True
+ex.args = types.SimpleNamespace(diff_seed=True)
+ex.lock = threading.Lock()
+ex.skip_re = re.compile(crawl.DEFAULT_SKIP, re.I)
+ex.screens = {"P": scr("P", "walked"), "C": scr("C", "carried", "P")}
+ex.order = ["P", "C"]
+ex.variant_aliases = {"V_OLD": "C"}
+ex.seed_edges_by_from = {"P": [{"from": "P", "cmd": "tap-text Child", "to": "C", "note": ""},
+                               {"from": "P", "cmd": "tap-text Row2", "to": "C", "note": "variant of C"}]}
+def fake_recs(labels):
+    return [crawl.Rec(0, "android.view.View", "", "v", (0, 0, 800, 1600), "", "", "")] + [
+        crawl.Rec(1, "android.widget.TextView", "", "vc", (0, i * 40, 400, i * 40 + 30), t, "", "")
+        for i, t in enumerate(labels)
+    ]
+base_labels = [f"Setting option {w}" for w in ("Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta", "Theta", "Iota", "Kappa", "Lambda", "Mu")]
+ex.variant_sigs = {"C": ex._variant_sig("MainActivity", fake_recs(base_labels), "P")}
+# PR adds one new label on C -> new id C_CHANGED reached via the canonical edge "tap-text Child" -> MUST NOT collapse!
+changed_obs = {"id": "C_CHANGED", "activity": "MainActivity", "recs": fake_recs(base_labels + ["New PR toggle"])}
+assert ex.find_variant_match("P", changed_obs, edge_cmd="tap-text Child") is None, "PR change on carried child was hidden!"
+# Same obs reached via a known variant edge ("tap-text Row2") -> still collapses to C!
+assert ex.find_variant_match("P", changed_obs, edge_cmd="tap-text Row2") == "C"
+# Known seed variant alias V_OLD via variant edge -> collapses to C!
+assert ex.find_variant_match("P", {"id": "V_OLD", "activity": "MainActivity", "recs": []}, edge_cmd="tap-text Row2") == "C"
 print("ok")

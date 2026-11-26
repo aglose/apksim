@@ -694,7 +694,30 @@ class Instance(snapshot.Worker):
         return {"id": sid, "activity": act, "nodes": n, "recs": recs}
 
     def wait_waypoint(self, want_id, prev_id=None, timeout=1.5):
-        """Polls `ui-tree` with backoff until [want_id] appears or two reads agree on a new screen."""
+        """Waits for [want_id] or a stabilized screen change using Host's in-process `wait-tree` (1 round-trip),
+        falling back to `ui-tree` polling on older hosts."""
+        if getattr(self, "_has_wait_tree", True):
+            deadline = time.monotonic() + timeout
+            last = None
+            for _ in range(3):
+                rem_ms = max(50, int((deadline - time.monotonic()) * 1000))
+                reply = self.say(f"wait-tree {rem_ms}")
+                if reply.startswith("unknown"):
+                    self._has_wait_tree = False
+                    break
+                if reply == "none":
+                    return {"id": "EXIT", "activity": "none", "nodes": 0, "recs": []}
+                if "\x1d" in reply:
+                    act, body = reply.split("\x1d", 1)
+                    recs = parse_tree(body)
+                    sid, n = structure(act, recs)
+                    last = {"id": sid, "activity": act, "nodes": n, "recs": recs}
+                    if sid == want_id or sid != prev_id or time.monotonic() >= deadline:
+                        return last
+                    continue
+                break
+            if getattr(self, "_has_wait_tree", True) and last is not None:
+                return last
         delays = (0.02, 0.025, 0.035, 0.05, 0.08, 0.12, 0.18, 0.25)
         deadline = time.monotonic() + timeout
         last = None
@@ -939,7 +962,9 @@ class Instance(snapshot.Worker):
         if self.fresh_at_root and not path.get("start") and not (self.ctx.get("record_deps") and need_deps):
             self.fresh_at_root = False
             if explore_fast and path["steps"] and self.ctx.get("root_id") and not need_deps:
-                self.wait_waypoint(self.ctx["root_id"], timeout=0.8)
+                act, recs = self.read_ui()
+                if act == "none" or structure(act, recs)[0] != self.ctx["root_id"]:
+                    self.wait_waypoint(self.ctx["root_id"], timeout=0.8)
             else:
                 self.settle(WAYPOINT_SETTLE if (explore_fast and path["steps"]) else SETTLE)
         else:
@@ -947,7 +972,9 @@ class Instance(snapshot.Worker):
             self.say(f"clock {CLOCK}")
             self.expect_ok("restart" + (f" {path['start']}" if path.get("start") else ""))
             if explore_fast and path["steps"] and not path.get("start") and self.ctx.get("root_id") and not need_deps:
-                self.wait_waypoint(self.ctx["root_id"], timeout=0.8)
+                act, recs = self.read_ui()
+                if act == "none" or structure(act, recs)[0] != self.ctx["root_id"]:
+                    self.wait_waypoint(self.ctx["root_id"], timeout=0.8)
             else:
                 self.settle(WAYPOINT_SETTLE if (explore_fast and path["steps"]) else SETTLE)
         if patient:
@@ -1052,7 +1079,7 @@ class DepsMap:
     def __init__(self, apk, packages):
         import affected  # scripts/affected.py
         self.packages = packages
-        self.map = affected.source_map([apk], packages)
+        self.map = {sys.intern(k): tuple(sys.intern(s) for s in v) for k, v in affected.source_map([apk], packages).items()}
         # A class counts as sourceless when the map gives it no file even through its outer class (D8's synthetic
         # lambdas name none of their own, and the map takes their outer class's).
         total = len(self.map)
@@ -1077,7 +1104,9 @@ class DepsMap:
         return sorted(out)
 
     def shape(self, raw):
-        return {"classes": raw["classes"], "sources": self.sources(raw["classes"]), "resources": raw["resources"]}
+        cls = [sys.intern(c) for c in raw["classes"]]
+        res = [sys.intern(r) for r in raw["resources"]]
+        return {"classes": cls, "sources": self.sources(cls), "resources": res}
 
 
 # ----------------------------------------------------------------------------------------------- the explorer
@@ -1426,6 +1455,14 @@ class Explorer:
                                and not args.keep_app_state)
         self.explore_fast = not (args.base or args.base_option or args.sweep)
         self.is_seeded = bool(args.seed)
+        if getattr(args, "no_dedup_variants", False):
+            self.dedup_variants = False
+        elif hasattr(args, "_seed_dedup_variants") and args._seed_dedup_variants is not None:
+            self.dedup_variants = bool(args._seed_dedup_variants)
+        else:
+            self.dedup_variants = self.explore_fast and not self.is_seeded
+        self.variant_sigs = {}     # sid -> (activity, norm_title, text_set, ctrl_set, short_ctrl_set, parent_id)
+        self.variant_aliases = {}  # raw_sid -> canonical_sid
         self.diff_controls = getattr(args, "diff_controls", "all") or ("changed" if getattr(args, "diff_seed", False) else "all")
         self.seed_actions = {}
         self.seed_edges_by_from = {}
@@ -1678,7 +1715,19 @@ class Explorer:
                         edge["note"] = e["note"]
                     if to["id"] is not None and to["id"] not in PSEUDO and to["id"] not in self.screens:
                         steps = self.full_path(screen, e["steps"])["steps"]
-                        if repeated(steps, args.max_repeat):
+                        dup_id = self.find_variant_match(screen["id"], to, edge_cmd=e.get("cmd"))
+                        if dup_id is not None:
+                            with self.lock:
+                                self.variant_aliases[to["id"]] = dup_id
+                            shot_info = self.inline_shots.pop(to["id"], None)
+                            if shot_info is not None:
+                                try:
+                                    shutil.rmtree(os.path.join(self.out, self.shots, to["id"]), ignore_errors=True)
+                                except OSError:
+                                    pass
+                            edge["to"] = dup_id
+                            edge["note"] = f"variant of {dup_id}"
+                        elif repeated(steps, args.max_repeat):
                             edge["note"] = f"not followed: the same step {args.max_repeat} times in a row"
                             edge["to"] = None
                         elif self.budget.max_screens is not None and len(self.screens) >= self.budget.max_screens:
@@ -1731,8 +1780,17 @@ class Explorer:
             c.pop("replaces", None)
             self.screens[c["id"]] = c
             self.order.append(c["id"])
+            if self.dedup_variants:
+                norm = lambda x: re.sub(r"\s+", " ", re.sub(r"\b\d+(?:[.,:/-]\d+)*\b", "#", x or "")).strip().lower()
+                nt = norm(c.get("title") or "")
+                ts = frozenset(norm(t) for t in (c.get("texts") or []) if t and len(t.strip()) > 1)
+                cs = frozenset(norm(a.get("label") or "") for a in (c.get("actions") or []) if a.get("label"))
+                scs = frozenset(x for x in cs if 2 <= len(x) <= 28 and not x.startswith("<view"))
+                self.variant_sigs[c["id"]] = (c.get("activity", ""), bool(c.get("overlay")), nt, ts, cs, scs, c.get("parent"))
             if c.get("settled") is False:
                 self.ctx["unsettled"].add(c["id"])
+        if self.dedup_variants and isinstance(seed.get("variant_aliases"), dict):
+            self.variant_aliases.update(seed["variant_aliases"])
         for sid in self.order:
             self.seed_waypoints(sid)
         self.seed_actions = {s["id"]: list(s.get("actions") or []) for s in seed["screens"] if s.get("actions") is not None}
@@ -1807,6 +1865,10 @@ class Explorer:
             ns["replaces"] = old
             now[old] = new_id
             del self.screens[old]
+            if self.dedup_variants:
+                self.variant_sigs.pop(old, None)
+                if obs.get("recs"):
+                    self.variant_sigs[new_id] = self._variant_sig(obs["activity"], obs["recs"], ns.get("parent"))
             for e in self.edges:
                 if e["to"] == old:
                     e["to"] = new_id
@@ -1904,13 +1966,88 @@ class Explorer:
         self.waypoints[sid] = wp
         return wp
 
+    def _variant_sig(self, act, recs, parent=None):
+        norm = lambda s: re.sub(r"\s+", " ", re.sub(r"\b\d+(?:[.,:/-]\d+)*\b", "#", s or "")).strip().lower()
+        has_overlay = sum(1 for r in recs if r.depth == 0) > 1
+        nt = norm(title_of(recs))
+        ts = frozenset(norm(r.text) for r in recs if "v" in r.flags and r.text and len(r.text.strip()) > 1)
+        cs = frozenset(norm(a["label"]) for a in candidates(recs, self.skip_re, False)
+                       if a["kind"] == "control" and a.get("label"))
+        short_cs = frozenset(c for c in cs if 2 <= len(c) <= 28 and not c.startswith("<view"))
+        return (act, has_overlay, nt, ts, cs, short_cs, parent)
+
+    def find_variant_match(self, parent_id, obs, edge_cmd=None):
+        """Returns an already-known canonical screen id if [obs] is an in-place state mutation (expanded accordion,
+        selected day/chip, toggled unit, scrolled viewport) or parameterized list-item template duplicate of it.
+        During --diff-seed, never collapses a changed carried destination into its old seed screen."""
+        if not self.dedup_variants:
+            return None
+        sid = obs.get("id")
+        if not sid or sid in PSEUDO or sid in self.screens:
+            return None
+        # In --diff-seed, if the same (parent, cmd) edge previously led to a real canonical carried screen
+        # (not a variant edge) and now arrives at a different structure, keep it uncollapsed so the PR diff sees it.
+        diff_protected = None
+        if getattr(self.args, "diff_seed", False) and parent_id is not None and edge_cmd is not None:
+            for se in self.seed_edges_by_from.get(parent_id, ()):
+                if se.get("cmd") == edge_cmd and not (se.get("note") or "").startswith("variant of "):
+                    sto = se.get("to")
+                    if sto and sto != sid and sto in self.screens and self.screens[sto].get("origin") == "carried":
+                        diff_protected = sto
+                        break
+        with self.lock:
+            aliased = self.variant_aliases.get(sid)
+            if aliased and aliased in self.screens and aliased != diff_protected:
+                return aliased
+            recs = obs.get("recs")
+            if not recs:
+                return None
+            act, ov, nt, ts, cs, scs, _ = self._variant_sig(obs["activity"], recs, parent_id)
+            if len(ts) < 6 and len(cs) < 5:
+                return None  # never collapse tiny dialogs/sheets
+            def jacc(a, b):
+                return (len(a & b) / len(a | b)) if (a and b) else 0.0
+            # Rule 1: global same-activity equivalence (in-place mutations, repeated forms/details, scrolled accordions)
+            for uid in self.order:
+                if uid == diff_protected:
+                    continue
+                usig = self.variant_sigs.get(uid)
+                if not usig or usig[0] != act or usig[1] != ov:
+                    continue
+                _, _, unt, uts, ucs, uscs, _ = usig
+                jt = jacc(ts, uts) if (len(ts) >= 6 and len(uts) >= 6) else 0.0
+                jc = jacc(cs, ucs) if (len(cs) >= 5 and len(ucs) >= 5) else 0.0
+                jsc = jacc(scs, uscs) if (len(scs) >= 5 and len(uscs) >= 5) else 0.0
+                if jt >= 0.65 or jc >= 0.72 or jsc >= 0.78 or (nt and nt == unt and jt >= 0.45):
+                    return uid
+            # Rule 2: sibling parameterized-list fan-out cap under the same parent
+            if parent_id is not None:
+                for uid in self.order:
+                    if uid == diff_protected:
+                        continue
+                    usig = self.variant_sigs.get(uid)
+                    if not usig or usig[0] != act or usig[1] != ov or usig[6] != parent_id:
+                        continue
+                    _, _, _, uts, ucs, uscs, _ = usig
+                    jt = jacc(ts, uts) if (len(ts) >= 6 and len(uts) >= 6) else 0.0
+                    jc = jacc(cs, ucs) if (len(cs) >= 5 and len(ucs) >= 5) else 0.0
+                    jsc = jacc(scs, uscs) if (len(scs) >= 5 and len(uscs) >= 5) else 0.0
+                    if jc >= 0.55 or jt >= 0.50 or jsc >= 0.68:
+                        return uid
+            return None
+
     def add_screen(self, obs, path, parent, depth, step_count=0):
         s = {"id": obs["id"], "activity": obs["activity"], "nodes": obs["nodes"], "path": path, "parent": parent,
              "depth": depth, "actions": [], "captures": {}, "title": title_of(obs["recs"]),
              **view_of(obs["recs"]), "origin": "walked"}
+        if sum(1 for r in obs["recs"] if r.depth == 0) > 1:
+            s["overlay"] = True
         self.screens[s["id"]] = s
         self.order.append(s["id"])
         self.first_recs[s["id"]] = obs.get("recs")
+        if self.dedup_variants and obs.get("recs"):
+            with self.lock:
+                self.variant_sigs[s["id"]] = self._variant_sig(obs["activity"], obs["recs"], parent)
         steps = path["steps"]
         if not steps or parent is None:
             self.waypoints[s["id"]] = []
@@ -2327,7 +2464,8 @@ class Explorer:
                         with self.ctx["lock"]:
                             self.ctx["unsettled"].add(to["id"])
                     # Inline capture for newly discovered screens (depth >= 1) while the instance is already cleanly on [to].
-                    if self.inline_capture and to["id"] not in PSEUDO and to["id"] not in self.screens:
+                    if (self.inline_capture and to["id"] not in PSEUDO and to["id"] not in self.screens
+                            and self.find_variant_match(screen["id"], to, edge_cmd=a["cmd"]) is None):
                         take_shot = False
                         with self.lock:
                             if to["id"] not in self.inline_shots:
@@ -3604,20 +3742,21 @@ def html_report(out, doc):
         return html.escape(rel)
 
     shots = {}
+    inline_first = embed or len(doc.get("screens", [])) <= 40
     for key in ("screens", "base_screens"):
         for s in doc.get(key, []):
-            shots.setdefault(key, {})[s["id"]] = {c: img(p, c in first) for c, p in s["captures"].items()}
+            shots.setdefault(key, {})[s["id"]] = {c: img(p, inline_first and c in first) for c, p in s["captures"].items()}
     diffs = {k: {c: {**d, "map": img(d.get("map"), True)} for c, d in v.items()} for k, v in doc.get("diffs", {}).items()}
     sweep_images = {}
     for f in doc["findings"]:
         for k in ("before", "after", "diff"):
             if f.get(k):
                 sweep_images[f[k]] = img(f[k], True)
-    data = {"screens": [{k: v for k, v in s.items() if k != "captures"} for s in doc["screens"]],
+    data = {"screens": [{k: v for k, v in s.items() if k not in ("captures", "deps")} for s in doc["screens"]],
             "edges": doc["edges"], "findings": doc["findings"], "shots": shots.get("screens", {}),
             "baseShots": shots.get("base_screens", {}), "compare": doc.get("compare"), "diffs": diffs,
             "incomplete": doc.get("incomplete", []), "sweep": doc.get("sweep"), "sweepImages": sweep_images, "seconds": doc.get("seconds"), "combos": doc["combos"],
-            "baseScreens": [{k: v for k, v in s.items() if k != "captures"} for s in doc.get("base_screens", [])]}
+            "baseScreens": [{k: v for k, v in s.items() if k not in ("captures", "deps")} for s in doc.get("base_screens", [])]}
     page = PAGE.replace("__TITLE__", html.escape(doc["apk"])).replace("__DATA__", json.dumps(data).replace("</", "<\\/"))
     with open(os.path.join(out, "report.html"), "w") as f:
         f.write(page)
@@ -3778,6 +3917,9 @@ def parse(argv):
                    help="walk only routes that replay to the same screen: a screen whose path leads elsewhere, or a control "
                         "whose label is gone, is a flaky finding and is not walked past (no tries on what the path leads "
                         "to now, no taps at a label's old place)")
+    p.add_argument("--no-dedup-variants", action="store_true",
+                   help="disable collapsing in-place state variations (expanded accordions, filter chips, selected tabs) "
+                        "and parameterized sibling-list duplicates into their canonical screen during plain walks")
     p.add_argument("--keep-data", action="store_true", help="start from a prepared data slot (the one this run's --data-slots names, else default): each instance runs on a copy of it, made again at each relaunch, and the slot itself is not written")
     p.add_argument("--data-ignore", action="append", default=[], metavar="PATTERN",
                    help="what the app writes at every action that no screen reads, left out of the data a replay is checked "
@@ -3971,6 +4113,9 @@ def on_stop(signum, frame):
             doc["combos"] = [snapshot.combo_name(c) for c in STOP["combos"]]
             doc["screen_titles"] = TITLES_ARE_IDENTITY
             doc["screen_ids"] = SCREEN_IDS  # a resume (--seed on this walk) makes its ids the same way
+            doc["dedup_variants"] = bool(walk.dedup_variants)
+            if walk.variant_aliases:
+                doc["variant_aliases"] = dict(walk.variant_aliases)
             if NET is not None:
                 NET.merge_all()
             doc.update(walk_settings())
@@ -4028,6 +4173,7 @@ def main():
         NET = NetFreeze(out, src_dir if seed is not None else None)
     t0 = time.time()
     snap_override = seed.get("snapshot") if (seed is not None and args.diff_seed and "snapshot" in seed) else None
+    args._seed_dedup_variants = seed.get("dedup_variants") if (seed is not None and "dedup_variants" in seed) else None
     new = Explorer("new", apk, args, out, [], combos=combos, snapshot_override=snap_override)
     base = None
     STOP.update(walk=new, out=out, t0=t0, combos=combos)
@@ -4066,6 +4212,9 @@ def main():
         doc["screen_ids"] = SCREEN_IDS
         doc.update(walk_settings())
         doc["snapshot"] = bool(new.use_snapshot)
+        doc["dedup_variants"] = bool(new.dedup_variants)
+        if new.variant_aliases:
+            doc["variant_aliases"] = dict(new.variant_aliases)
         if sc is not None:
             sc.doc = doc
             sc.finish(new.instances[0] if new.instances else None)

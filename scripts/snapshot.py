@@ -178,10 +178,13 @@ class Worker:
             # Cold launches by default (a standby has read the GPU switches --snapshot sets before the launch);
             # GPU-rendered --diff-seed / --standby runs opt in via ctx["standby"] for sub-second warm handoffs.
             env = dict(os.environ)
+            if self.ctx.get("explore_fast", False):
+                env.setdefault("APKSIM_CRAWL_MEM", "1")
             if not self.ctx.get("standby", False) or self.ctx.get("snapshot", True):
                 env["APKSIM_STANDBY"] = "0"
             else:
-                env.setdefault("APKSIM_STANDBY_SLOT", str(self.i))
+                pool = int(os.environ.get("APKSIM_STANDBY_POOL") or self.ctx.get("standby_pool") or 2)
+                env.setdefault("APKSIM_STANDBY_SLOT", str(self.i % max(1, pool)))
                 if self.ctx.get("standby_opt_in", False):
                     # On Linux standbys are opt-in (APKSIM_STANDBY=1); an explicit APKSIM_STANDBY=0 still forces cold.
                     env.setdefault("APKSIM_STANDBY", "1")
