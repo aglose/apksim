@@ -12,6 +12,7 @@ import java.util.concurrent.Executor;
  */
 final class Biometrics {
   static volatile boolean enrolled = Boolean.getBoolean("apksim.biometricsEnrolled");
+  static volatile boolean autoMatch = Boolean.getBoolean("apksim.biometricsAutoMatch");
 
   private record Request(String title, BiometricPrompt.CryptoObject crypto, Executor executor, BiometricPrompt.AuthenticationCallback callback) {}
 
@@ -24,6 +25,12 @@ final class Biometrics {
       BiometricPrompt.AuthenticationCallback callback) {
     if (!enrolled) {
       executor.execute(() -> callback.onAuthenticationError(BiometricPrompt.BIOMETRIC_ERROR_NO_BIOMETRICS, "No fingerprints enrolled"));
+      return;
+    }
+    if (autoMatch) {
+      BiometricPrompt.AuthenticationResult result = new BiometricPrompt.AuthenticationResult(
+          crypto, BiometricPrompt.AUTHENTICATION_RESULT_TYPE_BIOMETRIC);
+      executor.execute(() -> callback.onAuthenticationSucceeded(result));
       return;
     }
     Request r = new Request(title, crypto, executor, callback);
@@ -43,12 +50,18 @@ final class Biometrics {
     finish(pending, a == 0 ? "match" : a == 1 ? "nomatch" : "cancel");
   }
 
-  /** biometrics [enroll|unenroll|match|nomatch|cancel] */
+  /** biometrics [enroll|unenroll|auto|match|nomatch|cancel] */
   static synchronized String run(String[] a) {
     String op = a.length > 1 ? a[1] : "";
     switch (op) {
       case "enroll", "unenroll" -> {
         enrolled = op.equals("enroll");
+        if (!enrolled) autoMatch = false;
+        return "ok";
+      }
+      case "auto" -> {
+        enrolled = true;
+        autoMatch = true;
         return "ok";
       }
       case "match", "nomatch", "cancel" -> {
