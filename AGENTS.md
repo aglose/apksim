@@ -2350,7 +2350,8 @@ use, landscape 2560x1600 at density 2 = `--device tablet` here (the emulator sid
 outputs are `app/build-t28/outputs/apk/{debug/app-t28-debug.apk,androidTest/debug/app-t28-debug-androidTest.apk}`
 (a build folder of its own: AGP deletes the other APKs of an outputs folder, so the default `app-debug.apk` would
 vanish), the same sources with `src/t28/AndroidManifest.xml` as the debug manifest (legacy Bluetooth permissions only); build
-it last and both tasks together. `Target28Test` is its target-dependent checks (run with `-e expectTarget 28`, else skipped
+it last and both tasks together. The property takes any target (below `minSdk` 26 too; every one under 31 gets the
+`src/t28` overlay): apps targeting 14 and up draw, below 14 they run with a blank screen (README "One framework level"). `Target28Test` is its target-dependent checks (run with `-e expectTarget 28`, else skipped
 by an assumption; its `probe` prints one `t28.KEY=VALUE` status line per observation, which docs/conformance.md tables for
 API 30, API 36 and apksim, with the full-suite comparison). On API 33+ a target-28 app raises the POST_NOTIFICATIONS prompt,
 which takes the focus from later tests of an emulator run: close it (Back) while the run goes. `scripts/target-gate-check.sh

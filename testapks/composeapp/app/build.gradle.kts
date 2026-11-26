@@ -7,6 +7,7 @@ plugins {
 
 // -Papksim.targetSdk=28 builds the same app targeting that SDK (docs/conformance.md) into app/build-t28/ (APKs
 // app-t28-debug.apk and app-t28-debug-androidTest.apk under outputs/apk/); without the property nothing changes.
+// Any target works, below minSdk too (README "One framework level" was measured this way at 1, 4, 9, 13, 14, 19, 21, 28 and 36).
 // A folder of its own, as AGP deletes the other APKs of an outputs folder when it packages one.
 val apksimTargetSdk = (findProperty("apksim.targetSdk") as String?)?.let {
   it.toIntOrNull() ?: throw GradleException("-Papksim.targetSdk must be a number, not '$it'")
@@ -16,9 +17,12 @@ if (apksimTargetSdk != null) {
   layout.buildDirectory.set(layout.projectDirectory.dir("build-t$apksimTargetSdk"))
   // src/t28/AndroidManifest.xml, if there is one for the target, is the debug variant's manifest, which AGP merges over the main one (debug builds only: a release build with
   // the property gets the target without the overlay).
-  if (file("src/t$apksimTargetSdk/AndroidManifest.xml").exists()) {
+  // Below 31 without one of its own, src/t28's (the legacy Bluetooth permissions are what any target under 31 declares).
+  val overlay = listOf("src/t$apksimTargetSdk", "src/t28").map { file("$it/AndroidManifest.xml") }
+    .firstOrNull { it.exists() && (it.parentFile.name == "t$apksimTargetSdk" || apksimTargetSdk < 31) }
+  if (overlay != null) {
     extensions.configure<com.android.build.api.dsl.ApplicationExtension> {
-      sourceSets.getByName("debug").manifest.srcFile("src/t$apksimTargetSdk/AndroidManifest.xml")
+      sourceSets.getByName("debug").manifest.srcFile(overlay)
     }
   }
 }
