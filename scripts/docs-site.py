@@ -57,7 +57,6 @@ README_PAGES = {
     "System design": "system-design.md",
     "Installation": "installation.md",
     "Devices and launch options": "devices-and-launch-options.md",
-    "The simulator window": "simulator-window.md",
     "Skins": "using-skins.md",
     "Automation": "automation.md",
     "adb device": "adb-device.md",
@@ -77,7 +76,13 @@ README_PAGES = {
     "License": "license.md",
 }
 # Sections the site has its own page for: links to them go there, their text is not copied.
-README_REPLACED = {"Contents": "index.md", "Quick start": "quickstart.md"}
+README_REPLACED = {
+    "Contents": "index.md",
+    "Quick start": "quickstart.md",
+    "The simulator window": "simulator-window.md",
+}
+# Internal docs under docs/ that are not published on the documentation site.
+DOCS_SKIP = {"ios-simulator-parity.md"}
 
 FENCE = re.compile(r"^(\s*)(```+|~~~+)")
 LIST_ITEM = re.compile(r"^(\s*)([-*+]|\d+[.)])\s+\S")
@@ -278,6 +283,8 @@ class Site:
         for folder in ("docs", os.path.join("website", "pages")):
             for name in sorted(os.listdir(os.path.join(ROOT, folder))):
                 if name.endswith(".md"):
+                    if folder == "docs" and name in DOCS_SKIP:
+                        continue
                     if name in self.pages:
                         sys.exit("docs-site: two sources for the page " + name)
                     with open(os.path.join(ROOT, folder, name), encoding="utf-8") as f:

@@ -151,7 +151,6 @@ nav:
       - 'Configuration': configuration-reference.md
       - 'Performance': performance.md
       - 'Conformance': conformance.md
-      - 'iOS Simulator Parity': ios-simulator-parity.md
       - 'API Levels': api-levels.md
       - 'App Corpus': corpus.md
   - 'Changelog': changelog.md

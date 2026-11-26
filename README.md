@@ -6,7 +6,7 @@
 
 **apksim runs unmodified Android APKs on an Apple Silicon Mac as one ordinary process: no emulator, no virtual
 machine, no install step.** The app is on screen about a quarter of a second after you press Enter, renders at up to
-120 fps in a resizable native window, and can be driven like the iOS Simulator: by hand, from scripts, or with
+120 fps in a resizable native window, and can be driven by hand, from scripts, or with
 standard `adb` tooling. The same runtime runs an app's instrumented test suite, on the Mac or headless in a Linux
 container, several times faster than an emulator.
 
@@ -65,7 +65,7 @@ it, and [How it was built](#how-it-was-built) covers the order it came together 
 **Drive it**
 
 - **Scriptable.** An MCP server for AI agents (`apksim mcp`), a line-based control channel, `ctl.py` for
-  `simctl`-style control of running instances, and an adb device that standard tools (`adb`, the Android CLI) can
+  controlling running instances from the command line, and an adb device that standard tools (`adb`, the Android CLI) can
   drive.
 - **In a browser tab.** `apksim serve` runs an APK per browser tab and streams it, so QA, design and product people
   can try a build without Android tools: first frame in ~0.3 s on a Mac, and a tap shows in ~30 ms.
@@ -478,7 +478,7 @@ on a device: they're recreated, or resized in place if they declare `screenSize`
 
 ### Menus
 
-The menus follow the iOS Simulator wherever Android has the same thing.
+Every common device action is in the macOS menu bar with a keyboard shortcut.
 
 **File**
 
@@ -488,19 +488,22 @@ The menus follow the iOS Simulator wherever Android has the same thing.
 | Save Screen with Skin | Cmd+Opt+S |
 | Record Screen | Cmd+R |
 | Save Replay (the flight recorder's last minutes) | Cmd+Shift+S |
+| Show Screenshots and Recordings | |
 
 **Device**
 
 | Item | Shortcut |
 |---|---|
-| Device Type: Phone, Foldable, Tablet, Desktop, TV | Cmd+Shift+1-5 |
+| Device Type: Phone, Foldable, Tablet, Desktop, TV, Pixel 10 Pro Fold, Galaxy S25 / S25+ / S25 Ultra / A56, Galaxy Z Fold7 / Flip7 / TriFold | Cmd+Shift+1-9 |
 | Skin: None and every stored skin | |
+| Fold / Unfold | Cmd+Shift+F |
+| Rotate Left / Right | Cmd+Left / Right |
 | Back | |
 | Home | Cmd+Shift+H |
 | Lock | Cmd+L |
-| Volume | Cmd+Opt+= / - |
-| Rotate | Cmd+Left / Right |
+| Volume Up / Down | Cmd+Opt+= / - |
 | Software Keyboard | Cmd+K |
+| Status Bar / Navigation Bar | |
 
 **Features**
 
@@ -509,14 +512,17 @@ The menus follow the iOS Simulator wherever Android has the same thing.
 | Dark Appearance | Cmd+Shift+A |
 | Larger, Smaller and Default Text | Cmd+Shift+= / - / 0 |
 | Language and Region | |
-| Location: None, Custom, City Run, Bicycle, Freeway | |
-| Fingerprint: Enrolled, Matching, Non-matching | Cmd+Opt+M (matching), Cmd+Opt+N (non-matching) |
+| Location: None, Custom, City Run, City Bicycle Ride, Freeway Drive | |
+| Fingerprint: Enrolled, Matching Finger, Non-matching Finger | Cmd+Opt+M (matching), Cmd+Opt+N (non-matching) |
+| Network: Online, Offline, 3G, Lossy, Wi-Fi, Mobile Data | |
+| Camera: Off, Test Pattern, Image File | |
 | Open URL | Cmd+Shift+O |
 
 **Window**
 
 | Item | Shortcut |
 |---|---|
+| Minimize | Cmd+M |
 | Actual Size | Cmd+1 |
 | Fit Screen | Cmd+3 |
 | Zoom In / Out | Cmd+= / - |
@@ -550,8 +556,7 @@ The menus follow the iOS Simulator wherever Android has the same thing.
 - http(s) and mailto links open in the Mac's browser and mail app.
 - Sharing goes to the Mac's share menu, and document pickers open the Mac's file panel.
 
-Screenshots and recordings are saved to `work/screenshots` (`~/.apksim/screenshots` in a release). Gaps relative
-to the iOS Simulator are tracked in [docs/ios-simulator-parity.md](docs/ios-simulator-parity.md).
+Screenshots and recordings are saved to `work/screenshots` (`~/.apksim/screenshots` in a release).
 
 ## Skins
 

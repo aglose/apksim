@@ -54,7 +54,7 @@ every app as API 36. [Limitations](limitations.md) lists where it differs.
 -   **Use it like a simulator**
 
     Device types, live window resizing, rotation, dark mode, locale, text size, location, biometrics, permissions
-    and deep links, from menus as in the iOS Simulator.
+    and deep links, right from the macOS menu bar.
 
     [The simulator window](simulator-window.md)
 

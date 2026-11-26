@@ -58,7 +58,7 @@ apksim --appearance dark --locale de-DE --font-scale 1.3 app-debug.apk
 apksim --device pixel-10-pro-fold --skin pixel-10-pro-fold app-debug.apk
 ```
 
-While the app runs, the same switches are in the menus, as in the iOS Simulator: Device > Device Type, Rotate,
+While the app runs, the same switches are in the menu bar: Device > Device Type, Rotate,
 Features > Dark Appearance, Language and Region, Location, and more. Dragging the window's edge resizes the app's
 display, so adaptive layouts respond live.
 
