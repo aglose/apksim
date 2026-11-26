@@ -119,7 +119,7 @@ That trade is where both the speed and the limits come from.
 | **Device tests** | Same test APKs, JUnit XML. A large app's 4,107 tests: ~4.7 min on a Mac, 8.3 min in the Linux image under Rosetta | Runs the tests as a device does. The same suite: ~19 min on two CI emulators |
 | **CI cost** | A container on an ordinary runner, with no KVM. In that app's CI, about 55% fewer runner-minutes per pull request | Needs a runner with KVM, or a macOS runner |
 | **Failure triage** | A bundle per failing test: screen, accessibility tree, log, threads, a rerun script | Screenshots and logcat you arrange to collect |
-| **API levels and devices** | Runs on Android 16 (API 36). Apps targeting API 14 (Android 4.0) through 36 run, with `targetSdk`-gated behaviour following each app's own target. Phone, foldable, tablet, desktop, TV and watch profiles | Any system image, many API levels |
+| **API levels and devices** | Runs on Android 16 (API 36). Apps targeting API 14 (Android 4.0) or later run, with `targetSdk`-gated behaviour following each app's own target. Phone, foldable, tablet, desktop, TV and watch profiles | Any system image, many API levels |
 | **System services** | Stand-ins, and no other apps (details below) | The real ones, and Google Play images |
 | **Native libraries** | arm64-v8a on the Mac and in the arm64 Linux image; x86_64 in the x86_64 Linux image (details below) | arm64 or x86_64, matching the system image; 4 KB or 16 KB pages |
 | **Fidelity** | The framework and rendering are Android's own; behaviour that depends on the rest of a device is simulated | A real Android system |
@@ -1256,10 +1256,11 @@ each and the option that drives it, so you can see which of these limits an app 
 
 ### One framework level
 
-apksim runs Android 16 (API 36), and apps targeting API 14 (Android 4.0) through 36 run on it. Behaviour the platform
+apksim runs Android 16 (API 36), and apps targeting API 14 (Android 4.0) or later run on it. Behaviour the platform
 gates on `targetSdk` follows the app's own target, as on an Android 16 device (the `compat` command lists the changes
-an app hit and how each was answered). The test app is checked at targets 14, 19, 21, 28 and 36; at 21 its whole suite
-passes except a test that expects the focus behaviour of targets 28 and up.
+an app hit and how each was answered). This was measured with the test app rebuilt at targets 1, 4, 9, 13, 14, 19, 21, 28
+and 36 (`-Papksim.targetSdk=N`), not with apps built for those levels. At target 21 its suite passes except for two
+tests: one expects the focus behaviour of targets 28 and up, and the other fails at target 36 too.
 
 - **Targets below 14** launch and take input, and their accessibility tree is right, but the screen stays blank:
   below 14 Android draws windows in software unless the app asks for hardware acceleration, and apksim does not

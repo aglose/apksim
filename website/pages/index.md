@@ -45,7 +45,7 @@ apksim app-debug.apk
 
 Measured on an M4 Pro. [Performance](performance.md) has the method and more figures, and
 [Features](features.md) the full comparison. An emulator is still the device: apksim has no Play Services, and runs apps
-targeting API 14 through 36 on Android 16. [Limitations](limitations.md) lists where it differs.
+targeting API 14 or later on Android 16. [Limitations](limitations.md) lists where it differs.
 
 ## What you can do with it
 

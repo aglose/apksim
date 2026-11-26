@@ -7,7 +7,7 @@ plugins {
 
 // -Papksim.targetSdk=28 builds the same app targeting that SDK (docs/conformance.md) into app/build-t28/ (APKs
 // app-t28-debug.apk and app-t28-debug-androidTest.apk under outputs/apk/); without the property nothing changes.
-// Any target works, below minSdk too (README "One framework level" was checked at 1-36 this way).
+// Any target works, below minSdk too (README "One framework level" was measured this way at 1, 4, 9, 13, 14, 19, 21, 28 and 36).
 // A folder of its own, as AGP deletes the other APKs of an outputs folder when it packages one.
 val apksimTargetSdk = (findProperty("apksim.targetSdk") as String?)?.let {
   it.toIntOrNull() ?: throw GradleException("-Papksim.targetSdk must be a number, not '$it'")
