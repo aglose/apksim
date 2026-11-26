@@ -31,7 +31,10 @@ f = sock.makefile("rw")
 def say(cmd):
     f.write(cmd + "\n")
     f.flush()
-    return f.readline().strip()
+    answer = f.readline().strip()
+    if answer.startswith("error:") and not cmd.startswith("nodes"):
+        sys.exit(f"{cmd}: {answer}")
+    return answer
 
 
 def read_png(path):

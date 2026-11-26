@@ -1263,10 +1263,10 @@ and 36 (`-Papksim.targetSdk=N`), not with apps built for those levels. At target
 tests: one expects the focus behaviour of targets 28 and up, and the other fails at target 36 too.
 
 - **Targets below 14** draw as the others do. Android draws their windows in software unless the app asks for
-  hardware acceleration (as it does any window with `android:hardwareAccelerated="false"`); apksim records such a
+  hardware acceleration, and any window with `android:hardwareAccelerated="false"` is drawn so too; apksim records such a
   window with `View.draw` and shows it with the rest, its views on their software path (`View.isHardwareAccelerated()`
   is false, as on a device). One difference: the `Canvas` they draw on is a recording one, so
-  `Canvas.isHardwareAccelerated()` answers true there. The test app at targets 1 and 13 gives the same pixels as at 14.
+  `Canvas.isHardwareAccelerated()` answers true there. The test app built at targets 1 and 13 gave the same pixels as at 14 (measured by hand).
 - **An older Android's own behaviour** is not reproduced: `Build.VERSION.SDK_INT` is 36 whatever the app targets.
   docs/api-levels.md is the spike that ran the API 30 framework.
 
