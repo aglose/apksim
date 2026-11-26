@@ -285,7 +285,7 @@ class Site:
                 if name.endswith(".md"):
                     if folder == "docs" and name in DOCS_SKIP:
                         continue
-                    if name in self.pages:
+                    if name in self.pages and not (folder.startswith("website") and os.environ.get("APKSIM_UI_OVERLAY")):
                         sys.exit("docs-site: two sources for the page " + name)
                     with open(os.path.join(ROOT, folder, name), encoding="utf-8") as f:
                         self.pages[name] = f.read().split("\n")
@@ -418,6 +418,48 @@ def snapshot_tags(rels):
     return sorted(names, key=vkey, reverse=True)
 
 
+def overlay_ui(dest):
+    """Apply this checkout's site UI (assets, theme/chrome config, and website/pages/*.md) onto an exported
+    release tag so UI improvements reach every version while each tag keeps its own feature docs (README.md,
+    docs/, and nav)."""
+    shutil.copytree(os.path.join(ROOT, "website", "assets"),
+                    os.path.join(dest, "website", "assets"), dirs_exist_ok=True)
+    main_cfg_path = os.path.join(ROOT, "website", "mkdocs.yml")
+    tag_cfg_path = os.path.join(dest, "website", "mkdocs.yml")
+    with open(main_cfg_path, encoding="utf-8") as f:
+        main_cfg = f.read()
+    with open(tag_cfg_path, encoding="utf-8") as f:
+        tag_cfg = f.read()
+    marker = "\nnav:\n"
+    if marker in main_cfg and marker in tag_cfg:
+        main_head = main_cfg.split(marker, 1)[0]
+        tag_nav = tag_cfg.split(marker, 1)[1]
+        tag_cfg = main_head + marker + tag_nav
+        with open(tag_cfg_path, "w", encoding="utf-8") as f:
+            f.write(tag_cfg)
+    listed = nav_pages(tag_cfg)
+    pages_src = os.path.join(ROOT, "website", "pages")
+    pages_dst = os.path.join(dest, "website", "pages")
+    os.makedirs(pages_dst, exist_ok=True)
+    for name in sorted(os.listdir(pages_src)):
+        if name.endswith(".md") and name in listed:
+            shutil.copy(os.path.join(pages_src, name), os.path.join(pages_dst, name))
+            dup_doc = os.path.join(dest, "docs", name)
+            if os.path.exists(dup_doc):
+                os.remove(dup_doc)
+    # Older tags' scripts exit on a README_PAGES + website/pages collision; allow overlaid website/pages to win.
+    tag_script = os.path.join(dest, "scripts", "docs-site.py")
+    if os.path.exists(tag_script):
+        with open(tag_script, encoding="utf-8") as f:
+            code = f.read()
+        old = 'if name in self.pages:\n                        sys.exit("docs-site: two sources for the page " + name)'
+        new = ('if name in self.pages and not folder.startswith("website"):\n'
+               '                        sys.exit("docs-site: two sources for the page " + name)')
+        if old in code:
+            with open(tag_script, "w", encoding="utf-8") as f:
+                f.write(code.replace(old, new, 1))
+
+
 def export(tag, dest):
     """A tag's sources for the site, and an empty file for every other path it has, so that the tag's script can
     tell which of its links name a file and which a folder."""
@@ -434,6 +476,7 @@ def export(tag, dest):
         if name and not os.path.exists(path):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             open(path, "w").close()
+    overlay_ui(dest)
     return True
 
 
@@ -458,12 +501,13 @@ def build_tree(args, work, tool, publishing):
 
     built, failed = [], []
     tags = snapshot_tags(rels)
+    tag_env = dict(env, APKSIM_UI_OVERLAY="1")
     for tag in tags:
         version = tag[1:]
         src = os.path.join(work, "tags", version)
         ok = export(tag, src) and subprocess.call(
             [sys.executable, os.path.join(src, "scripts", "docs-site.py"), "--version", version,
-             "--out", os.path.join(tree, version)], env=env) == 0
+             "--out", os.path.join(tree, version)], env=tag_env) == 0
         (built if ok else failed).append(version)
         shutil.rmtree(src, ignore_errors=True)
     status = subprocess.call([sys.executable, os.path.abspath(__file__), "--version", "dev",
