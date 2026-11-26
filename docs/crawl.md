@@ -173,9 +173,11 @@ So each replay starts from the data the app had at its launch:
   tree-quiet early exit in `settle` for continuously animating screens, a shared standby pool (`APKSIM_STANDBY_POOL`,
   default `2`, with `400 ms` spawn stagger), capped crawl JVM memory (`APKSIM_CRAWL_MEM=1`: `-Xms128m -Xmx512m`),
   action-level work stealing across workers, async worker retirement on per-generation `--keep-data` slots,
-  WAL-incremental SQLite hashing, navigation-constant learning, inline capture of the default combination
-  (`phone-light-en-US-1`) during exploration, and screen-variant / parameterized-sibling deduplication (opt-out via
-  `--no-dedup-variants`; multi-window dialogs stay separate and `--diff-seed` never hides changes on carried destinations).
+  WAL-incremental SQLite hashing, navigation-constant and background startup-sync learning (existing SQLite tables
+  rewritten autonomously during shallow navigation across three or more fresh launches stop triggering relaunches, while
+  user-action mutations continue to relaunch), inline capture of the default combination (`phone-light-en-US-1`) during
+  exploration, and screen-variant / parameterized-sibling deduplication (opt-out via `--no-dedup-variants`; multi-window
+  dialogs stay separate and `--diff-seed` never hides changes on carried destinations).
 
 What it does not cover: state an app keeps in memory only (a static that a tap changed and nothing writes) outlives a
 `restart`, as before. External storage is at a device's path, `/storage/emulated/0`, in every instance
@@ -192,7 +194,8 @@ reached the end of their path and found another screen there, and the service be
 
 - `--freeze-network`: every launch is answered from one recording, `OUT/network.har`. A launch replays a copy of the
   recording as it is when the launch starts and fetches from the server only what the recording lacks
-  (`--network replay COPY --network-unmatched fetch:FILE`, docs/network.md). What it fetched is merged into the
+  (`--network replay COPY --network-unmatched fetch:FILE`, docs/network.md), staging per-launch copies under apksim's
+  `STATE/tmp` so `--freeze-network` stays warm with `--standby`. What it fetched is merged into the
   recording when the launch ends, the first answer to a request kept (method, URL and body), so from then on every
   launch sees that answer. The app's clock is the time the recording began (minute), not the fixed 2026-01-01 09:41, so
   "in 20 minutes" in a server's answer stays in 20 minutes. `crawl.json` records `clock` and `network` (the recording,
