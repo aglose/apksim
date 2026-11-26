@@ -41,7 +41,9 @@ scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] 
   emptied slot, and the prepared slot's data is never written (only its `.lock` file, to see it is not in use). The
   copies keep its serial and ANDROID_ID (a slot's name gives them otherwise) and are removed at the end, a stop
   included; copies a crawl killed outright left (`kTOKENI-0` and their `.device`, unused for 6 hours) are removed by the
-  next `--keep-data` walk of that app. A prepared slot in use by a running instance stops the walk. An app that stored
+  next `--keep-data` walk of that app. `--keep-data` also passes `--biometrics auto` unless `--biometrics` is set after
+  `--`, so apps that unlock saved sessions or biometric-gated sections via `BiometricPrompt` stay unlocked across
+  workers and relaunches. A prepared slot in use by a running instance stops the walk. An app that stored
   absolute paths into its data folder in its own files reads the prepared slot through them, from the copy. The crawler never types a
   password: text fields are left alone unless `--fill TEXT` is given, which types it into the fields of each screen
   before its controls are tried.
