@@ -826,6 +826,7 @@ class Instance(snapshot.Worker):
         with self.ctx["lock"]:
             first_vals = dict(self.ctx.get("first_values") or ())
             nav_vals = dict(self.ctx.get("nav_values") or ())
+            startup_writes = {k: len(v) for k, v in (self.ctx.get("startup_writes") or {}).items()}
         for f in sorted(before.keys() | now.keys()):
             a, b = before.get(f), now.get(f)
             if a == b:
@@ -840,6 +841,8 @@ class Instance(snapshot.Worker):
                     elif k in b:
                         nv = nav_vals.get((f, k))
                         if nv is not None and nv is not _CONFLICT and nv[1] >= 2 and nv[0] == b[k]:
+                            continue
+                        if startup_writes.get((f, k), 0) >= 3:
                             continue
                     out.append(f"{f}#{k}")
                 continue
@@ -934,6 +937,8 @@ class Instance(snapshot.Worker):
         now = self.data_state(use_cache=True)
         with self.ctx["lock"]:
             nav_values = self.ctx.setdefault("nav_values", {})
+            startup_writes = self.ctx.setdefault("startup_writes", {})
+            launch_id = (self.i, self.generation)
             for f, b in now.items():
                 a = self.baseline.get(f)
                 if isinstance(b, dict) and (a is None or isinstance(a, dict)):
@@ -941,6 +946,8 @@ class Instance(snapshot.Worker):
                         if k not in (a or {}):
                             self.ctx["first_values"].setdefault((f, k), v)
                         elif nav_depth <= 3 and (a or {}).get(k) != v:
+                            if nav_depth <= 2:
+                                startup_writes.setdefault((f, k), set()).add(launch_id)
                             prev = nav_values.get((f, k))
                             if prev is None:
                                 nav_values[(f, k)] = (v, 1)
@@ -1343,10 +1350,23 @@ class NetFreeze:
     request kept (method, URL, body: the engine's default match). A seeded walk starts from its seed's recording."""
 
     def __init__(self, out, seed_dir=None):
-        self.dir = os.path.join(out, "network")
+        # Keep per-launch fetch files under apksim's STATE/tmp so --freeze-network stays warm with --standby
+        # (a standby's sandbox allows writes under STATE, whereas OUT may be outside STATE).
+        state = os.environ.get("APKSIM_HOME") or (
+            os.path.join(os.path.expanduser("~"), ".apksim")
+            if os.path.isfile(os.path.join(ROOT, "work", "release"))
+            else os.path.join(ROOT, "work"))
+        net_tmp = os.path.join(state, "tmp", f"crawl-net-{os.getpid()}-{id(self):x}")
+        try:
+            os.makedirs(net_tmp, exist_ok=True)
+            self.dir = net_tmp
+            self._in_state_tmp = True
+        except OSError:
+            self.dir = os.path.join(out, "network")
+            os.makedirs(self.dir, exist_ok=True)
+            self._in_state_tmp = False
         self.master = os.path.join(out, "network.har")
         self.lock = threading.Lock()
-        os.makedirs(self.dir, exist_ok=True)
         src = os.path.join(seed_dir, "network.har") if seed_dir else None
         if src and os.path.abspath(src) != os.path.abspath(self.master) and os.path.isfile(src):
             shutil.copyfile(src, self.master)
@@ -1528,7 +1548,7 @@ class Explorer:
                     "keep_state": args.keep_app_state, "restore": self.kept.restore if self.kept else None,
                     "remove_slot": self.kept.remove_one if self.kept else None, "reapers": [],
                     "data_ignore": list(args.data_ignore or []),
-                    "relaunches": [0], "relaunch_files": {}, "first_values": {}, "nav_values": {}, "unsettled": set(),
+                    "relaunches": [0], "relaunch_files": {}, "first_values": {}, "nav_values": {}, "startup_writes": {}, "unsettled": set(),
                     "record_deps": bool(args.record_deps), "lock": threading.Lock(),
                     "spawn": (SPAWN, STOPPING), "skip_re": self.skip_re}
         self.inline_shots = {}   # newly discovered sid -> (rel_path, settled) captured inline on first observation
@@ -2032,7 +2052,8 @@ class Explorer:
                     jt = jacc(ts, uts) if (len(ts) >= 6 and len(uts) >= 6) else 0.0
                     jc = jacc(cs, ucs) if (len(cs) >= 5 and len(ucs) >= 5) else 0.0
                     jsc = jacc(scs, uscs) if (len(scs) >= 5 and len(uscs) >= 5) else 0.0
-                    if jc >= 0.55 or jt >= 0.50 or jsc >= 0.68:
+                    shared_short = sum(1 for c in (scs & uscs) if any(ch.isalpha() for ch in c))
+                    if jc >= 0.55 or jt >= 0.50 or jsc >= 0.68 or shared_short >= 6:
                         return uid
             return None
 
