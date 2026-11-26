@@ -106,6 +106,7 @@ final class Standby {
       // Options a class read while this standby booted (volatile, so they can be read again).
       SoftKeyboard.enabled = Boolean.getBoolean("apksim.softKeyboard");
       Biometrics.enrolled = Boolean.getBoolean("apksim.biometricsEnrolled");
+      Biometrics.autoMatch = Boolean.getBoolean("apksim.biometricsAutoMatch");
       dev.apksim.dex.Probes.reload();  // -Dapksim.deps=true (crawl.py --record-deps): class probes and resource hits
       // --max-fps, --video, --audio: the warm-up read the standby's own; the app's onCreate must see the launch's.
       Features.load();

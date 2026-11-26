@@ -693,13 +693,14 @@ class Instance(snapshot.Worker):
                 time.sleep(self.ctx.get("stable_ms", 200) / 1000)
         return {"id": sid, "activity": act, "nodes": n, "recs": recs}
 
-    def wait_waypoint(self, want_id, prev_id=None, timeout=1.5):
+    def wait_waypoint(self, want_id, prev_id=None, timeout=1.5, exact=False):
         """Waits for [want_id] or a stabilized screen change using Host's in-process `wait-tree` (1 round-trip),
-        falling back to `ui-tree` polling on older hosts."""
+        falling back to `ui-tree` polling on older hosts. With [exact], only returns early when [want_id] arrives
+        (used when waiting through async startup/splash/biometric transitions to reach the root screen)."""
         if getattr(self, "_has_wait_tree", True):
             deadline = time.monotonic() + timeout
             last = None
-            for _ in range(3):
+            for _ in range(10 if exact else 3):
                 rem_ms = max(50, int((deadline - time.monotonic()) * 1000))
                 reply = self.say(f"wait-tree {rem_ms}")
                 if reply.startswith("unknown"):
@@ -712,7 +713,7 @@ class Instance(snapshot.Worker):
                     recs = parse_tree(body)
                     sid, n = structure(act, recs)
                     last = {"id": sid, "activity": act, "nodes": n, "recs": recs}
-                    if sid == want_id or sid != prev_id or time.monotonic() >= deadline:
+                    if sid == want_id or (not exact and sid != prev_id) or time.monotonic() >= deadline:
                         return last
                     continue
                 break
@@ -734,7 +735,7 @@ class Instance(snapshot.Worker):
             last = {"id": sid, "activity": act, "nodes": n, "recs": recs}
             if sid == want_id:
                 return last
-            if sid != prev_id:
+            if not exact and sid != prev_id:
                 if sid == seen_other:
                     return last
                 seen_other = sid
@@ -971,9 +972,13 @@ class Instance(snapshot.Worker):
             if explore_fast and path["steps"] and self.ctx.get("root_id") and not need_deps:
                 act, recs = self.read_ui()
                 if act == "none" or structure(act, recs)[0] != self.ctx["root_id"]:
-                    self.wait_waypoint(self.ctx["root_id"], timeout=0.8)
+                    self.wait_waypoint(self.ctx["root_id"], timeout=4.0, exact=True)
             else:
                 self.settle(WAYPOINT_SETTLE if (explore_fast and path["steps"]) else SETTLE)
+                if path["steps"] and self.ctx.get("root_id"):
+                    act, recs = self.read_ui()
+                    if act == "none" or structure(act, recs)[0] != self.ctx["root_id"]:
+                        self.wait_waypoint(self.ctx["root_id"], timeout=4.0, exact=True)
         else:
             self.fresh_at_root = False
             self.say(f"clock {CLOCK}")
@@ -981,9 +986,13 @@ class Instance(snapshot.Worker):
             if explore_fast and path["steps"] and not path.get("start") and self.ctx.get("root_id") and not need_deps:
                 act, recs = self.read_ui()
                 if act == "none" or structure(act, recs)[0] != self.ctx["root_id"]:
-                    self.wait_waypoint(self.ctx["root_id"], timeout=0.8)
+                    self.wait_waypoint(self.ctx["root_id"], timeout=4.0, exact=True)
             else:
                 self.settle(WAYPOINT_SETTLE if (explore_fast and path["steps"]) else SETTLE)
+                if path["steps"] and not path.get("start") and self.ctx.get("root_id"):
+                    act, recs = self.read_ui()
+                    if act == "none" or structure(act, recs)[0] != self.ctx["root_id"]:
+                        self.wait_waypoint(self.ctx["root_id"], timeout=4.0, exact=True)
         if patient:
             self.wait_longer()
         if self.baseline is None and self.from_launch_data():
@@ -1509,6 +1518,8 @@ class Explorer:
             self.options += ["--setting", "secure:android_id=00c0ffee00c0ffee"]
         if not args.keep_data and "--data-slots" not in self.options:
             self.options += ["--data-slots", "crawl"]
+        if args.keep_data and "--biometrics" not in self.options:
+            self.options += ["--biometrics", "auto"]
         self.kept = KeptSlot(apk, self.options) if args.keep_data else None
         if self.kept:
             self.options = self.kept.options
