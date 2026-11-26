@@ -27,7 +27,7 @@ line of JSON per finished screen and level on stdout.
 """
 import xml.etree.ElementTree as ET
 import argparse, base64, concurrent.futures, difflib, hashlib, html, itertools, json, os, re, shlex, shutil, signal, subprocess, sys
-import fnmatch, sqlite3, tempfile, threading, time, urllib.parse
+import fnmatch, sqlite3, struct, tempfile, threading, time, urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import snapshot  # noqa: E402  (scripts/snapshot.py: instances, matrix axes, captures)
@@ -42,12 +42,22 @@ DEFAULT_SKIP = (r"\b(delete|remove|erase|clear( all| data| history)?|reset|sign[
                 r"purchase|buy|pay|checkout|order|subscribe|unsubscribe|send|submit|post|publish|share|"
                 r"uninstall|deactivate|close account|cancel (subscription|order)|confirm|transfer|withdraw|donate)\b")
 SETTLE = "settle 1500 100"
+SETTLE_FAST = "settle 1500 80 1000 tree 80"
 # A replay step or screen that is not there yet (data from the network, a list that fills in late): wait this long, then
 # settle for longer, before trying again (Instance.wait_longer).
 SETTLE_LONG = "settle 6000 300"
+SETTLE_LONG_FAST = "settle 6000 180 1000 tree 180"
 PATIENCE_S = 1.5
 WAYPOINT_SETTLE = "settle 800 60"
+WAYPOINT_SETTLE_FAST = "settle 800 40 1000 tree 50"
 SCROLL_SETTLE = "settle 450 60"
+SCROLL_SETTLE_FAST = "settle 450 40 1000 tree 40"
+FAST_SETTLES = {
+    SETTLE: SETTLE_FAST,
+    SETTLE_LONG: SETTLE_LONG_FAST,
+    WAYPOINT_SETTLE: WAYPOINT_SETTLE_FAST,
+    SCROLL_SETTLE: SCROLL_SETTLE_FAST,
+}
 DISMISS_LABELS = frozenset({"back", "navigate up", "close", "cancel", "not now", "dismiss"})
 LAUNCH_CONFIG_FLAGS = frozenset({"--device", "--dark", "--appearance", "--locale", "--font-scale", "--activity"})
 TIME_RE = re.compile(r"\b\d{1,2}:\d{2}\b")
@@ -210,6 +220,7 @@ SQLITE_BOOKKEEPING = {"room_master_table", "android_metadata", "sqlite_sequence"
 
 
 _MISSING = object()
+_CONFLICT = object()
 
 
 def shared_prefs(path):
@@ -230,6 +241,8 @@ def shared_prefs(path):
 
 
 _SQLITE_CACHE = {}
+_SQLITE_BASE_CACHE = {}
+_SQLITE_LOCK = threading.Lock()
 _NOT_SQLITE = object()
 
 
@@ -241,22 +254,195 @@ def _stat_key(path):
         return None
 
 
+def _sqlite_wal_pages(wal_path, page_size):
+    """Set of modified DB page numbers present in active frames of [wal_path], or None if unreadable/incompatible.
+    Seeks directly to each 16-byte frame header so multi-MB WALs (e.g. cached blobs) are inspected with ~KB of I/O."""
+    try:
+        with open(wal_path, "rb") as f:
+            hdr = f.read(32)
+            if len(hdr) < 32:
+                return set()
+            magic, _fmt, ps, _chk, salt1, salt2 = struct.unpack(">6I", hdr[:24])
+            if magic not in (0x377F0682, 0x377F0683) or ps != page_size:
+                return None
+            f.seek(0, os.SEEK_END)
+            end = f.tell()
+            stride = 24 + ps
+            pages = set()
+            off = 32
+            while off + stride <= end:
+                f.seek(off)
+                fh = f.read(16)
+                if len(fh) < 16:
+                    break
+                pgno, _db_sz, fs1, fs2 = struct.unpack(">4I", fh)
+                if fs1 != salt1 or fs2 != salt2:
+                    break
+                pages.add(pgno)
+                off += stride
+            return pages
+    except OSError:
+        return set()
+
+
+def _sqlite_btree_pages(buf, ps, root):
+    """All B-tree pages (interior + leaf) belonging to the table rooted at [root] in main DB [buf], or None."""
+    pages = set()
+    stack = [root]
+    buf_len = len(buf)
+    while stack:
+        p = stack.pop()
+        if p in pages or p < 1:
+            continue
+        off = (p - 1) * ps
+        if off + ps > buf_len:
+            return None
+        pages.add(p)
+        hdr_off = off + (100 if p == 1 else 0)
+        ptype = buf[hdr_off]
+        if ptype == 0x05 or ptype == 0x02:
+            ncells = struct.unpack(">H", buf[hdr_off + 3:hdr_off + 5])[0]
+            right = struct.unpack(">I", buf[hdr_off + 8:hdr_off + 12])[0]
+            stack.append(right)
+            ptrs_off = hdr_off + 12
+            if ptrs_off + 2 * ncells > off + ps:
+                return None
+            for i in range(ncells):
+                cell_off = off + struct.unpack(">H", buf[ptrs_off + 2 * i:ptrs_off + 2 * i + 2])[0]
+                if cell_off + 4 > off + ps:
+                    return None
+                stack.append(struct.unpack(">I", buf[cell_off:cell_off + 4])[0])
+        elif ptype != 0x0D and ptype != 0x0A:
+            return None
+    return pages
+
+
+def _sqlite_hash_table(con, t):
+    """Order-independent hash of all rows in table [t]."""
+    s1 = s2 = cnt = 0
+    for row in con.execute('select * from "%s"' % t.replace('"', '""')):
+        h = hash(row)
+        s1 = (s1 + h) & 0xFFFFFFFFFFFFFFFF
+        s2 ^= h
+        cnt += 1
+    return (cnt, s1, s2)
+
+
+def _sqlite_build_base(path, hdr100, wal_stat, roots, out):
+    """Maps main-DB B-tree pages to table names so future WAL writes only re-scan the 1-2 modified tables."""
+    ps = struct.unpack(">H", hdr100[16:18])[0]
+    if ps == 1:
+        ps = 65536
+    if ps < 512:
+        return None
+    init_wal = _sqlite_wal_pages(path + "-wal", ps) if wal_stat is not None else set()
+    if init_wal is None or 1 in init_wal:
+        return None
+    try:
+        with open(path, "rb") as f:
+            buf = f.read()
+    except OSError:
+        return None
+    page_to_table = {}
+    always_scan = set()
+    for name, rp in roots:
+        if name in SQLITE_BOOKKEEPING or name.startswith("sqlite_"):
+            continue
+        if not rp or rp < 1:
+            always_scan.add(name)
+            continue
+        pgs = _sqlite_btree_pages(buf, ps, rp)
+        if pgs is None:
+            always_scan.add(name)
+            continue
+        for p in pgs:
+            page_to_table[p] = name
+    for p in init_wal:
+        t = page_to_table.get(p)
+        if t:
+            always_scan.add(t)
+    return (ps, dict(out), page_to_table, frozenset(always_scan))
+
+
 def sqlite_tables(path):
-    """sqlite_tables_read, kept while the database file and its -wal and -journal keep their size and date."""
-    key = (path, _stat_key(path), _stat_key(path + "-wal"), _stat_key(path + "-journal"))
-    hit = _SQLITE_CACHE.get(path)
+    """sqlite_tables_read, kept while the database file and its -wal and -journal keep their size and date.
+    When only the -wal changes on a DB whose main file is unchanged (including clones of a prepared slot), parses
+    active WAL frame headers to re-scan only the modified tables instead of re-reading huge untouched tables."""
+    main_st = _stat_key(path)
+    wal_st = _stat_key(path + "-wal")
+    jnl_st = _stat_key(path + "-journal")
+    key = (path, main_st, wal_st, jnl_st)
+    with _SQLITE_LOCK:
+        hit = _SQLITE_CACHE.get(path)
     if hit and hit[0] == key:
         return hit[1]
-    out = sqlite_tables_read(path)
+    hdr = None
+    try:
+        with open(path, "rb") as f:
+            hdr = f.read(4096)
+    except OSError:
+        return None
+    if len(hdr) < 16 or hdr[:16] != b"SQLite format 3\0":
+        with _SQLITE_LOCK:
+            _SQLITE_CACHE[path] = (key, None)
+        return None
+    hdr100 = hdr[:100]
+    # Key base cache by (basename, file size, SQLite header + page-1 digest) so APFS clones with fresh mtimes share it.
+    base_key = (os.path.basename(path), main_st[0], hdr100, hash(hdr)) if (main_st is not None and jnl_st is None and len(hdr100) == 100) else None
+    if base_key is not None:
+        with _SQLITE_LOCK:
+            base = _SQLITE_BASE_CACHE.get(base_key)
+        if base is not None:
+            ps, base_hashes, page_to_table, always_scan = base
+            wal_pages = _sqlite_wal_pages(path + "-wal", ps) if wal_st is not None else set()
+            if wal_pages is not None and 1 not in wal_pages:
+                dirty = set(always_scan)
+                for p in wal_pages:
+                    t = page_to_table.get(p)
+                    if t:
+                        dirty.add(t)
+                if not dirty:
+                    out = dict(base_hashes)
+                else:
+                    out = None
+                    try:
+                        con = sqlite3.connect("file:" + urllib.parse.quote(path) + "?mode=ro", uri=True, timeout=2)
+                        try:
+                            con.text_factory = bytes
+                            out = dict(base_hashes)
+                            for t in sorted(dirty):
+                                out[t] = _sqlite_hash_table(con, t)
+                        finally:
+                            con.close()
+                    except sqlite3.Error:
+                        out = None
+                if out is not None:
+                    with _SQLITE_LOCK:
+                        if len(_SQLITE_CACHE) > 256:
+                            _SQLITE_CACHE.clear()
+                        _SQLITE_CACHE[path] = (key, out)
+                    return out
+    out, roots = sqlite_tables_read(path, with_roots=True)
     if out is _NOT_SQLITE:
-        _SQLITE_CACHE[path] = (key, None)
+        with _SQLITE_LOCK:
+            _SQLITE_CACHE[path] = (key, None)
         return None
     if out is not None:
-        _SQLITE_CACHE[path] = (key, out)
+        if base_key is not None and roots is not None:
+            base = _sqlite_build_base(path, hdr100, wal_st, roots, out)
+            if base is not None:
+                with _SQLITE_LOCK:
+                    if len(_SQLITE_BASE_CACHE) > 64:
+                        _SQLITE_BASE_CACHE.clear()
+                    _SQLITE_BASE_CACHE[base_key] = base
+        with _SQLITE_LOCK:
+            if len(_SQLITE_CACHE) > 256:
+                _SQLITE_CACHE.clear()
+            _SQLITE_CACHE[path] = (key, out)
     return out
 
 
-def sqlite_tables_read(path):
+def sqlite_tables_read(path, with_roots=False):
     """A SQLite database's content, {table: hash of its rows}, read through a read-only connection (which reads the -wal
     beside it too), _NOT_SQLITE when it is not a database, or None when a database cannot be opened (then
     Instance.data_state uses size and date and keeps its -wal/-journal). A write-ahead log changes with any write, a
@@ -264,29 +450,25 @@ def sqlite_tables_read(path):
     try:
         with open(path, "rb") as f:
             if f.read(16) != b"SQLite format 3\0":
-                return _NOT_SQLITE
+                return (_NOT_SQLITE, None) if with_roots else _NOT_SQLITE
     except OSError:
-        return None
+        return (None, None) if with_roots else None
     try:
         con = sqlite3.connect("file:" + urllib.parse.quote(path) + "?mode=ro", uri=True, timeout=2)
     except sqlite3.Error:
-        return None
+        return (None, None) if with_roots else None
     try:
         out = {}
-        names = [r[0] for r in con.execute("select name from sqlite_master where type = 'table' order by name")]
+        roots = con.execute("select name, rootpage from sqlite_master where type = 'table' order by name").fetchall()
         # SQLite does not enforce UTF-8 in TEXT columns; reading them as bytes avoids OperationalError on raw bytes.
         con.text_factory = bytes
-        for t in names:
+        for t, _rp in roots:
             if t in SQLITE_BOOKKEEPING or t.startswith("sqlite_"):
                 continue
-            # Rows are added up, not chained: a rewrite that reorders them (VACUUM) is no change.
-            total = 0
-            for row in con.execute('select * from "%s"' % t.replace('"', '""')):
-                total += int.from_bytes(hashlib.sha1(repr(row).encode("utf-8", "replace")).digest(), "big")
-            out[t] = "%x" % (total % (1 << 160))
-        return out
+            out[t] = _sqlite_hash_table(con, t)
+        return (out, roots) if with_roots else out
     except sqlite3.Error:
-        return None
+        return (None, None) if with_roots else None
     finally:
         con.close()
 
@@ -318,6 +500,7 @@ class Instance(snapshot.Worker):
     """A headless instance and what a walk does with it: replaying paths, reading the screen, capturing."""
     fresh_at_root = False
     last_settled = True
+    last_tree_stable = False
     parked = None
 
     def __init__(self, i, ctx):
@@ -325,9 +508,11 @@ class Instance(snapshot.Worker):
         self.stage = os.path.join(ctx["stage"], str(i))
         os.makedirs(self.stage, exist_ok=True)
         self.generation = 0
+        self.slot_gen = None
         self.applied = {a: None for a in AXES}  # unknown: a launch option may have set any of them
         self.fresh_at_root = False
         self.last_settled = True
+        self.last_tree_stable = False
         self.crashes = ctx["crashes"]
         self.slot = None      # the data slot's folders (the slot and its .device), read from the launch's log
         self.baseline = None  # what they held once this launch's app had started (see reach)
@@ -335,11 +520,16 @@ class Instance(snapshot.Worker):
     def launch(self):
         if STOPPING.is_set():  # the walk is being stopped: no instance is started again, no copy made again
             raise Gone({"detail": "the walk was stopped"})
+        next_gen = self.generation + 1
         if self.ctx.get("restore"):
             # --keep-data: this instance's copy of the prepared slot, made again from it (the data the app had at launch).
             if self.proc is not None and self.proc.poll() is None:
                 self.quit()
-            self.own_options = self.ctx["restore"](self.i)
+            try:
+                self.own_options = self.ctx["restore"](self.i, next_gen)
+            except TypeError:
+                self.own_options = self.ctx["restore"](self.i)
+            self.slot_gen = next_gen
         if NET is not None:
             # --freeze-network: answered from the walk's recording (as it is now), what it lacks fetched and kept. The
             # last launch must have ended (and written what it fetched) before that is merged.
@@ -347,7 +537,7 @@ class Instance(snapshot.Worker):
                 self.quit()
             kept = list(self.own_options) if self.ctx.get("restore") else []
             self.own_options = kept + NET.options(f"{self.ctx['name']}-{self.i}")
-        self.generation += 1
+        self.generation = next_gen
         self.slot = self.baseline = None
         self.log = os.path.join(self.ctx["out"], "logs", f"{self.ctx['name']}-instance-{self.i}.{self.generation}.log")
         self.proc = self.file = self.sock = None
@@ -365,6 +555,8 @@ class Instance(snapshot.Worker):
 
     def say(self, cmd):
         """Sends a command; an instance that ends meanwhile raises Gone with what the log says."""
+        if not cmd.startswith(("ui-", "activity", "nodes", "permission", "pick ", "shot ", "stats", "ping", "deps")):
+            self._cached_data_state = None
         try:
             return self.send(cmd)
         except (snapshot.Closed, OSError, ValueError):
@@ -396,7 +588,13 @@ class Instance(snapshot.Worker):
         return crash
 
     def expect_ok(self, cmd):
-        reply = self.say(cmd)
+        if self.ctx.get("explore_fast") and cmd.startswith("drag ") and getattr(self, "_has_fast_drag", True):
+            reply = self.say("fast-" + cmd)
+            if reply.startswith("unknown"):
+                self._has_fast_drag = False
+                reply = self.say(cmd)
+        else:
+            reply = self.say(cmd)
         if reply.startswith("error: app crashed"):  # the command ran app code that threw: the process is ending
             raise Gone(self.ended(cmd))
         if reply.startswith(snapshot.FAILED_REPLIES):
@@ -405,19 +603,29 @@ class Instance(snapshot.Worker):
 
     def settle(self, cmd=SETTLE):
         """Waits for the screen to be still; a screen that animates for ever is read as it is."""
-        ok = not self.say(cmd).startswith("error")
+        if self.ctx.get("explore_fast"):
+            cmd = FAST_SETTLES.get(cmd, cmd)
+        reply = self.say(cmd)
+        ok = not reply.startswith("error")
         self.last_settled = ok
+        self.last_tree_stable = "(tree stable)" in reply
         return ok
 
     def wait_longer(self):
         """More time for what a replay expects and does not find yet: a label that comes with the network's answer, a
         screen still loading. A real wait first, as `settle` does not wait for a request or a coroutine's delay()."""
-        time.sleep(self.ctx.get("patience_s", PATIENCE_S))
-        self.say(SETTLE_LONG)
+        patience = self.ctx.get("patience_s", PATIENCE_S)
+        if self.ctx.get("explore_fast"):
+            time.sleep(min(patience, 0.4))
+            self.settle(SETTLE_LONG)
+        else:
+            time.sleep(patience)
+            self.say(SETTLE_LONG)
 
     def step(self, cmd, alt=None, settle_cmd=SETTLE):
         """One replay step, tried again after wait_longer when it fails (a reply that failed did nothing), then as [alt]
         (the same tap by its coordinates, for a label that live data changed) when given."""
+        self.last_tree_stable = False
         try:
             self.expect_ok(cmd)
         except ReplayFailed:
@@ -447,30 +655,47 @@ class Instance(snapshot.Worker):
         return self.expect_ok(cmd)
 
     # --- reading
+    def read_ui(self):
+        """Reads (activity, recs) in one round-trip via `ui-tree`, falling back to `activity` + `nodes tree`."""
+        if getattr(self, "_has_ui_tree", True):
+            reply = self.say("ui-tree fast" if self.ctx.get("explore_fast") else "ui-tree")
+            if reply == "none":
+                return "none", []
+            if "\x1d" in reply:
+                act, tree = reply.split("\x1d", 1)
+                return act, parse_tree(tree)
+            if reply.startswith("unknown"):
+                self._has_ui_tree = False
+        act = self.say("activity")
+        if act == "none":
+            return "none", []
+        return act, parse_tree(self.say("nodes tree"))
+
     def observe(self, expected_id=None):
         """The screen as it is: read until two reads in a row agree (a list still composing, a transition ending).
         When [expected_id] is given (confirming arrival at a known screen), a matching first read returns immediately."""
+        single = self.last_tree_stable and expected_id is None and self.ctx.get("explore_fast")
+        self.last_tree_stable = False
         prev = None
-        for attempt in range(4):
-            act = self.say("activity")
+        for attempt in range(1 if single else 4):
+            act, recs = self.read_ui()
             if act == "none":
                 return {"id": "EXIT", "activity": "none", "nodes": 0, "recs": []}
-            recs = parse_tree(self.say("nodes tree"))
             sid, n = structure(act, recs)
             if expected_id is not None and sid == expected_id:
                 break
             if sid == prev:
                 break
             prev = sid
-            if attempt < 3:
+            if not single and attempt < 3:
                 # `settle` does not wait for a coroutine's delay() or a posted Runnable: a screen that fills in a
                 # moment after it is still is read again until two reads --stable-ms apart agree.
                 time.sleep(self.ctx.get("stable_ms", 200) / 1000)
         return {"id": sid, "activity": act, "nodes": n, "recs": recs}
 
     def wait_waypoint(self, want_id, prev_id=None, timeout=1.5):
-        """Polls `activity` + `nodes tree` with backoff until [want_id] appears or two reads agree on a new screen."""
-        delays = (0.06, 0.08, 0.12, 0.18, 0.25, 0.35, 0.45)
+        """Polls `ui-tree` with backoff until [want_id] appears or two reads agree on a new screen."""
+        delays = (0.02, 0.025, 0.035, 0.05, 0.08, 0.12, 0.18, 0.25)
         deadline = time.monotonic() + timeout
         last = None
         seen_other = None
@@ -479,10 +704,9 @@ class Instance(snapshot.Worker):
             if rem <= 0:
                 break
             time.sleep(min(d, rem))
-            act = self.say("activity")
+            act, recs = self.read_ui()
             if act == "none":
                 return {"id": "EXIT", "activity": "none", "nodes": 0, "recs": []}
-            recs = parse_tree(self.say("nodes tree"))
             sid, n = structure(act, recs)
             last = {"id": sid, "activity": act, "nodes": n, "recs": recs}
             if sid == want_id:
@@ -519,13 +743,17 @@ class Instance(snapshot.Worker):
             self.slot = [m[1], m[1] + ".device"]
         return self.slot
 
-    def data_state(self):
+    def data_state(self, use_cache=False):
         """What the slot holds, {file: state}: a SharedPreferences file as its values ({key: value}), any other as
         (size, mtime), so a write anywhere changes it; a SQLite database as its tables' content ({table: hash}, see
         sqlite_tables: its -wal and -journal are left out, unless it cannot be read: then they are compared like any file). Left out: what no screen reads (BOOKKEEPING): an app's caches,
         AndroidX's profile installer (which writes once some seconds after every start, so each new launch would want
         another), WorkManager's own database, SQLite's shared memory index (-shm, which readers write too), the slot's
         lock."""
+        if use_cache:
+            cached = getattr(self, "_cached_data_state", None)
+            if cached is not None:
+                return cached
         out = {}
         ignore = self.ctx.get("data_ignore") or ()
         read_dbs = set()
@@ -560,6 +788,7 @@ class Instance(snapshot.Worker):
         # walk never answers one) and runtime grants made since the launch.
         if not data_ignored(ignore, "<permission>"):
             out["<permission>"] = self.say("permission")
+        self._cached_data_state = out
         return out
 
     def changed_files(self):
@@ -569,8 +798,11 @@ class Instance(snapshot.Worker):
         has none), which every replay through it repeats, while a control tried on a screen (a toggle) is not on a path."""
         if self.baseline is None:
             return []
-        before, now = self.baseline, self.data_state()
+        before, now = self.baseline, self.data_state(use_cache=True)
         out = []
+        with self.ctx["lock"]:
+            first_vals = dict(self.ctx.get("first_values") or ())
+            nav_vals = dict(self.ctx.get("nav_values") or ())
         for f in sorted(before.keys() | now.keys()):
             a, b = before.get(f), now.get(f)
             if a == b:
@@ -580,14 +812,56 @@ class Instance(snapshot.Worker):
                     if (a or {}).get(k) == b.get(k):
                         continue
                     if k not in (a or {}) and k in b:
-                        with self.ctx["lock"]:
-                            known = self.ctx["first_values"].get((f, k), _MISSING)
-                        if known == b[k]:
+                        if first_vals.get((f, k), _MISSING) == b[k]:
+                            continue
+                    elif k in b:
+                        nv = nav_vals.get((f, k))
+                        if nv is not None and nv is not _CONFLICT and nv[1] >= 2 and nv[0] == b[k]:
                             continue
                     out.append(f"{f}#{k}")
                 continue
             out.append(f)
         return out
+
+    def retire(self):
+        """Non-blocking discard of a dirty instance onto a background reaper thread so the worker can immediately
+        clone a fresh generation slot and grab the next warm standby without waiting ~440 ms for OS VM teardown."""
+        proc, gen = self.proc, self.slot_gen
+        if self.file is not None and proc is not None and proc.poll() is None:
+            try:
+                self.file.write("quit fast\n")
+                self.file.flush()
+            except OSError:
+                pass
+        self.close()
+        self.proc = None
+        self.slot_gen = None
+        if proc is None:
+            return
+        cleanup = self.ctx.get("remove_slot")
+        i = self.i
+
+        def reap():
+            for stop, wait_s in ((None, 2), (proc.terminate, 2), (proc.kill, 5)):
+                if stop:
+                    try:
+                        stop()
+                    except OSError:
+                        pass
+                try:
+                    proc.wait(timeout=wait_s)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+            if cleanup and gen is not None:
+                cleanup(i, gen)
+
+        t = threading.Thread(target=reap, daemon=True)
+        t.start()
+        reapers = self.ctx.get("reapers")
+        if reapers is not None:
+            with self.ctx["lock"]:
+                reapers.append(t)
 
     def fresh_start(self):
         """A running instance whose app has not written to its data since its launch's first replay: this one, or a
@@ -600,8 +874,22 @@ class Instance(snapshot.Worker):
             self.close()
             self.launch()
             return
+        if changed == ["<permission>"] and self.baseline.get("<permission>") == "waiting: none; granted: none":
+            try:
+                if self.say("permission reset") == "ok":
+                    return
+            except Gone:
+                self.close()
+                self.launch()
+                return
         if changed:
-            self.quit()
+            if NET is None and self.generation > 1 and self.ctx.get("restore") and self.ctx.get("remove_slot"):
+                self.retire()
+            else:
+                try:
+                    self.quit(fast=self.generation > 1 and NET is None)
+                except TypeError:
+                    self.quit()
             self.launch()
             with self.ctx["lock"]:
                 self.ctx["relaunches"][0] += 1
@@ -613,22 +901,33 @@ class Instance(snapshot.Worker):
         a new copy of the prepared one. Not with --keep-app-state."""
         return bool(self.ctx.get("fresh") or self.ctx.get("restore")) and not self.ctx.get("keep_state")
 
-    def learn_defaults(self):
-        """After a path's steps (navigation, before any control is tried): preference keys that appeared since the
-        baseline are the defaults the screens on the way wrote, which every replay through them writes again; their
-        values are kept as the walk's own for those keys (changed_files)."""
+    def learn_defaults(self, nav_depth=0):
+        """After a clean path's steps (navigation, before any control is tried):
+        1. Absent preference keys that appeared since baseline are recorded in first_values.
+        2. Existing SQLite tables/keys updated during shallow navigation (nav_depth <= 3) with one consistent value
+           across >=2 navigations are recorded in nav_values (any conflicting value marks the key mutable permanently)."""
         if self.baseline is None:
             return
-        now = self.data_state()
+        now = self.data_state(use_cache=True)
         with self.ctx["lock"]:
+            nav_values = self.ctx.setdefault("nav_values", {})
             for f, b in now.items():
                 a = self.baseline.get(f)
                 if isinstance(b, dict) and (a is None or isinstance(a, dict)):
                     for k, v in b.items():
                         if k not in (a or {}):
                             self.ctx["first_values"].setdefault((f, k), v)
+                        elif nav_depth <= 3 and (a or {}).get(k) != v:
+                            prev = nav_values.get((f, k))
+                            if prev is None:
+                                nav_values[(f, k)] = (v, 1)
+                            elif prev is not _CONFLICT:
+                                if prev[0] == v:
+                                    nav_values[(f, k)] = (v, prev[1] + 1)
+                                else:
+                                    nav_values[(f, k)] = _CONFLICT
 
-    def reach(self, path, extra=(), relaunch=True, patient=False, alt=None, waypoints=None, explore_fast=False):
+    def reach(self, path, extra=(), relaunch=True, patient=False, alt=None, waypoints=None, explore_fast=False, need_deps=False):
         """Back to a screen: the default configuration, a fresh start (at the path's deep link), the path's steps.
         From the data the app had at its start: a launch whose app has written to its data since is replaced by a
         new one on an emptied slot (--fresh) first, or with --keep-data on a new copy of the prepared slot.
@@ -637,14 +936,20 @@ class Instance(snapshot.Worker):
         self.parked = None
         self.fresh_start() if relaunch else self.ensure()
         self.configure(DEFAULT_COMBO)
-        if self.fresh_at_root and not path.get("start") and not self.ctx.get("record_deps"):
+        if self.fresh_at_root and not path.get("start") and not (self.ctx.get("record_deps") and need_deps):
             self.fresh_at_root = False
-            self.settle(WAYPOINT_SETTLE if (explore_fast and path["steps"]) else SETTLE)
+            if explore_fast and path["steps"] and self.ctx.get("root_id") and not need_deps:
+                self.wait_waypoint(self.ctx["root_id"], timeout=0.8)
+            else:
+                self.settle(WAYPOINT_SETTLE if (explore_fast and path["steps"]) else SETTLE)
         else:
             self.fresh_at_root = False
             self.say(f"clock {CLOCK}")
             self.expect_ok("restart" + (f" {path['start']}" if path.get("start") else ""))
-            self.settle(WAYPOINT_SETTLE if (explore_fast and path["steps"]) else SETTLE)
+            if explore_fast and path["steps"] and not path.get("start") and self.ctx.get("root_id") and not need_deps:
+                self.wait_waypoint(self.ctx["root_id"], timeout=0.8)
+            else:
+                self.settle(WAYPOINT_SETTLE if (explore_fast and path["steps"]) else SETTLE)
         if patient:
             self.wait_longer()
         if self.baseline is None and self.from_launch_data():
@@ -653,7 +958,7 @@ class Instance(snapshot.Worker):
         steps = list(path["steps"])
         alt = list(alt) if alt and len(alt) == len(steps) else [None] * len(steps)
         last_obs = None
-        prev_wp = None
+        prev_wp = self.ctx.get("root_id") if not path.get("start") else None
         unsettled = self.ctx["unsettled"]
         for idx, (step, other) in enumerate(zip(steps, alt)):
             want = waypoints[idx] if (waypoints and idx < len(waypoints)) else None
@@ -664,7 +969,8 @@ class Instance(snapshot.Worker):
                 last_obs = self.wait_waypoint(want, prev_id=prev_wp)
                 self.last_settled = False
             elif explore_fast and step.startswith("drag "):
-                self.settle(SCROLL_SETTLE)
+                if not getattr(self, "_has_fast_drag", True):
+                    self.settle(SCROLL_SETTLE)
             elif want is not None and not is_last:
                 ok = self.settle(WAYPOINT_SETTLE)
                 if not ok:
@@ -678,10 +984,11 @@ class Instance(snapshot.Worker):
                     with self.ctx["lock"]:
                         unsettled.add(want)
             prev_wp = want
-        if self.from_launch_data():
-            self.learn_defaults()
+        if self.from_launch_data() and relaunch:
+            self.learn_defaults(nav_depth=len(steps))
         for step in extra:
-            self.step(step, settle_cmd=SCROLL_SETTLE if (explore_fast and step.startswith("drag ")) else SETTLE)
+            sc = (None if (explore_fast and getattr(self, "_has_fast_drag", True)) else SCROLL_SETTLE) if step.startswith("drag ") else SETTLE
+            self.step(step, settle_cmd=sc)
             last_obs = None
         self.say("pick cancel")
         return last_obs
@@ -702,12 +1009,12 @@ class Instance(snapshot.Worker):
         return {"classes": deps_list(reply), "resources": deps_list(self.say("deps start resources")),
                 "packages": self.say("deps")}
 
-    def reach_screen(self, screen, extra=(), patient=False, alt=None, lenient=False, waypoints=None, explore_fast=False, relaunch=True):
+    def reach_screen(self, screen, extra=(), patient=False, alt=None, lenient=False, waypoints=None, explore_fast=False, relaunch=True, need_deps=False):
         """Replays the screen's path and checks where it ended; [extra] steps (scrolls, a fill) follow the check.
         A screen of another structure is read again after wait_longer. [lenient]: one of another structure in the
         same activity will do (a screen whose content changes between launches), returned with "drift" set."""
         last_obs = self.reach(screen["path"], relaunch=relaunch, patient=patient, alt=alt,
-                              waypoints=waypoints, explore_fast=explore_fast)
+                              waypoints=waypoints, explore_fast=explore_fast, need_deps=need_deps)
         got = last_obs if (last_obs is not None and last_obs["id"] == screen["id"]) else self.observe(expected_id=screen["id"])
         if got["id"] != screen["id"] and not lenient and relaunch:
             self.wait_longer()
@@ -717,7 +1024,8 @@ class Instance(snapshot.Worker):
                 raise ReplayFailed(f"replay reached {got['id']}, not {screen['id']}")
             got["drift"] = True
         for step in extra:
-            self.step(step, settle_cmd=SCROLL_SETTLE if (explore_fast and step.startswith("drag ")) else SETTLE)
+            sc = (None if (explore_fast and getattr(self, "_has_fast_drag", True)) else SCROLL_SETTLE) if step.startswith("drag ") else SETTLE
+            self.step(step, settle_cmd=sc)
         return got
 
 
@@ -936,7 +1244,7 @@ class KeptSlot:
         except OSError:
             return
         for n in names:
-            if not re.fullmatch(r"k[0-9a-f]{8}\d+-0", n):
+            if not re.fullmatch(r"k[0-9a-f]{8}\d+(?:g\d+)?-0", n):
                 continue
             d = os.path.join(self.data, n)
             try:
@@ -963,26 +1271,38 @@ class KeptSlot:
         except OSError:
             return False
 
-    def slot(self, i):
-        return os.path.join(self.data, f"k{self.token}{i}-0")
+    def slot_name(self, i, gen=0):
+        return f"k{self.token}{i}g{gen}" if gen else f"k{self.token}{i}"
 
-    def restore(self, i):
+    def slot(self, i, gen=0):
+        return os.path.join(self.data, f"{self.slot_name(i, gen)}-0")
+
+    def restore(self, i, gen=0):
         """Instance i's copy, made afresh from the prepared slot; the options that make its launch take it."""
-        dst = self.slot(i)
+        name = self.slot_name(i, gen)
+        dst = os.path.join(self.data, f"{name}-0")
         with self.lock:
-            self.made.add(i)
+            self.made.add((i, gen))
         for d in (dst, dst + ".device"):
             shutil.rmtree(d, ignore_errors=True)
         for s, d in ((self.source, dst), (self.source + ".device", dst + ".device")):
             if os.path.isdir(s):
                 copy_tree(s, d)
-        return ["--data-slots", f"k{self.token}{i}"]
+        return ["--data-slots", name]
+
+    def remove_one(self, i, gen=0):
+        dst = self.slot(i, gen)
+        for d in (dst, dst + ".device"):
+            shutil.rmtree(d, ignore_errors=True)
+        with self.lock:
+            self.made.discard((i, gen))
 
     def remove(self):
         with self.lock:
             made, self.made = sorted(self.made), set()
-        for i in made:
-            for d in (self.slot(i), self.slot(i) + ".device"):
+        for entry in made:
+            i, gen = entry if isinstance(entry, tuple) else (entry, 0)
+            for d in (self.slot(i, gen), self.slot(i, gen) + ".device"):
                 shutil.rmtree(d, ignore_errors=True)
 
 
@@ -1113,12 +1433,16 @@ class Explorer:
         # Never the owner's saved sign-ins, and a slot namespace of the crawler's own: --fresh would empty an ordinary
         # launch's `default` slot (--keep-data walks copies of a prepared slot: KeptSlot; an option of the caller's own wins).
         self.options += ["--no-autofill"]
-        # Headless walks have no speakers and need not render animating screens at 120 fps (Features.java: an animating
-        # screen costs about a full core at 120 fps headless). Caller-supplied options win.
+        # Headless walks have no speakers and need not render continuously animating screens at 120 fps (Host gives
+        # post-input reaction frames a 120 Hz burst automatically, then drops back to this cap for idle animations).
         if "--max-fps" not in self.options:
             self.options += ["--max-fps", "30"]
         if "--audio" not in self.options:
             self.options += ["--audio", "off"]
+        if self.explore_fast and not any("apksim.fastTransitions" in o for o in self.options):
+            self.options += ["--jvm", "-Dapksim.fastTransitions=true"]
+        if self.explore_fast and not any("apksim.lazyRaster" in o for o in self.options):
+            self.options += ["--jvm", "-Dapksim.lazyRaster=true"]
         # One device identity for every instance (the serial and ANDROID_ID come from the slot's name otherwise, and a
         # screen that shows one would differ between instances, and between builds walked on other slots).
         # Not with --keep-data: the prepared slot's own identity is what its sign-in was made under (KeptSlot passes it on).
@@ -1159,16 +1483,18 @@ class Explorer:
         use_snapshot = bool(args.base or args.base_option or args.sweep) if snapshot_override is None else bool(snapshot_override)
         self.use_snapshot = use_snapshot
         self.ctx = {"spec": {"timezone": "UTC", "clock": CLOCK}, "apk": apk, "apksim": self.options, "out": out,
-                    "stage": self.stage, "snapshot": use_snapshot,
+                    "stage": self.stage, "snapshot": use_snapshot, "explore_fast": self.explore_fast,
                     "standby": bool((getattr(args, "diff_seed", False) or getattr(args, "standby", False)) and not use_snapshot),
                     "standby_opt_in": bool(getattr(args, "standby", False) and not use_snapshot),
                     "fresh": not args.keep_data, "screens": [],
                     "record": lambda r: None, "crashes": self.findings, "stable_ms": args.stable_ms, "name": name,
                     "keep_state": args.keep_app_state, "restore": self.kept.restore if self.kept else None,
+                    "remove_slot": self.kept.remove_one if self.kept else None, "reapers": [],
                     "data_ignore": list(args.data_ignore or []),
-                    "relaunches": [0], "relaunch_files": {}, "first_values": {}, "unsettled": set(),
+                    "relaunches": [0], "relaunch_files": {}, "first_values": {}, "nav_values": {}, "unsettled": set(),
                     "record_deps": bool(args.record_deps), "lock": threading.Lock(),
                     "spawn": (SPAWN, STOPPING), "skip_re": self.skip_re}
+        self.inline_shots = {}   # newly discovered sid -> (rel_path, settled) captured inline on first observation
         self.instances = []
         self.deps_map = None     # --record-deps: DepsMap, once the probed packages are known
         self.start_deps = None   # --record-deps: the app-start span, read from the first instance
@@ -1227,11 +1553,21 @@ class Explorer:
         else:
             for inst in self.instances:
                 stop(inst)
+        for t in list(self.ctx.get("reapers") or ()):
+            t.join(timeout=10)
         if self.kept:
             self.kept.remove()
         if NET is not None:
             NET.finish()
         shutil.rmtree(self.stage, ignore_errors=True)
+        # Clean up per-worker standby JVMs spawned during this walk so idle JVMs do not linger in RAM.
+        if self.ctx.get("standby") and self.instances:
+            launcher = os.path.join(ROOT, "apksim")
+            if os.path.exists(launcher):
+                try:
+                    subprocess.run([launcher, "--stop-standbys"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                except Exception:  # noqa: BLE001
+                    pass
 
     def run_on_pool(self, tasks, fn):
         """fn(instance, task) for every task, on the pool's instances; results in the tasks' order."""
@@ -1300,6 +1636,8 @@ class Explorer:
                     self.cut_by.add("max-screens")
                     continue
                 level.append(self.add_screen(obs, {"start": start, "steps": []}, None, 0))
+        if len(starts) == 1 and starts[0] is None and level:
+            self.ctx["root_id"] = level[0]["id"]
         self.walk(level)
         self.t_explore = time.time() - t0
 
@@ -1351,6 +1689,13 @@ class Explorer:
                         else:
                             new = self.add_screen(to, self.full_path(screen, e["steps"]), screen["id"], screen["depth"] + 1,
                                                   step_count=len(e["steps"]))
+                            shot_info = self.inline_shots.pop(new["id"], None)
+                            if shot_info is not None:
+                                rel, settled = shot_info
+                                new["captures"][self.default_combo_name] = rel
+                                new["settled"] = settled if "settled" not in new else settled and new["settled"]
+                                if not settled:
+                                    new.setdefault("unsettled", []).append(self.default_combo_name)
                             if e.get("alt"):
                                 self.alt_paths[new["id"]] = list(self.alt_paths.get(screen["id"]) or screen["path"]["steps"]) \
                                     + list(e["steps"][:-1]) + [e["alt"]]
@@ -1365,6 +1710,10 @@ class Explorer:
                     self.partial.add(screen["id"])
                 self.screen_event(screen)
             level = nxt
+        for sid, info in list(self.inline_shots.items()):
+            if info is not None and sid not in self.screens:
+                shutil.rmtree(os.path.join(self.out, self.shots, sid), ignore_errors=True)
+        self.inline_shots.clear()
         if (level or cut) and self.budget.out_of_time():
             self.cut_by.add("max-seconds")
             self.incomplete.append(f"--max-seconds {self.args.max_seconds}: {len(level)} screen(s) not explored"
@@ -1573,13 +1922,13 @@ class Explorer:
                 self.waypoints[s["id"]] = [None] * (len(steps) - 1) + [s["id"]]
         return s
 
-    def arrive(self, inst, screen, extra=(), lenient=False, waypoints=None, explore_fast=False, relaunch=True):
+    def arrive(self, inst, screen, extra=(), lenient=False, waypoints=None, explore_fast=False, relaunch=True, need_deps=False):
         """At the screen, [extra] steps done. [lenient]: a flaky screen, which may now show another structure of the
         same activity, or be behind a label that live data changed (its path's taps tried by their coordinates)."""
         if not lenient:
-            return inst.reach_screen(screen, extra, waypoints=waypoints, explore_fast=explore_fast, relaunch=relaunch)
+            return inst.reach_screen(screen, extra, waypoints=waypoints, explore_fast=explore_fast, relaunch=relaunch, need_deps=need_deps)
         got = inst.reach_screen(screen, extra, alt=self.alt_paths.get(screen["id"]), lenient=True,
-                                waypoints=waypoints, explore_fast=explore_fast, relaunch=relaunch)
+                                waypoints=waypoints, explore_fast=explore_fast, relaunch=relaunch, need_deps=need_deps)
         if got.get("drift"):
             # Any screen of the activity would pass (one activity holds every screen of a Compose app): not another
             # screen the walk knows, and one with some of the controls the screen had when it was found.
@@ -1629,7 +1978,7 @@ class Explorer:
         else:
             for attempt in range(3):
                 try:
-                    here = inst.reach_screen(screen, patient=attempt == 2, waypoints=wp, explore_fast=self.explore_fast)
+                    here = inst.reach_screen(screen, patient=attempt == 2, waypoints=wp, explore_fast=self.explore_fast, need_deps=bool(args.record_deps))
                     break
                 except ReplayFailed as e:
                     flaky = str(e)
@@ -1637,30 +1986,30 @@ class Explorer:
                     entry["findings"].append(self.crash_finding(e.crash, screen["path"]))
                     entry["flaky"] = "ended on arrival"
                     entry["failed"] = True
-                    return False, False, None
+                    return False, False, None, ()
         if here is None and args.deterministic:
             # --deterministic: a route that does not replay to the same screen is not walked past.
             entry["findings"].append({"kind": "flaky", "detail": f"{screen['id']}: {flaky}; not walked (--deterministic)",
                                       "path": screen["path"], "build": self.name})
             entry["flaky"] = f"{flaky}; not walked (--deterministic)"
             entry["failed"] = True
-            return False, False, None
+            return False, False, None, ()
         if here is None:
             # Not a dead end: the walk reached this screen once, so its controls (as it showed them then) are tried on
             # what its path reaches now in the same activity, and what they lead to is followed. Still flaky.
             entry["findings"].append({"kind": "flaky", "detail": f"{screen['id']}: {flaky}", "path": screen["path"], "build": self.name})
             lenient = True
             try:
-                here = self.arrive(inst, screen, lenient=True, waypoints=wp, explore_fast=self.explore_fast)
+                here = self.arrive(inst, screen, lenient=True, waypoints=wp, explore_fast=self.explore_fast, need_deps=bool(args.record_deps))
             except ReplayFailed as e:
                 entry["flaky"] = f"{flaky}; then {e}"
                 entry["failed"] = True
-                return False, False, None
+                return False, False, None, ()
             except Gone as e:
                 entry["findings"].append(self.crash_finding(e.crash, screen["path"]))
                 entry["flaky"] = flaky
                 entry["failed"] = True
-                return False, False, None
+                return False, False, None, ()
             flaky += "; its controls were tried where its path leads now"
             if here.get("drift"):
                 aliases.add(here["id"])
@@ -1677,7 +2026,7 @@ class Explorer:
             entry["findings"].append(self.crash_finding(e.crash, screen["path"]))
             entry["flaky"] = flaky or "ended on arrival"
             entry["failed"] = True
-            return False, False, None
+            return False, False, None, ()
         if args.record_deps:
             # The span from the `restart` that began this replay to the screen read as settled (docs/crawl.md).
             try:
@@ -1686,7 +2035,7 @@ class Explorer:
                 entry["findings"].append(self.crash_finding(e.crash, screen["path"]))
                 entry["flaky"] = "ended on arrival"
                 entry["failed"] = True
-                return False, False, None
+                return False, False, None, ()
         prep = []
         filled = None
         if args.fill is not None:
@@ -1697,17 +2046,18 @@ class Explorer:
                 for step in prep:
                     inst.expect_ok(step)
                 inst.settle(SETTLE)
-                filled = parse_tree(inst.say("nodes tree"))
+                _, filled = inst.read_ui()
             except ReplayFailed:
                 prep = []
             except Gone as e:
                 entry["findings"].append(self.crash_finding(e.crash, self.full_path(screen, prep)))
                 entry["flaky"] = "ended while filling fields"
                 entry["failed"] = True
-                return False, False, None
+                return False, False, None, ()
         entry["prep"] = prep
         recs = filled if prep and filled is not None else here["recs"]
         entry["sig"] = screen_sig(recs)
+        entry["sig_by_prefix"] = {(): entry["sig"]}
         acts = [a for a in candidates(recs, self.skip_re, args.tap_unlabeled) if a["kind"] == "control"]
         # Controls below the fold: scroll and read again, until nothing new shows.
         reuse_seed_controls = (self.diff_controls in ("none", "changed") and not screen.get("replaces")
@@ -1721,18 +2071,20 @@ class Explorer:
                 break
             try:
                 inst.expect_ok(sc)
-                inst.settle(SCROLL_SETTLE if self.explore_fast else SETTLE)
-                scrolled = parse_tree(inst.say("nodes tree"))
+                if not (self.explore_fast and getattr(inst, "_has_fast_drag", True)):
+                    inst.settle(SCROLL_SETTLE if self.explore_fast else SETTLE)
+                _, scrolled = inst.read_ui()
             except ReplayFailed:
                 break
             except Gone as e:
                 entry["findings"].append(self.crash_finding(e.crash, self.full_path(screen, prep + scrolls + [sc])))
                 entry["flaky"] = "ended while scrolling"
                 entry["failed"] = True
-                return False, False, None
+                return False, False, None, ()
             scrolls.append(sc)
             recs = scrolled
             aliases.add(structure(here["activity"], recs)[0])
+            entry["sig_by_prefix"][tuple(scrolls)] = screen_sig(recs)
             fresh = [a for a in candidates(recs, self.skip_re, args.tap_unlabeled, scrolls=k) if a["kind"] == "control"
                      and a["label"] not in seen]
             if not fresh:
@@ -1777,15 +2129,16 @@ class Explorer:
                     entry["todo"].append((idx, a))
             else:
                 entry["todo"].append((idx, a))
-        at_ok = (not scrolls) and (not lenient)
+        at_ok = (not lenient)
+        at_prefix = tuple(scrolls)
         if parked_state is not None and not scrolls and not prep:
             s_state = parked_state
         else:
             try:
-                s_state = inst.data_state() if inst.from_launch_data() else None
+                s_state = inst.data_state(use_cache=not scrolls and not prep) if inst.from_launch_data() else None
             except Gone:
                 at_ok, s_state = False, None
-        return True, at_ok, s_state
+        return True, at_ok, s_state, at_prefix
 
     def control_set(self, recs):
         """A screen's controls by label, numbers left out (a temperature, a count): what stays of it as its data changes."""
@@ -1797,18 +2150,41 @@ class Explorer:
         and self-verifying warm restarts (avoiding JVM relaunches when only navigation writes are present)."""
         if not level:
             return []
-        entries = [{"screen": s, "discovered": False, "here": None, "sig": None, "prep": [], "acts": [],
+        entries = [{"screen": s, "discovered": False, "here": None, "sig": None, "sig_by_prefix": {}, "prep": [], "acts": [],
                     "aliases": set(), "deps": None, "flaky": None, "lenient": False, "failed": False,
                     "todo": [], "next_pos": 0, "edges_by_idx": {}, "findings": [], "truncated": False,
-                    "back_failed": False, "relaunch_needed": False, "arrive_misses": 0} for s in level]
+                    "back_failed": False, "failed_returns": set(), "relaunch_needed": False, "restart_misses": 0, "arrive_misses": 0} for s in level]
         cond = threading.Condition()
         undiscovered = list(entries)
         discovered = []
         in_discovery = [0]
 
+        def pop_todo(entry, pref=None):
+            """Pops the next action from [entry]['todo']. When parked at scroll prefix [pref], prefers an action at
+            [pref] (exact in-place) or extending [pref] (scroll-forward in-place) to avoid re-replaying from root."""
+            todo = entry["todo"]
+            pos = entry["next_pos"]
+            if pos >= len(todo):
+                return None
+            if pref is not None:
+                pick = None
+                for k in range(pos, len(todo)):
+                    ap = tuple(todo[k][1]["prefix"])
+                    if ap == pref:
+                        pick = k
+                        break
+                    if pick is None and len(ap) > len(pref) and ap[:len(pref)] == pref:
+                        pick = k
+                if pick is not None and pick != pos:
+                    todo[pos], todo[pick] = todo[pick], todo[pos]
+            item = todo[pos]
+            entry["next_pos"] = pos + 1
+            return item
+
         def worker(inst):
             cur = None
             at_screen = False
+            at_prefix = ()
             try_restart = False
             state_at_s = None
             while not STOPPING.is_set():
@@ -1822,8 +2198,7 @@ class Explorer:
                         if STOPPING.is_set() or self.budget.out_of_time():
                             return
                         if cur is not None and (at_screen or try_restart) and cur["next_pos"] < len(cur["todo"]):
-                            act_idx, act = cur["todo"][cur["next_pos"]]
-                            cur["next_pos"] += 1
+                            act_idx, act = pop_todo(cur, at_prefix if at_screen else None)
                             mode, entry = "action", cur
                             break
                         if undiscovered:
@@ -1834,8 +2209,7 @@ class Explorer:
                             mode = "discover"
                             break
                         if cur is not None and cur["next_pos"] < len(cur["todo"]):
-                            act_idx, act = cur["todo"][cur["next_pos"]]
-                            cur["next_pos"] += 1
+                            act_idx, act = pop_todo(cur, at_prefix if at_screen else None)
                             mode, entry = "action", cur
                             break
                         best = None
@@ -1845,10 +2219,10 @@ class Explorer:
                             if rem > best_rem:
                                 best, best_rem = e, rem
                         if best is not None:
-                            act_idx, act = best["todo"][best["next_pos"]]
-                            best["next_pos"] += 1
+                            act_idx, act = pop_todo(best)
                             cur = best
                             at_screen = False
+                            at_prefix = ()
                             try_restart = False
                             state_at_s = None
                             mode, entry = "action", best
@@ -1858,7 +2232,7 @@ class Explorer:
                             continue
                         return
                 if mode == "discover":
-                    ok, at_ok, s_state = self.discover_screen(inst, entry)
+                    ok, at_ok, s_state, disc_prefix = self.discover_screen(inst, entry)
                     with cond:
                         entry["discovered"] = True
                         in_discovery[0] -= 1
@@ -1866,14 +2240,17 @@ class Explorer:
                             discovered.append(entry)
                         cond.notify_all()
                     if ok:
-                        cur, at_screen, try_restart, state_at_s = entry, at_ok, (not at_ok and s_state is not None and not entry["lenient"]), s_state
+                        cur, at_screen, at_prefix, try_restart, state_at_s = (
+                            entry, at_ok, disc_prefix if at_ok else (),
+                            (not at_ok and s_state is not None and not entry["lenient"]), s_state)
                     else:
-                        cur, at_screen, try_restart, state_at_s = None, False, False, None
+                        cur, at_screen, at_prefix, try_restart, state_at_s = None, False, (), False, None
                     continue
                 # mode == "action"
                 screen = entry["screen"]
                 prep = entry["prep"]
                 a = act
+                want_prefix = tuple(a["prefix"])
                 steps = prep + a["prefix"] + [a["cmd"]]
                 alt = f"tap {a['x']} {a['y']}"
                 note = None
@@ -1881,21 +2258,34 @@ class Explorer:
                 wp = self.waypoints.get(screen["id"])
                 arrived = False
                 try:
-                    if not (at_screen and not a["prefix"]):
+                    if at_screen and len(want_prefix) >= len(at_prefix) and want_prefix[:len(at_prefix)] == at_prefix:
+                        # Already on [screen] at [at_prefix]: apply any remaining scroll steps in place.
+                        for step in want_prefix[len(at_prefix):]:
+                            inst.expect_ok(step)
+                            if not (self.explore_fast and step.startswith("drag ") and getattr(inst, "_has_fast_drag", True)):
+                                inst.settle(SCROLL_SETTLE if self.explore_fast else SETTLE)
+                    else:
                         reused = False
-                        if try_restart and not lenient and not entry["relaunch_needed"] and state_at_s is not None and inst.from_launch_data():
+                        if try_restart and not lenient and state_at_s is not None and inst.from_launch_data():
                             try:
                                 got = inst.reach_screen(screen, waypoints=wp, explore_fast=self.explore_fast, relaunch=False)
                                 if screen_sig(got["recs"]) == entry["sig"]:
                                     for step in prep + a["prefix"]:
                                         inst.expect_ok(step)
-                                        inst.settle(SCROLL_SETTLE if (self.explore_fast and step.startswith("drag ")) else SETTLE)
-                                    state_at_s = inst.data_state()
+                                        if not (self.explore_fast and step.startswith("drag ") and getattr(inst, "_has_fast_drag", True)):
+                                            inst.settle(SCROLL_SETTLE if (self.explore_fast and step.startswith("drag ")) else SETTLE)
+                                    state_at_s = inst.data_state(use_cache=not prep and not a["prefix"])
                                     reused = True
                                 else:
-                                    entry["relaunch_needed"] = True
+                                    with cond:
+                                        entry["restart_misses"] += 1
+                                        if entry["restart_misses"] >= 3:
+                                            entry["relaunch_needed"] = True
                             except ReplayFailed:
-                                entry["relaunch_needed"] = True
+                                with cond:
+                                    entry["restart_misses"] += 1
+                                    if entry["restart_misses"] >= 3:
+                                        entry["relaunch_needed"] = True
                         if not reused:
                             try:
                                 got = self.arrive(inst, screen, prep + a["prefix"], lenient, waypoints=wp, explore_fast=self.explore_fast)
@@ -1908,11 +2298,12 @@ class Explorer:
                                 with cond:
                                     entry["aliases"].add(got["id"])
                                 note = "tried on another structure of this screen (its replay is flaky)"
-                            state_at_s = inst.data_state() if inst.from_launch_data() else None
+                            state_at_s = inst.data_state(use_cache=not prep and not a["prefix"]) if inst.from_launch_data() else None
                     arrived = True
                     with cond:
                         entry["arrive_misses"] = 0
                     at_screen = False
+                    at_prefix = ()
                     try_restart = False
                     try:
                         inst.expect_ok(a["cmd"])
@@ -1935,6 +2326,26 @@ class Explorer:
                     if not settled and to["id"] not in PSEUDO:
                         with self.ctx["lock"]:
                             self.ctx["unsettled"].add(to["id"])
+                    # Inline capture for newly discovered screens (depth >= 1) while the instance is already cleanly on [to].
+                    if self.inline_capture and to["id"] not in PSEUDO and to["id"] not in self.screens:
+                        take_shot = False
+                        with self.lock:
+                            if to["id"] not in self.inline_shots:
+                                self.inline_shots[to["id"]] = None  # reserve so only one worker captures it
+                                take_shot = True
+                        if take_shot:
+                            base_dir = os.path.join(self.out, self.shots, to["id"])
+                            os.makedirs(base_dir, exist_ok=True)
+                            staged = os.path.join(inst.stage, "capture.png")
+                            try:
+                                inst.expect_ok(f"shot {staged}")
+                                dst_rel = f"{self.shots}/{to['id']}/{self.default_combo_name}.png"
+                                shutil.move(staged, os.path.join(self.out, dst_rel))
+                                with self.lock:
+                                    self.inline_shots[to["id"]] = (dst_rel, bool(settled))
+                            except ReplayFailed:
+                                with self.lock:
+                                    self.inline_shots.pop(to["id"], None)
                     if to["id"] == "EXIT":
                         edge = {"label": a["label"], "cmd": a["cmd"], "kind": "control", "to": {"id": "EXIT"}, "steps": steps,
                                 "note": "the app has no activity left"}
@@ -1967,6 +2378,7 @@ class Explorer:
                                     entry["findings"].append({"kind": "flaky", "path": screen["path"], "build": self.name,
                                                               "detail": f"{screen['id']}: controls not tried after {ARRIVE_MISSES} replays in a row missed it ({e})"})
                     at_screen = False
+                    at_prefix = ()
                     try_restart = False
                     continue
                 except Gone as e:
@@ -1977,43 +2389,61 @@ class Explorer:
                                                           "to": {"id": "CRASH" if f["kind"] == "crash" else "EXIT"}, "steps": steps,
                                                           "note": f["detail"].splitlines()[0][:200]}
                     at_screen = False
+                    at_prefix = ()
                     try_restart = False
                     state_at_s = None
                     continue
-                # Speculative in-place return or warm restart when disk state is unchanged since arriving at [screen].
+                # Speculative in-place return or warm restart when exploring [screen].
                 if more_here and not prep and not lenient and to["id"] not in PSEUDO:
                     ret_cmd = None
+                    want_sig = entry["sig_by_prefix"].get(want_prefix, entry["sig"])
+                    same_ids = {screen["id"]} | entry["aliases"]
                     try:
                         clean_disk = (not inst.from_launch_data()) or (state_at_s is not None and inst.data_state() == state_at_s)
                         if clean_disk:
-                            if not a["prefix"] and to["id"] == screen["id"] and screen_sig(to["recs"]) == entry["sig"]:
+                            if to["id"] in same_ids and screen_sig(to["recs"]) == want_sig:
                                 at_screen = True
-                            elif not a["prefix"] and to["id"] != screen["id"]:
+                                at_prefix = want_prefix
+                            elif to["id"] not in same_ids:
+                                dc = dismiss_cmd(to["recs"], self.skip_re)
+                                if dc and (to["id"], dc) in entry["failed_returns"]:
+                                    dc = None
+                                back_ok = (not entry["back_failed"]) and ((to["id"], "back") not in entry["failed_returns"])
                                 if to["activity"] != screen["activity"]:
-                                    ret_cmd = "back" if not entry["back_failed"] else dismiss_cmd(to["recs"], self.skip_re)
+                                    ret_cmd = "back" if back_ok else dc
                                 else:
-                                    ret_cmd = dismiss_cmd(to["recs"], self.skip_re) or (None if entry["back_failed"] else "back")
+                                    ret_cmd = dc or ("back" if back_ok else None)
                                 if ret_cmd:
                                     inst.expect_ok(ret_cmd)
-                                    obs = inst.wait_waypoint(screen["id"], prev_id=to["id"], timeout=0.4)
+                                    obs = inst.wait_waypoint(screen["id"], prev_id=to["id"], timeout=0.18)
                                     if obs["id"] == "EXIT":
+                                        entry["failed_returns"].add((to["id"], ret_cmd))
                                         if ret_cmd == "back":
                                             entry["back_failed"] = True
                                         inst.quit()
                                         state_at_s = None
+                                    elif obs["id"] in same_ids and screen_sig(obs["recs"]) == want_sig:
+                                        if (not inst.from_launch_data()) or inst.data_state() == state_at_s:
+                                            at_screen = True
+                                            at_prefix = want_prefix
                                     elif obs["id"] == screen["id"] and screen_sig(obs["recs"]) == entry["sig"]:
                                         if (not inst.from_launch_data()) or inst.data_state() == state_at_s:
                                             at_screen = True
-                                    elif ret_cmd == "back":
-                                        entry["back_failed"] = True
-                            if not at_screen and not entry["relaunch_needed"] and state_at_s is not None:
-                                # Action did not mutate disk state: next action on this screen can try warm `restart`
-                                # and verify id + sig + data_state before falling back to a full JVM relaunch.
-                                if inst.proc is not None and inst.proc.poll() is None:
-                                    try_restart = True
+                                            at_prefix = ()
+                                    else:
+                                        entry["failed_returns"].add((to["id"], ret_cmd))
+                                        # Only disable hardware `back` globally for this screen after repeated misses
+                                        # (a single filter-chip or modal miss should not disable `back` for sub-screens).
+                                        if ret_cmd == "back" and sum(1 for _, rc in entry["failed_returns"] if rc == "back") >= 3:
+                                            entry["back_failed"] = True
+                        if not at_screen and state_at_s is not None and (clean_disk or (self.explore_fast and not entry["relaunch_needed"])):
+                            # Next action on this screen can try self-verifying warm `restart` (which verifies exact
+                            # id + screen_sig and falls back to a clean JVM relaunch if disk state affected the screen).
+                            if inst.proc is not None and inst.proc.poll() is None:
+                                try_restart = True
                     except ReplayFailed:
-                        if ret_cmd == "back":
-                            entry["back_failed"] = True
+                        if ret_cmd:
+                            entry["failed_returns"].add((to["id"], ret_cmd))
                     except Gone:
                         if ret_cmd == "back":
                             entry["back_failed"] = True
@@ -2117,10 +2547,10 @@ class Explorer:
             try:
                 # Replayed for every combination: the one before may have closed a dialog or moved a scroll position.
                 try:
-                    inst.reach_screen(screen, waypoints=wp)
+                    inst.reach_screen(screen, waypoints=wp, explore_fast=self.explore_fast)
                 except ReplayFailed:
                     # A flaky screen (or one below it) is captured where its path leads now, as it was explored.
-                    self.arrive(inst, screen, lenient=bool(screen.get("flaky")), waypoints=wp)
+                    self.arrive(inst, screen, lenient=bool(screen.get("flaky")), waypoints=wp, explore_fast=self.explore_fast)
                 inst.configure(combo)
                 settled = inst.settle()
                 screen["settled"] = settled if "settled" not in screen else settled and screen["settled"]

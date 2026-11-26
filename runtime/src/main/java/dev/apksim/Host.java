@@ -103,6 +103,18 @@ public class Host {
   private View touchTarget;
   private int touchDx;
   private int touchDy;
+  /** Under a frame-rate cap (< 120 Hz), let the first couple of reaction frames after input/restart run at 120 Hz. */
+  private int postInputFrames;
+  /** Remaining simulated ms of unpaced transition fast-forward (-Dapksim.fastTransitions=true, headless crawls). */
+  private long fastTransitionMs;
+  /** True when -Dapksim.lazyRaster=true skipped HWUI rasterization on the latest frame; flushed on demand by `shot`. */
+  private boolean rasterDirty;
+  /** Last fast tree computed by Settle.check for the current frame, reused by an immediate `ui-tree fast`. */
+  private long settledTreeFrame = -1;
+  private String settledTreeAct;
+  private String settledTreeBody;
+  /** The Host main-loop thread, unparked by {@link #wake()} when a control command arrives during a paced sleep. */
+  private static volatile Thread mainThread;
 
   /** The running Host, for UiAutomation's synchronous injection (see {@link #inputQueued}). */
   private static volatile Host current;
@@ -136,6 +148,7 @@ public class Host {
   @Test
   public void run() throws Exception {
     current = this;
+    mainThread = Thread.currentThread();
     Timing.mark("framework-ready");
     AdbServer.frameworkReady();
     SimWindow.boostThread();
@@ -295,7 +308,19 @@ public class Host {
         long availableMs = (System.nanoTime() - last) / 1_000_000;
         long nowMs = SystemClock.uptimeMillis();
         long stepMs = availableMs;
-        if (ShadowChoreographer.getNextVsyncTimeNanos() != 0) {
+        boolean boosting = fastTransitionMs > 0 && !firstFrame && pendingScript.isEmpty() && drag == null;
+        if (boosting) {
+          List<View> preRoots = rootViews();
+          if (ShadowChoreographer.getNextVsyncTimeNanos() != 0 || needsFrame(preRoots) || dueMessage(nowMs + 300) != null) {
+            stepMs = Math.min(40L, fastTransitionMs);
+            fastTransitionMs -= stepMs;
+            last = System.nanoTime();
+          } else {
+            fastTransitionMs = 0;
+            boosting = false;
+          }
+        }
+        if (!boosting && ShadowChoreographer.getNextVsyncTimeNanos() != 0) {
           if (frameAtNanos == 0 && !firstFrame && !OFF_VSYNC_FRAMES) {
             // A vsync asked for since the last frame ran (by input dispatched above, or a message): it waits for the
             // display's next one, as one asked for during a frame does (pace). Before, it ran at once: a timed drag's
@@ -306,7 +331,7 @@ public class Host {
           if (frameAtNanos != 0) {
             // Following the display: the frame waits for its vsync, then the clock catches up to now.
             if (System.nanoTime() < frameAtNanos) stepMs = 0;
-          } else if (gridHz() < 120 && !firstFrame) {
+          } else if (effectiveGridHz() < 120 && !firstFrame) {
             // Under a frame rate cap the clock follows real time, and the Choreographer's frame delay (the cap's interval,
             // applyFrameDelay) spaces the frames: moving the clock only to the cap's grid lines froze uptime between
             // frames, so at 1 fps one turn jumped a second, running a tap's long-press timeout before its UP.
@@ -324,14 +349,17 @@ public class Host {
         }
         long looperStart = System.nanoTime();
         long vsyncDue = ShadowChoreographer.getNextVsyncTimeNanos();
-        if (!firstFrame && gridHz() < 120) alignFrameDelay();
-        if (availableMs > MAX_CATCH_UP_MS) {
+        if (!firstFrame && gridHz() < 120) {
+          if (postInputFrames > 0 || fastTransitionMs > 0) ShadowChoreographer.setFrameDelay(Duration.ofMillis(1));
+          else alignFrameDelay();
+        }
+        if (!boosting && availableMs > MAX_CATCH_UP_MS) {
           // A long stall: time spent stalled is not replayed.
           last += (availableMs - MAX_CATCH_UP_MS) * 1_000_000;
           stepMs = Math.min(stepMs, MAX_CATCH_UP_MS);
         }
         if (stepMs > 0) {
-          last += stepMs * 1_000_000;
+          if (!boosting) last += stepMs * 1_000_000;
           looper.idleFor(Duration.ofMillis(stepMs));
         } else {
           looper.idle();
@@ -380,7 +408,9 @@ public class Host {
           }
         }
         if (settle != null) settle.roots = roots;
-        if (settle != null && settle.check(firstFrame ? "no first frame yet" : busy(looper, roots))) settle = null;
+        if (settle != null && settle.check(firstFrame ? "no first frame yet" : busy(looper, roots),
+            !firstFrame && pendingScript.isEmpty() && drag == null,
+            looper.isIdle() && !anyNeedsLayout(roots))) settle = null;
         // Nothing to do until a message is due or something arrives: sleep (idleWait) rather than poll every 2 ms.
         boolean still = !firstFrame && settle == null && drag == null && pendingScript.isEmpty()
             && System.nanoTime() - lastInput > IDLE_AFTER_INPUT_NANOS && Control.QUEUE.isEmpty() && (controls.hidden() || !needsFrame(roots));
@@ -417,8 +447,17 @@ public class Host {
     final long maxNanos;
     final long quietNanos;
     final long horizonMs;
+    /** Optional tree-stability fast exit for endlessly animating screens (`settle MAX QUIET HORIZON tree TREE_MS`). */
+    final long treeQuietNanos;
+    long startFrames = frames;
     long quietSince;
     long framesAtQuiet;
+    long lastTreeSampleNanos;
+    long lastTreeSampleFrames = -1;
+    long treeStableSince;
+    String lastTreeAct;
+    String lastTreeBody;
+    String lastTreeSig;
     String reason = "";
     /** Uptime (ms) from which a vsync has been pending with no frame drawn, 0 when none is (issue 612). */
     long vsyncIdleSince;
@@ -434,20 +473,61 @@ public class Host {
       maxNanos = (a.length > 1 ? Long.parseLong(a[1]) : 10_000) * 1_000_000L;
       quietNanos = (a.length > 2 ? Long.parseLong(a[2]) : 200) * 1_000_000L;
       horizonMs = a.length > 3 ? Long.parseLong(a[3]) : 1000;
+      treeQuietNanos = (a.length > 4 && a[4].equals("tree"))
+          ? (a.length > 5 ? Long.parseLong(a[5]) : 150) * 1_000_000L : 0L;
     }
 
     /** Called every loop turn with what keeps the UI busy (null when nothing does); true once answered. */
-    boolean check(String busy) {
+    boolean check(String busy, boolean inputDone, boolean layoutIdle) {
       long now = System.nanoTime();
       if (busy == null && quietSince != 0 && frames != framesAtQuiet) busy = "a frame was drawn";
       if (busy != null) {
         reason = busy;
         quietSince = 0;
+        if (treeQuietNanos > 0) {
+          if (!inputDone) {
+            // While input/drag is still running, keep resetting so we wait for post-input frames and stability.
+            startFrames = frames;
+            lastTreeSig = null;
+            lastTreeSampleFrames = -1;
+            treeStableSince = 0;
+          } else if (frames > startFrames && (FRAME_WANTED.equals(busy) || "a window needs drawing".equals(busy))) {
+            // Only re-walk Nodes.tree when a new frame has rendered since the last sample (or on the first sample).
+            // Finite delayed messages (e.g. a one-shot Handler post) are left to finish normally so static screens
+            // still report settled=true.
+            boolean needSample = lastTreeSig == null || (frames != lastTreeSampleFrames && now - lastTreeSampleNanos >= 20_000_000L);
+            if (needSample) {
+              lastTreeSampleNanos = now;
+              lastTreeSampleFrames = frames;
+              String act = stack.isEmpty() ? "none" : stack.peek().get().getClass().getName();
+              String body = Nodes.tree(AccessibleWindows.reported(roots), false);
+              String sig = act + "\n" + body;
+              if (sig.equals(lastTreeSig)) {
+                lastTreeAct = act;
+                lastTreeBody = body;
+              } else {
+                lastTreeAct = act;
+                lastTreeBody = body;
+                lastTreeSig = sig;
+                treeStableSince = now;
+              }
+            }
+            if (lastTreeSig != null && layoutIdle && now - treeStableSince >= treeQuietNanos
+                && (frames == lastTreeSampleFrames || now - lastTreeSampleNanos < 20_000_000L)) {
+              if (!rasterDirty) hw.withLatestFrame(b -> {});
+              settledTreeFrame = frames;
+              settledTreeAct = lastTreeAct;
+              settledTreeBody = lastTreeBody;
+              pending.finish("error: not settled after " + (now - start) / 1_000_000 + " ms (tree stable): " + busy);
+              return true;
+            }
+          }
+        }
       } else if (quietSince == 0) {
         quietSince = now;
         framesAtQuiet = frames;
       } else if (now - quietSince >= quietNanos) {
-        hw.withLatestFrame(b -> {});  // the last frame's raster has finished: `shot` reads it
+        if (!rasterDirty) hw.withLatestFrame(b -> {});  // the last frame's raster has finished: `shot` reads it
         pending.finish("settled in " + (now - start) / 1_000_000 + " ms"
             + (idleFrameLoop ? " (a frame loop runs that draws nothing: a Compose Popup polling its position, say)" : "") + (controls.hidden() ? " (app in background: `resume` brings it back)" : ""));
         return true;
@@ -462,6 +542,13 @@ public class Host {
       }
       return false;
     }
+  }
+
+  private static boolean anyNeedsLayout(List<View> roots) {
+    for (View r : roots) {
+      if (HwRenderer.drawn(r) && r.isLayoutRequested()) return true;
+    }
+    return false;
   }
 
   private static final String FRAME_WANTED = "a frame is wanted";
@@ -613,7 +700,10 @@ public class Host {
     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
     // -Dapksim.deps: the old stack's teardown is not the new screen's (docs/crawl-deps-spike.md): a new span begins here.
     if (dev.apksim.dex.Probes.ON) dev.apksim.dex.Probes.command(new String[] {"deps", "reset"});
+    settledTreeFrame = -1;
     start(name, intent);
+    if (gridHz() < 120) postInputFrames = 4;
+    if (Boolean.getBoolean("apksim.fastTransitions")) fastTransitionMs = 220;
     return "ok, " + AppInfo.activityClass(name);
   }
 
@@ -706,11 +796,16 @@ public class Host {
     return FOLLOW_DISPLAY && gridHz() >= 120;
   }
 
+  private long effectiveGridHz() {
+    return (postInputFrames > 0 || fastTransitionMs > 0) ? 120L : gridHz();
+  }
+
   /** Sleeps until the next vsync (the display's, or a grid line) if a frame is wanted, or briefly if nothing is animating. */
   private void pace(long clockSynced, boolean quiet) {
+    if (fastTransitionMs > 0 && !firstFrame && pendingScript.isEmpty() && drag == null) return;
     long wait = IDLE_POLL_NANOS;
     // Under a frame rate cap the grid paces frames, not the display (which would give its own rate).
-    long hz = gridHz();
+    long hz = effectiveGridHz();
     // A timed drag wants a frame at every vsync (its next move), whether or not the app asked for one yet.
     boolean wanted = ShadowChoreographer.getNextVsyncTimeNanos() != 0 || drag != null && !OFF_VSYNC_FRAMES;
     if (followsDisplay() && wanted && SimWindow.untilVsync() >= 0) {
@@ -734,7 +829,7 @@ public class Host {
       }
     }
     if (!wanted && quiet && idleWait(clockSynced)) return;
-    if (wait > 50_000L) LockSupport.parkNanos(wait);
+    if (wait > 50_000L && wakeCount.get() == turnWakes && Control.QUEUE.isEmpty()) LockSupport.parkNanos(wait);
   }
 
   private final Memory memory = new Memory();
@@ -857,11 +952,13 @@ public class Host {
     return true;
   }
 
-  /** Wakes the loop if it sleeps in idleWait. Any thread; does nothing when there is no running Host (test runs). */
+  /** Wakes the loop if it sleeps in idleWait or pace(). Any thread; does nothing when there is no running Host (test runs). */
   static void wake() {
     wakeCount.incrementAndGet();
     android.os.Handler h = wakeHandler;
     if (h != null && parked.compareAndSet(true, false)) h.post(NOTHING);
+    Thread t = mainThread;
+    if (t != null) LockSupport.unpark(t);
   }
 
   private final ArrayDeque<SimWindow.Event> pendingScript = new ArrayDeque<>();
@@ -947,6 +1044,37 @@ public class Host {
       }
       return new SimWindow.Event(SimWindow.UP, x2, y2, 0);
     }
+  }
+
+  private void fastDrag(float x1, float y1, float x2, float y2, long ms) {
+    if (controls.hidden()) return;
+    ShadowLooper looper = shadowOf(Looper.getMainLooper());
+    int n = (int) Math.max(1, Math.round(Math.max(0, ms) / 8.333333));
+    Crashes.app(() -> {
+      dispatch(new SimWindow.Event(SimWindow.DOWN, x1, y1, 0));
+      looper.idle();
+      for (int s = 1; s < n; s++) {
+        looper.idleFor(Duration.ofMillis(8));
+        float f = (float) s / n;
+        dispatch(new SimWindow.Event(SimWindow.MOVE, x1 + (x2 - x1) * f, y1 + (y2 - y1) * f, 0));
+        looper.idle();
+      }
+      for (int h = 0; h < HOLD_MOVES; h++) {
+        looper.idleFor(Duration.ofMillis(8));
+        dispatch(new SimWindow.Event(SimWindow.MOVE, x2, y2, 0));
+        looper.idle();
+      }
+      looper.idleFor(Duration.ofMillis(8));
+      dispatch(new SimWindow.Event(SimWindow.UP, x2, y2, 0));
+      looper.idle();
+      for (int i = 0; i < 2; i++) {
+        looper.idleFor(Duration.ofMillis(16));
+        List<View> r = rootViews();
+        if (!controls.hidden() && needsFrame(r)) render(r);
+      }
+    });
+    settledTreeFrame = -1;
+    if (gridHz() < 120) postInputFrames = 4;
   }
 
   /** The next input to dispatch: a timed drag's, else scripted input, else the window's. */
@@ -1474,17 +1602,30 @@ public class Host {
   }
 
   private boolean dispatch(SimWindow.Event e) {
+    settledTreeFrame = -1;
     long now = SystemClock.uptimeMillis();
     FlightRecorder.input(e, now);
     switch (e.type()) {
-      case SimWindow.DOWN, SimWindow.MOVE, SimWindow.UP, SimWindow.CANCEL -> dispatchTouch(e, now);
+      case SimWindow.DOWN, SimWindow.MOVE, SimWindow.UP, SimWindow.CANCEL -> {
+        dispatchTouch(e, now);
+        if (e.type() == SimWindow.UP) {
+          if (gridHz() < 120) postInputFrames = 4;
+          if (Boolean.getBoolean("apksim.fastTransitions")) fastTransitionMs = 220;
+        }
+      }
       case SimWindow.TOUCH2_CENTRE, SimWindow.TOUCH2_DOWN, SimWindow.TOUCH2_MOVE, SimWindow.TOUCH2_UP -> dispatchTouch2(e, now);
       case SimWindow.WHEEL -> dispatchWheel(e, now, Device.current().watch());
       case SimWindow.ROTARY -> dispatchWheel(e, now, true);
       case SimWindow.BACK -> {
         if (!dispatchPredictiveBack()) sendKey(KeyEvent.KEYCODE_BACK, 0, now);
+        if (gridHz() < 120) postInputFrames = 4;
+        if (Boolean.getBoolean("apksim.fastTransitions")) fastTransitionMs = 220;
       }
-      case SimWindow.KEY -> sendKey((int) e.value(), (int) e.x(), now);
+      case SimWindow.KEY -> {
+        sendKey((int) e.value(), (int) e.x(), now);
+        if (gridHz() < 120) postInputFrames = 4;
+        if (Boolean.getBoolean("apksim.fastTransitions")) fastTransitionMs = 220;
+      }
       case SimWindow.CHAR -> sendChar((char) e.value(), now, e.y() == SimWindow.PASTED);
       case SimWindow.CLOSE -> {
         return true;
@@ -1896,14 +2037,34 @@ public class Host {
   }
 
   private boolean capAllowsFrame() {
+    if (postInputFrames > 0 || fastTransitionMs > 0) return true;
     return capAllowsFrame(lastRenderMs);
   }
 
+  private boolean deferRaster() {
+    return !firstFrame && Boolean.getBoolean("apksim.lazyRaster")
+        && !SimWindow.displayAvailable() && !FrameStream.active() && !FlightRecorder.screen;
+  }
+
+  private void flushRaster() {
+    if (!rasterDirty) return;
+    hw.draw(rootViews(), this::position);
+    rasterDirty = false;
+  }
+
   private void render(List<View> roots) {
+    settledTreeFrame = -1;
     lastRenderMs = SystemClock.uptimeMillis();
     lastDrawn = roots.stream().filter(HwRenderer::drawn).toList();
-    hw.draw(roots, this::position);
+    if (deferRaster()) {
+      hw.recordOnly(roots);
+      rasterDirty = true;
+    } else {
+      hw.draw(roots, this::position);
+      rasterDirty = false;
+    }
     frames++;
+    if (postInputFrames > 0) postInputFrames--;
   }
 
   /** The display changed size (rotation, resizing, another device): the renderer, the window and screenshots follow. */
@@ -1923,6 +2084,7 @@ public class Host {
 
       @Override
       public Bitmap screen() {
+        flushRaster();
         Bitmap b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         boolean[] got = {false};
         hw.withLatestFrame(pixels -> {
@@ -1959,6 +2121,7 @@ public class Host {
    * pixels at its screen, clipped to its corners or mask; transparent outside the device.
    */
   private void saveSkinned(String path, Skinning.Layout l) throws Exception {
+    flushRaster();
     Bitmap screen = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
     Bitmap out = Bitmap.createBitmap(l.outerW(), l.outerH(), Bitmap.Config.ARGB_8888);
     try {
@@ -2047,6 +2210,7 @@ public class Host {
   }
 
   private void saveFrame(String path, boolean display) throws Exception {
+    flushRaster();
     Bitmap bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
     try {
       hw.withLatestFrame(pixels -> {
@@ -2195,6 +2359,15 @@ public class Host {
         pendingScript.add(new SimWindow.Event(DRAG, Float.parseFloat(a[1]), Float.parseFloat(a[2]), 0));
         return "ok";
       }
+      case "fast-drag" -> {
+        // Synchronous drag in simulated time (scripts/crawl.py): same fixed series of points and zero-fling hold
+        // moves as `drag`, without sleeping real wall time between intermediate frames.
+        float x1 = Float.parseFloat(a[1]), y1 = Float.parseFloat(a[2]);
+        float x2 = Float.parseFloat(a[3]), y2 = Float.parseFloat(a[4]);
+        long ms = a.length > 5 ? Long.parseLong(a[5]) : 300;
+        fastDrag(x1, y1, x2, y2, ms);
+        return "ok";
+      }
       case "touch" -> {
         // touch down|move|up|cancel X Y: one finger's event, for input that arrives as separate events
         // (UiAutomation's injectInputEvent from an instrumentation started over adb).
@@ -2290,12 +2463,36 @@ public class Host {
         return ImageDiff.compare(a[1], a[2], a.length > 3 ? a[3] : null, a.length > 4 ? Integer.parseInt(a[4]) : 0);
       }
       case "wshot" -> SimWindow.windowSnapshot(a[1]);
-      case "quit" -> exit(0, "quit command");
+      case "quit" -> {
+        if (a.length > 1 && a[1].equals("fast")) {
+          Storage.deleteScratch();
+          Standby.halt(0);
+        }
+        exit(0, "quit command");
+      }
       case "ping" -> {
         return "pong";
       }
       case "activity" -> {
         return stack.isEmpty() ? "none" : stack.peek().get().getClass().getName();
+      }
+      case "ui-tree" -> {
+        // Combined activity + `nodes tree` in one control round-trip (scripts/crawl.py).
+        // `ui-tree fast` skips TextTruncation reflection (only needed by font-scale/locale sweeps).
+        if (stack.isEmpty()) return "none";
+        String act = stack.peek().get().getClass().getName();
+        boolean checkTruncation = !(a.length > 1 && a[1].equals("fast"));
+        if (!checkTruncation && settledTreeFrame == frames && settledTreeBody != null
+            && act.equals(settledTreeAct) && pendingScript.isEmpty() && drag == null) {
+          return act + "\u001d" + settledTreeBody;
+        }
+        String body = Nodes.tree(AccessibleWindows.reported(rootViews()), checkTruncation);
+        if (!checkTruncation && pendingScript.isEmpty() && drag == null) {
+          settledTreeFrame = frames;
+          settledTreeAct = act;
+          settledTreeBody = body;
+        }
+        return act + "\u001d" + body;
       }
       case "windows" -> {
         StringBuilder b = new StringBuilder();

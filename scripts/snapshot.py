@@ -180,9 +180,11 @@ class Worker:
             env = dict(os.environ)
             if not self.ctx.get("standby", False) or self.ctx.get("snapshot", True):
                 env["APKSIM_STANDBY"] = "0"
-            elif self.ctx.get("standby_opt_in", False):
-                # On Linux standbys are opt-in (APKSIM_STANDBY=1); an explicit APKSIM_STANDBY=0 still forces cold.
-                env.setdefault("APKSIM_STANDBY", "1")
+            else:
+                env.setdefault("APKSIM_STANDBY_SLOT", str(self.i))
+                if self.ctx.get("standby_opt_in", False):
+                    # On Linux standbys are opt-in (APKSIM_STANDBY=1); an explicit APKSIM_STANDBY=0 still forces cold.
+                    env.setdefault("APKSIM_STANDBY", "1")
             self.proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env)
         deadline = time.time() + 180
         port = None
@@ -193,7 +195,7 @@ class Worker:
                 port = m and int(m[1])
             except OSError:
                 pass
-            time.sleep(0.02)
+            time.sleep(0.01)
         while port and time.time() < deadline and self.proc.poll() is None:
             try:
                 self.sock = socket.create_connection(("127.0.0.1", port), timeout=2)
@@ -203,7 +205,7 @@ class Worker:
                     break
             except (OSError, Closed):
                 self.close()
-                time.sleep(0.05)
+                time.sleep(0.025)
         if self.file is None:
             code = self.proc.poll()
             raise Closed(f"instance {self.i} " + (f"exited with status {code}" if code is not None else "did not answer")
@@ -215,7 +217,7 @@ class Worker:
         while not re.search(r"frames=[1-9]", self.send("stats")):
             if time.time() > deadline:
                 raise Closed(f"instance {self.i} drew no frame within 180 s (see {self.log})")
-            time.sleep(0.03)
+            time.sleep(0.015)
 
     def send(self, cmd):
         self.file.write(cmd + "\n")
@@ -320,16 +322,16 @@ class Worker:
         self.file = self.sock = None
 
     def quit(self, fast=False):
-        """Ends the instance whatever state it is in: `quit` if it still answers (unless [fast]), else SIGTERM, then SIGKILL."""
+        """Ends the instance whatever state it is in: `quit` (or `quit fast` when [fast]), else SIGTERM, then SIGKILL."""
         if self.proc is None:
             return
-        if not fast and self.file is not None and self.proc.poll() is None:
+        if self.file is not None and self.proc.poll() is None:
             try:
-                self.send("quit")
+                self.send("quit fast" if fast else "quit")
             except (Closed, OSError, ValueError):
                 pass
         self.close()
-        stops = (self.proc.terminate, self.proc.kill) if fast else (None, self.proc.terminate, self.proc.kill)
+        stops = (None, self.proc.terminate, self.proc.kill)
         for stop in stops:
             if stop:
                 try:
@@ -337,7 +339,7 @@ class Worker:
                 except OSError:
                     pass
             try:
-                self.proc.wait(timeout=2 if fast else (30 if stop is None else 10))
+                self.proc.wait(timeout=(1 if stop is None else 2) if fast else (30 if stop is None else 10))
                 return
             except subprocess.TimeoutExpired:
                 pass

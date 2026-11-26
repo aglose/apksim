@@ -75,4 +75,35 @@ with tempfile.TemporaryDirectory(prefix="crawl-data-check-") as d:
     inst.ctx = {"data_ignore": ["databases/ok.db#events"]}
     st3 = state()
     assert set(st3["databases/ok.db"]) == {"t"} and "databases/ok.db-wal" not in st3, st3
+    # Incremental WAL page-level hashing matches full scan across clones, updates, inserts, deletes and schema changes.
+    big_p = os.path.join(d, "big.db")
+    bc = sqlite3.connect(big_p)
+    try:
+        bc.execute("pragma journal_mode=wal")
+        bc.execute("create table big(id integer primary key, val text)")
+        bc.execute("create table small(k text primary key, v text)")
+        bc.executemany("insert into big values (?, ?)", [(i, "x" * 200) for i in range(1500)])
+        bc.execute("insert into small values ('a', '1')")
+        bc.commit()
+        bc.execute("pragma wal_checkpoint(truncate)")
+    finally:
+        bc.close()
+    clone_p = os.path.join(d, "big-clone.db")
+    shutil.copy(big_p, clone_p)
+    assert crawl.sqlite_tables(big_p) == crawl.sqlite_tables_read(big_p)
+    cc = sqlite3.connect(clone_p)
+    try:
+        cc.execute("update small set v='2' where k='a'")
+        cc.commit()
+        assert crawl.sqlite_tables(clone_p) == crawl.sqlite_tables_read(clone_p)
+        cc.executemany("insert into big values (?, ?)", [(1500 + i, "y" * 200) for i in range(400)])
+        cc.execute("delete from big where id = 100")
+        cc.commit()
+        assert crawl.sqlite_tables(clone_p) == crawl.sqlite_tables_read(clone_p)
+        cc.execute("create table extra(z int)")
+        cc.execute("insert into extra values (42)")
+        cc.commit()
+        assert crawl.sqlite_tables(clone_p) == crawl.sqlite_tables_read(clone_p)
+    finally:
+        cc.close()
 print("crawl-data-check: all passed")

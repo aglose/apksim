@@ -192,6 +192,8 @@ if [[ "${1:-}" == --spawn-standby ]]; then
   # b+3000+8080: the loopback ports the agent's owner opened (issue 428), part of the name since the profile is fixed here.
   unset APKSIM_BEAM_LOOPBACK
   if [[ "$FLAGS" =~ b((\+[0-9]+)+) ]]; then LB="${BASH_REMATCH[1]//+/,}"; export APKSIM_BEAM_LOOPBACK="${LB#,}"; fi
+  # wN: per-worker standby slot (crawl.py -j N), so parallel workers do not contend on a single standby JVM.
+  if [[ "$FLAGS" =~ w([0-9]+) ]]; then export APKSIM_STANDBY_SLOT="${BASH_REMATCH[1]}"; else unset APKSIM_STANDBY_SLOT; fi
   # A standby always maps device paths: one launch's APKSIM_DEVICE_PATHS=0 (cold, below) must not reach later launches.
   unset APKSIM_DEVICE_PATHS
   exec "$CLIENT" detach "$SOCK.log" "$ROOT/apksim" "${ARGS[@]}"
@@ -202,6 +204,13 @@ if [[ "${1:-}" == --stop-standbys ]]; then
     SOCK="$("$CLIENT" sock "$KEY" "$FLAGS")"
     [[ -f "$SOCK.pid" ]] && kill "$(cat "$SOCK.pid")" 2>/dev/null && echo "stopped standby $(cat "$SOCK.pid")"
     rm -f "$SOCK" "$SOCK.pid"
+  done
+  for S in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    for BASE in "" n s ns; do
+      SOCK="$("$CLIENT" sock "$KEY" "${BASE}w${S}")"
+      [[ -f "$SOCK.pid" ]] && kill "$(cat "$SOCK.pid")" 2>/dev/null && echo "stopped standby $(cat "$SOCK.pid")"
+      rm -f "$SOCK" "$SOCK.pid"
+    done
   done
   exit 0
 fi
@@ -520,6 +529,10 @@ fi
 # Always passed: a standby keeps the properties it booted with, and this launch's must replace them.
 EXTRA+=("-Dapksim.window=${WINDOW_MODE:-${APKSIM_WINDOW:-front}}")
 FLAGS="${NO_NET:+n}${NO_SANDBOX:+s}${APKSIM_NO_CORE:+k}"
+if [[ "${APKSIM_STANDBY_SLOT:-}" =~ ^[0-9]+$ && -z "${APKSIM_BEAM_SANDBOX:-}" ]]; then
+  FLAGS="${FLAGS}w${APKSIM_STANDBY_SLOT}"
+  EXTRA+=("-Dapksim.standbySpawnDelayMs=${APKSIM_STANDBY_SPAWN_DELAY_MS:-0}" "-Dapksim.standbyJitIdle=false")
+fi
 # A beamed instance (the agent sets APKSIM_BEAM_SANDBOX, docs/beam.md): a sandbox of its own, so standbys of its own.
 if [[ -n "${APKSIM_BEAM_SANDBOX:-}" ]]; then
   [[ -n "${NO_SANDBOX:-}" ]] && { echo "a beamed instance always runs sandboxed" >&2; exit 2; }
@@ -583,7 +596,7 @@ if [[ -n "$STANDBY_ON" && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKS
       -Dapksim.networkUnmatched=fetch:*) [[ "${e#*=fetch:}" == "$STATE"/* ]] || { WARM_OK=""; COLD_OPT="--network-unmatched fetch: (its file is outside the state folder)"; } ;;
       -Dapksim.networkIgnoreQuery=*|-Dapksim.networkIgnoreHeader=*|-Dapksim.networkUnmatched=*) ;;
       # Class probes and resource hits (crawl.py --record-deps): Probes.reload reads them as the standby takes the launch.
-      -Dapksim.deps=*|-Dapksim.deps.packages=*) ;;
+      -Dapksim.deps=*|-Dapksim.deps.packages=*|-Dapksim.standbySpawnDelayMs=*|-Dapksim.standbyJitIdle=*|-Dapksim.fastTransitions=*|-Dapksim.lazyRaster=*) ;;
       -Dapksim.networkReplayTiming=*|-Dapksim.networkReplayMark=*|-Dapksim.networkHost=*|-Dapksim.networkTrust=*|-Dapksim.networkTrace=*|-Dapksim.networkInspect=*|-Dapksim.networkInspectRules=*) ;;
       *) WARM_OK=""; COLD_OPT="the option ${e%%=*}" ;;
     esac
@@ -852,7 +865,8 @@ if [[ -n "${APKSIM_SANDBOX_TEST:-}" ]]; then exec "${SANDBOX[@]+"${SANDBOX[@]}"}
 # shaders while cutting cold-launch wall time by ~200-350 ms and CPU by ~40-55%. Pre-booted standbys warm C2 in the
 # background while idle, so they keep full tiered compilation. `--jvm -XX:TieredStopAtLevel=4` (after this) brings C2 back.
 JIT=()
-[[ -z "$STANDBY_SOCK" ]] && JIT=(-XX:TieredStopAtLevel=1)
+# Worker-pool standbys (crawl.py -j N) also stop at C1 so background standby boots do not saturate CPU cores with C2.
+[[ -z "$STANDBY_SOCK" || -n "${APKSIM_STANDBY_SLOT:-}" ]] && JIT=(-XX:TieredStopAtLevel=1)
 # ArchiveRelocationMode=0: the cache is mapped where it was built for (train.sh picks an address macOS leaves free),
 # so its 60 MB of read-only metadata stay clean file pages, shared by every instance and standby. The JDK's default
 # moves it to a random address and rewrites every pointer: ~45 MB more of private memory in each process, and ~10 ms.

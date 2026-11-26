@@ -113,6 +113,19 @@ final class HwRenderer {
     return root.getVisibility() == View.VISIBLE && root.getWidth() != 0;
   }
 
+  /**
+   * Records each drawn window's display list (clearing dirty flags and running Compose's draw phase) without
+   * syncing or rasterizing pixels on HWUI/Metal. Used in headless crawls (`-Dapksim.lazyRaster=true`), where pixels
+   * are only needed when `shot` runs (which then calls {@link #draw} once).
+   */
+  void recordOnly(List<View> roots) {
+    for (View root : roots) {
+      if (!drawn(root)) continue;
+      DrawingTime.stamp(root);
+      root.updateDisplayListIfDirty();
+    }
+  }
+
   /** Records the windows bottom-to-top and starts rasterizing them; returns once HWUI has synced. */
   void draw(List<View> roots, Placer placer) {
     long t0 = System.nanoTime();
