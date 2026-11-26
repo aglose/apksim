@@ -16,6 +16,7 @@ scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] 
                  [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--standby] [--keep-data] [--keep-app-state] [--data-ignore PATTERN]...
                  [--base-option "APKSIM OPTIONS"] [--seed RUN (--only ID,ID... | --only-file PATH) [--diff-seed [--diff-controls changed|none|all]]]
                  [--events] [--screen-titles] [--record-deps [--deps-packages PKG,PKG]]
+                 [--freeze-network] [--deterministic]
                  [-- APKSIM_OPTION...]
 ```
 
@@ -167,8 +168,11 @@ So each replay starts from the data the app had at its launch:
   the crawler reuses the screen in place (for self-loops, or after a verified `back` / dismiss button returns to the
   exact same screen and UI signature) or uses a self-verifying warm `restart` (falling back to a full relaunch if the
   replayed screen's signature differs). Plain walks (without `--base` or `--sweep`) run with GPU rendering, `--max-fps 30`,
-  `--audio off`, `--anim-scale 0` at launch, action-level work stealing across workers, waypoint-guided intermediate
-  replays for animating screens, and inline capture of the default combination (`phone-light-en-US-1`) for depth >= 1.
+  `--audio off`, `--anim-scale 0` at launch, `-Dapksim.lazyRaster=true` (skip CPU raster until `shot`),
+  `-Dapksim.fastTransitions=true`, combined `ui-tree` reads, `fast-drag`, tree-quiet early exit in `settle` for
+  continuously animating screens, action-level work stealing across workers, async worker retirement on per-generation
+  `--keep-data` slots, WAL-incremental SQLite hashing, navigation-constant learning, waypoint-guided intermediate
+  replays, and inline capture of the default combination (`phone-light-en-US-1`) during exploration.
 
 What it does not cover: state an app keeps in memory only (a static that a tap changed and nothing writes) outlives a
 `restart`, as before. External storage is at a device's path, `/storage/emulated/0`, in every instance
