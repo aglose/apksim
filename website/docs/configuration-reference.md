@@ -24,6 +24,7 @@ Pass these with `--jvm`, for example `--jvm -Dapksim.vsync=grid`.
 | `-Dapksim.noCurl=true` | Use the pure-Java parallel ranged HTTP downloader (`-Dapksim.downloadConnections=N`, default 6) instead of `/usr/bin/curl` (useful on high-latency VPNs or custom Java truststores) |
 | `-Dapksim.cachedFontMap=false` | Rebuild Android's system font map from `fonts.xml` instead of mapping the cached serialized map |
 | `-XX:TieredStopAtLevel=4` | Re-enable C2 compilation on cold launches (cold launches default to C1 after B2 flattening; warm standbys keep C2) |
+| `-XX:ReservedCodeCacheSize=N` | Code cache reservation for C1-only launches (default 240m, as tiered compilation reserves: C1's own 48 MB default forced a full collection every ~7 MB of new code) |
 | `-Dapksim.cpuLayerEffects=true` | Run layer shader effects on the CPU, as HWUI does (for comparisons) |
 | `-Dapksim.gpuBitmaps=false` | Resample scaled bitmaps on the CPU |
 | `-Dapksim.gpuBitmapsSnap=false` | Leave big scaled bitmap draws that land off whole pixels to the CPU, not snapped |
