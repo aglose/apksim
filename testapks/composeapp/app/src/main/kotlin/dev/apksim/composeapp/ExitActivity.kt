@@ -25,6 +25,9 @@ import androidx.compose.ui.unit.dp
  * - `exit`: System.exit(3): exit 3.
  * - `halt`: Runtime.getRuntime().halt(4): exit 4.
  * - `kill`: Process.killProcess(Process.myPid()), as restart-after-login libraries do: the process dies (137).
+ * - `restart`: starts the launcher activity with Intent.makeRestartActivityTask, then Runtime.exit(0), as ProcessPhoenix
+ *   and other restart helpers do (issue 658): apksim adds `[apksim] restart: ...` before the exit line.
+ * - `restart-kill`: the same start, then Process.killProcess(myPid()).
  */
 class ExitActivity : androidx.activity.ComponentActivity() {
   override fun onCreate(savedInstanceState: android.os.Bundle?) {
@@ -49,6 +52,12 @@ class ExitActivity : androidx.activity.ComponentActivity() {
         "exit" -> System.exit(3)
         "halt" -> Runtime.getRuntime().halt(4)
         "kill" -> android.os.Process.killProcess(android.os.Process.myPid())
+        "restart", "restart-kill" -> {
+          val launch = packageManager.getLaunchIntentForPackage(packageName)!!
+          startActivity(Intent.makeRestartActivityTask(launch.component))
+          if (kind == "restart") Runtime.getRuntime().exit(0)
+          else android.os.Process.killProcess(android.os.Process.myPid())
+        }
         else -> Log.e(TAG, "exit: unknown kind $kind")
       }
     }, 300)

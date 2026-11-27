@@ -309,7 +309,7 @@ Read README.md for results and limits; this file covers how to work on the code.
     reaches a warm launch's client (the standby's shutdown hook sent 0 for every exit, and a halt sent nothing: 134).
     `Process.killProcess(myPid())` and `sendSignal(myPid, SIGNAL_KILL)` end a running instance with 137, as a device
     kills the process (Robolectric only recorded the pid and the app ran on; test runs keep that). The test app's
-    `apksim://exit?kind=finish|affinity|handoff|exit|halt|kill` does each (`ci-smoke.sh`). `-Dapksim.traceExit=true`
+    `apksim://exit?kind=finish|affinity|handoff|exit|halt|kill|restart|restart-kill` does each (`ci-smoke.sh`). An exit or kill within 1 s of a start of one of the app's activities that has not landed yet (no resume since) is the app restarting its process (`Restarts`, issue 658: ProcessPhoenix and the like): `[apksim] restart: the app started .Act (NEW_TASK|CLEAR_TASK) N ms before CALL` comes before the exit line. Not relaunched yet; running instances only. `-Dapksim.traceExit=true`
     still prints every thread's stack at a JVM shutdown.
   - `SimRunner`: points Robolectric at the APK. **FlatSandboxBuilder/FlatLoader** load the framework from the app
     class loader rather than Robolectric's instrumenting loader, so the JVM AOT cache can hold it. It also registers

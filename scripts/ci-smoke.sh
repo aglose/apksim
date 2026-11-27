@@ -631,6 +631,17 @@ exit_run affinity 0 'the last activity, dev.apksim.composeapp.ExitActivity, fini
 exit_run handoff 3 'the app called System.exit(3) on thread'
 exit_run halt 4 'the app called Runtime.halt(4) on thread'
 exit_run kill 137 'the app called Process.killProcess(myPid()) on thread'
+# An app restarting its own process (issue 658): a start of its launcher activity just before the exit is named.
+exit_run restart 0 'the app called Runtime.exit(0) on thread'
+grep -qF '[apksim] restart: the app started .MainActivity (NEW_TASK|CLEAR_TASK) ' "$OUT/exit-restart.log" \
+  || { echo "ExitActivity restart: no restart line" >&2; tail -40 "$OUT/exit-restart.log" >&2; exit 1; }
+exit_run restart-kill 137 'the app called Process.killProcess(myPid()) on thread'
+grep -qF 'ms before Process.killProcess(myPid()), restarting its process' "$OUT/exit-restart-kill.log" \
+  || { echo "ExitActivity restart-kill: no restart line" >&2; tail -40 "$OUT/exit-restart-kill.log" >&2; exit 1; }
+# Neither a kill with no start nor a start that landed before the exit (handoff) is a restart.
+for k in kill handoff; do
+  grep -qF '[apksim] restart:' "$OUT/exit-$k.log" && { echo "ExitActivity $k: a restart line for no restart" >&2; exit 1; }
+done
 trap 'docker logs "$NAME" > "$OUT/run.log" 2>&1 || true; docker rm -f "$NAME" >/dev/null 2>&1 || true' EXIT
 fi  # app
 

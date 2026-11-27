@@ -107,6 +107,7 @@ public final class Exits {
     }
     try {
       StackTraceElement[] st = new Throwable().getStackTrace();
+      restartLine(call + "(" + code + ")");
       log(code, "the app called " + call + "(" + code + ") on thread " + Thread.currentThread().getName() + caller(st, 2)
           + stack(st, 2));
     } catch (Throwable ignored) {
@@ -143,6 +144,7 @@ public final class Exits {
   private static void killed(String call) {
     try {
       StackTraceElement[] st = new Throwable().getStackTrace();
+      restartLine(call);
       log(KILLED, "the app called " + call + " on thread " + Thread.currentThread().getName() + caller(st, 2) + stack(st, 2));
     } catch (Throwable ignored) {
       // Killed anyway.
@@ -153,6 +155,12 @@ public final class Exits {
       // Killed anyway.
     }
     Standby.haltNow(KILLED);
+  }
+
+  /** {@code [apksim] restart: ...} when the app started one of its activities just before this exit (Restarts). */
+  private static void restartLine(String call) {
+    String line = Restarts.line(call);
+    if (line != null) System.err.println(line);
   }
 
   // ---------------------------------------------------------------- stacks
