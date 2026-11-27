@@ -302,7 +302,7 @@
                 <data android:scheme="apksim" android:host="crash" />
             </intent-filter>
         </activity>
-        <!-- apksim://exit?kind=finish|affinity|handoff|exit|halt|kill: the app ends itself; apksim says why (issue 116). -->
+        <!-- apksim://exit?kind=finish|affinity|handoff|exit|halt|kill|restart|restart-kill: the app ends itself; apksim says why (issue 116). -->
         <activity android:name=".ExitActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

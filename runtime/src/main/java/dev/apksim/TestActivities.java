@@ -804,6 +804,7 @@ public final class TestActivities {
     @Implementation
     protected void callActivityOnResume(Activity activity) {
       org.robolectric.util.reflector.Reflector.reflector(InstrumentationReflector.class, self).callActivityOnResume(activity);
+      Restarts.resumed();  // a start that has landed is not pending: an exit after it is not a restart (issue 658)
       if (!testRun() || activity.getWindow() == null) return;
       View decor = activity.getWindow().peekDecorView();
       if (decor == null || decor.getVisibility() == View.VISIBLE) return;
@@ -1056,10 +1057,21 @@ public final class TestActivities {
         throw new android.content.ActivityNotFoundException("No Activity found to handle " + intent);
       }
       Instrumentation.ActivityResult r = super.execStartActivity(who, contextThread, token, target, intent, requestCode, options);
+      Restarts.started(intent);  // running instances: a start just before an exit is the app restarting (issue 658)
       if (testRun() && requestCode < 0) {
         Intent copy = new Intent(intent);
         post(() -> deliverToRunning(copy));
       }
+      return r;
+    }
+
+    /** The String-target start (Activity.startActivityForResult(String who, ...), platform fragments): recorded too. */
+    @Implementation
+    @Override
+    protected Instrumentation.ActivityResult execStartActivity(Context who, IBinder contextThread, IBinder token,
+        String target, Intent intent, int requestCode, Bundle options) {
+      Instrumentation.ActivityResult r = super.execStartActivity(who, contextThread, token, target, intent, requestCode, options);
+      Restarts.started(intent);
       return r;
     }
 
