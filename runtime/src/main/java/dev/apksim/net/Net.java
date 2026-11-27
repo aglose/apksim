@@ -719,7 +719,15 @@ public final class Net {
     }
     if (!(a instanceof InetSocketAddress isa) || bypass(isa)) {
       long t0 = System.nanoTime();
-      raw.connect(a, timeout);
+      try {
+        raw.connect(a, timeout);
+      } catch (IOException e) {
+        // Loopback is otherwise never read, but a connect that fails is a row: "nothing listens on 127.0.0.1:8971"
+        // is the answer to an app that shows "can't reach the server" with no other trace (a dev server not running).
+        // The inspector's row only: a recording still leaves loopback out.
+        if (Inspector.on && a instanceof InetSocketAddress o) Inspector.failure(hostOf(o), o.getPort(), "connect failed: " + e);
+        throw e;
+      }
       if (Tap.on && a instanceof InetSocketAddress o && openedLoopback(o)) Tap.connected(s, hostOf(o), o.getPort(), (System.nanoTime() - t0) / 1_000_000);
       return;
     }
