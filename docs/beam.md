@@ -1060,7 +1060,10 @@ Mac reaches them directly and anonymously (CI artifacts), and the page knows tha
 - **The download** (`Serve.beamFetchSource`): tried first, before the page's server; no credentials, no cookies; a
   redirect (up to 5) is followed only to an address that is allowed too; an APK's content type or
   `application/octet-stream` (what artifact stores send: the hash, checked before anything is stored, says what the
-  file is); within `--max-upload`. Its answer says `"via": "source"`. When it is not allowed or fails, the page's
+  file is); within `--max-upload`. When earlier builds are already stored in `uploads/`, both `source` and ticketed
+  `/api/beam/apk` downloads (serve answers `HEAD` and single-range `206` there) first try `ZipRangeFetch`: reusing
+  matching ZIP entries from stored builds, fetching only changed ranges over HTTP `Range`, and verifying the rebuilt
+  file against `sha256` (falling back to a whole GET otherwise; `-Dapksim.rangeReuse=false` disables). Its answer says `"via": "source"`. When it is not allowed or fails, the page's
   server is tried with the ticket, then the tab relays the APK (`need: upload`, its `why` naming the source's host
   and the reason, never its path or query).
 - **What it lets a page do**: make the agent fetch an address on the visitor's network, which the owner's prefixes

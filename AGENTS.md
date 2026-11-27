@@ -52,6 +52,13 @@ Read README.md for results and limits; this file covers how to work on the code.
     only (scheme, host and port), curl getting them on stdin (`scripts/check-download-auth.sh`); `cache/downloads/`
     LRU-capped at 512 MB via `-Dapksim.downloadCacheMB`), and on cold launches overlaps sandbox + `FastNativeLoader` boot
     directly inside `SimRunner.SimTestEnvironment.setUpApplicationState` (`SimRunner.deferredApkSetup`, zero warmup/reset).
+    For `serve` (`Catalog.addUrl`) and `beam` (`Serve.beamDownloadApk`, both `source` and ticketed `/api/beam/apk`, where
+    `Http.file` answers `HEAD` and single-range `206`), `ZipRangeFetch` (issue 674, `-Dapksim.rangeReuse=false` disables,
+    `scripts/check-range-reuse.sh` in CI) reuses matching ZIP entries from builds already stored in `uploads/` whenever an
+    expected SHA-256 is known ahead of time (from the request's `sha256`, else `HEAD`'s `X-Checksum-Sha256` / `Repr-Digest`
+    / `Digest`), coalescing missing ranges and verifying the rebuilt file's full SHA-256 before storing (cloning same-offset
+    runs CoW with `cp -c` / `--reflink=always` when worthwhile, falling back to a whole download on non-206, unread CD, low
+    overlap or mismatch, and preserving cross-origin header stripping and beam's `allow-download`/content-type rules).
     Its jar is unsigned in `work/lib` (`gradle deps` strips the signature files): the JVM's AOT cache skips signed jars,
     and with them its ~670 classes are in the cache (issue 205).
     Conscrypt's native library (OkHttp's start asks for it) loads on a thread of its own as the first test environment

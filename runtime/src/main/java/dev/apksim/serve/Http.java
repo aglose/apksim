@@ -179,17 +179,86 @@ final class Http {
 
   /** A file as the body, streamed (an APK can be hundreds of MB). */
   static void file(OutputStream out, java.nio.file.Path path, String type) throws IOException {
+    file(out, path, type, false, null);
+  }
+
+  /**
+   * Streams a file, supporting {@code HEAD} and single-range HTTP {@code Range: bytes=...} ({@code 206 Partial Content}
+   * / {@code 416 Range Not Satisfiable}) so beam agents can fetch only the bytes they do not already store (issue 674).
+   */
+  static void file(OutputStream out, java.nio.file.Path path, String type, boolean headOnly, String rangeHeader,
+      String... extraHeaders) throws IOException {
     long size = java.nio.file.Files.size(path);
-    StringBuilder h = new StringBuilder("HTTP/1.1 200 OK\r\nContent-Type: ").append(type).append("\r\nContent-Length: ").append(size)
-        .append("\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n");
+    long start = 0;
+    long end = size - 1;
+    boolean partial = false;
+    if (!headOnly && rangeHeader != null && rangeHeader.regionMatches(true, 0, "bytes=", 0, 6)) {
+      String spec = rangeHeader.substring(6).strip();
+      // Single byte range only (multi-range falls through to 200 OK).
+      if (!spec.contains(",")) {
+        int dash = spec.indexOf('-');
+        if (dash >= 0) {
+          String a = spec.substring(0, dash).strip();
+          String b = spec.substring(dash + 1).strip();
+          try {
+            if (a.isEmpty() && !b.isEmpty()) {
+              long suffix = Long.parseLong(b);
+              if (suffix <= 0 || size == 0) {
+                rangeNotSatisfiable(out, size);
+                return;
+              }
+              start = Math.max(0L, size - suffix);
+              end = size - 1;
+              partial = true;
+            } else if (!a.isEmpty()) {
+              start = Long.parseLong(a);
+              end = b.isEmpty() ? size - 1 : Math.min(size - 1, Long.parseLong(b));
+              if (start < 0 || start >= size || end < start) {
+                rangeNotSatisfiable(out, size);
+                return;
+              }
+              partial = true;
+            }
+          } catch (NumberFormatException ignored) {
+            // Malformed Range header: ignore and send 200 OK per RFC 9110.
+          }
+        }
+      }
+    }
+    long contentLen = size == 0 ? 0 : (end - start + 1);
+    StringBuilder h = new StringBuilder("HTTP/1.1 ")
+        .append(partial ? "206 Partial Content" : "200 OK")
+        .append("\r\nContent-Type: ").append(type)
+        .append("\r\nContent-Length: ").append(contentLen)
+        .append("\r\nAccept-Ranges: bytes");
+    if (partial) h.append("\r\nContent-Range: bytes ").append(start).append('-').append(end).append('/').append(size);
+    h.append("\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n");
+    for (String e : extraHeaders) h.append(e).append("\r\n");
     String cors = CORS_ORIGIN.get();
     if (cors != null) h.append("Access-Control-Allow-Origin: ").append(cors).append("\r\nVary: Origin\r\n");
     h.append("Connection: close\r\n\r\n");
     out.write(h.toString().getBytes(StandardCharsets.ISO_8859_1));
-    try (java.io.InputStream in = java.nio.file.Files.newInputStream(path)) {
-      in.transferTo(out);
+    if (!headOnly && contentLen > 0) {
+      try (java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(path, java.nio.file.StandardOpenOption.READ)) {
+        byte[] buf = new byte[64 * 1024];
+        long pos = start;
+        long rem = contentLen;
+        while (rem > 0) {
+          java.nio.ByteBuffer bb = java.nio.ByteBuffer.wrap(buf, 0, (int) Math.min(buf.length, rem));
+          int n = ch.read(bb, pos);
+          if (n <= 0) break;
+          out.write(buf, 0, n);
+          pos += n;
+          rem -= n;
+        }
+      }
     }
     out.flush();
+  }
+
+  private static void rangeNotSatisfiable(OutputStream out, long size) throws IOException {
+    respond(out, 416, "text/plain; charset=utf-8", "range not satisfiable\n".getBytes(StandardCharsets.UTF_8),
+        "Content-Range: bytes */" + size);
   }
 
   static void text(OutputStream out, int status, String body) throws IOException {
@@ -205,6 +274,7 @@ final class Http {
       case 101 -> "Switching Protocols";
       case 200 -> "OK";
       case 204 -> "No Content";
+      case 206 -> "Partial Content";
       case 302 -> "Found";
       case 400 -> "Bad Request";
       case 401 -> "Unauthorized";
@@ -215,6 +285,7 @@ final class Http {
       case 409 -> "Conflict";
       case 411 -> "Length Required";
       case 413 -> "Content Too Large";
+      case 416 -> "Range Not Satisfiable";
       case 503 -> "Service Unavailable";
       default -> "Error";
     };

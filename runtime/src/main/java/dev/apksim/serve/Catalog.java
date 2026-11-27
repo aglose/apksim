@@ -573,16 +573,39 @@ final class Catalog {
     }
     Thread.ofVirtual().name("serve-download").start(() -> {
       try {
-        dev.apksim.ApkDownloader.Result dl = dev.apksim.ApkDownloader.downloadStaged(
-            url, uploads, headers, maxBytes, true, t -> d.total = t, n -> d.received = n);
-        d.received = dl.bytes();
-        if (d.total < 0) d.total = dl.bytes();
-        Staged staged = new Staged(dl.path(), dl.sha256());
-        App done = publish(staged, pending.id(), clean, launch);
+        App done = null;
+        String logDetail = null;
+        dev.apksim.ZipRangeFetch.Result rf = dev.apksim.ZipRangeFetch.fetch(url,
+            dev.apksim.ZipRangeFetch.Options.forServe(headers, sha256, uploads, maxBytes, t -> d.total = t, n -> d.received = n));
+        if (rf != null && rf.reusedWholeFile()) {
+          try {
+            done = publishRef(rf.path(), pending.id(), clean, launch);
+            d.received = rf.bytes();
+            d.total = rf.bytes();
+            logDetail = String.format("(%d MB, already stored as %s)", rf.bytes() >> 20, rf.sha256().substring(0, 12));
+          } catch (IOException vanished) {
+            // Swept concurrently between HEAD and publishRef: fall through to a normal download.
+          }
+        } else if (rf != null) {
+          d.received = rf.bytes();
+          if (d.total < 0) d.total = rf.bytes();
+          done = publish(new Staged(rf.path(), rf.sha256()), pending.id(), clean, launch);
+          logDetail = String.format("(%d MB: %d MB fetched, %d MB reused)", rf.bytes() >> 20,
+              rf.fetchedBytes() >> 20, rf.reusedBytes() >> 20);
+        }
+        if (done == null) {
+          dev.apksim.ApkDownloader.Result dl = dev.apksim.ApkDownloader.downloadStaged(
+              url, uploads, headers, maxBytes, true, t -> d.total = t, n -> d.received = n);
+          d.received = dl.bytes();
+          if (d.total < 0) d.total = dl.bytes();
+          Staged staged = new Staged(dl.path(), dl.sha256());
+          done = publish(staged, pending.id(), clean, launch);
+          logDetail = String.format("(%d MB)", d.received >> 20);
+        }
         readyUnlessAwaited(d, done);  // the warm-up's job exists before a session not yet waiting looks for it
         d.finished = System.currentTimeMillis();
         d.done.complete(done);
-        System.err.printf("[serve] added %s (%d MB) from %s%n", clean, d.received >> 20, u.getHost());
+        System.err.printf("[serve] added %s %s from %s%n", clean, logDetail, u.getHost());
       } catch (Exception e) {
         synchronized (sources) {
           sources.remove(key, d);  // a failure is not reused: the next add tries again
@@ -707,6 +730,18 @@ final class Catalog {
     return a;
   }
 
+  /** Publishes an already-staged and SHA-256-verified APK (e.g. from {@link dev.apksim.ZipRangeFetch}). */
+  App publishStaged(Path tmp, String sha, String name, List<String> launch, String expectSha256) throws IOException {
+    App a = publish(new Staged(tmp, sha), newId(), clean(name), launch, expectSha256);
+    ready(a);
+    return a;
+  }
+
+  /** Folder where content-addressed APKs (`<sha256>.apk`) are stored. */
+  Path uploadsDir() {
+    return uploads;
+  }
+
   /**
    * A session already waiting on this download launches the app itself as soon as it is stored: a warm-up queued now
    * would be a whole throwaway launch in front of it (issue 557). Nobody waiting: the background warm-up, as before.
@@ -749,8 +784,11 @@ final class Catalog {
     for (String o : launch) ref.append(o).append('\n');
     synchronized (uploadsLock) {
       // The same APK stored already (or by an upload a moment ago): share it.
-      if (Files.exists(apk)) Files.delete(tmp);
-      else Files.move(tmp, apk);
+      if (Files.exists(apk)) {
+        if (!tmp.equals(apk)) Files.delete(tmp);
+      } else {
+        Files.move(tmp, apk);
+      }
       Files.writeString(uploads.resolve(id + ".ref"), ref);
       inUseAgain(sha);
     }
