@@ -699,7 +699,7 @@ public final class ApkDownloader {
     throw new IOException("too many redirects (" + MAX_REDIRECTS + ") for " + startUri.getHost());
   }
 
-  private static boolean sameOrigin(URI a, URI b) {
+  static boolean sameOrigin(URI a, URI b) {
     // Scheme too: an https -> http hop on the same host and port would send the credentials in clear text.
     return a.getHost() != null && a.getHost().equalsIgnoreCase(b.getHost()) && effectivePort(a) == effectivePort(b)
         && a.getScheme() != null && a.getScheme().equalsIgnoreCase(b.getScheme());
@@ -711,7 +711,7 @@ public final class ApkDownloader {
     return "https".equalsIgnoreCase(u.getScheme()) ? 443 : 80;
   }
 
-  private static boolean hasHeaderIgnoreCase(Map<String, String> headers, String targetLower) {
+  static boolean hasHeaderIgnoreCase(Map<String, String> headers, String targetLower) {
     for (String k : headers.keySet()) {
       if (targetLower.equals(k.toLowerCase(Locale.ROOT))) return true;
     }
@@ -719,7 +719,7 @@ public final class ApkDownloader {
   }
 
   /** Minimal ~/.netrc reader (machine/default + login + password) for the pure-Java fallback when {@code --netrc} is used. */
-  private static String readNetrcBasicAuth(String host) {
+  static String readNetrcBasicAuth(String host) {
     if (host == null || host.isEmpty()) return null;
     String file = System.getProperty("apksim.netrcFile");
     String home = System.getProperty("user.home");
@@ -784,7 +784,7 @@ public final class ApkDownloader {
   }
 
   /** Parses {@code Content-Range: bytes START-END/TOTAL} into {@code [start, end, total]}, or null. */
-  private static long[] parseContentRange(String header) {
+  static long[] parseContentRange(String header) {
     if (header == null) return null;
     String s = header.trim();
     if (!s.regionMatches(true, 0, "bytes ", 0, 6)) return null;

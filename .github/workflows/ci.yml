@@ -127,6 +127,8 @@ jobs:
         run: scripts/check-media-probe.sh
       - name: Download credentials check (--header and --netrc reach a URL's first origin only, curl and Java paths)
         run: scripts/check-download-auth.sh
+      - name: Ranged APK entry reuse check (HTTP Range reuse of stored ZIP entries, digest headers, fallbacks, policies)
+        run: scripts/check-range-reuse.sh
       - name: Heap trim check (the heap's spaces found on this JDK; objects intact through trims at every collection)
         run: scripts/check-heap-trim.sh
       - name: Mapped resource tables check (every string the same as from an array; stored, deflated, cached)

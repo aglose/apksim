@@ -1060,8 +1060,8 @@ public final class Serve {
     }
     // A visitor's agent downloading the APK of the app its page is starting (docs/beam.md, phase 2): the ticket, which
     // only a page with the token gets, is the authorization, for that one build and five minutes.
-    if (allowBeam && r.method().equals("GET") && r.path().equals("/api/beam/apk")) {
-      beamDownload(r.param("ticket"), out);
+    if (allowBeam && (r.method().equals("GET") || r.method().equals("HEAD")) && r.path().equals("/api/beam/apk")) {
+      beamDownload(r, r.param("ticket"), out);
       return;
     }
     // A session's data packed for its tab's Mac (phase 5): the ticket that tab got on its own socket, as for the APK.
@@ -2132,8 +2132,8 @@ public final class Serve {
         + ",\"ticketSeconds\":" + tickets.lifetimeSeconds + "}");
   }
 
-  /** `GET /api/beam/apk?ticket=T`: the APK a valid ticket names, while that app's file is still that build. */
-  private void beamDownload(String ticket, OutputStream out) throws IOException {
+  /** `GET`/`HEAD /api/beam/apk?ticket=T`: the APK a valid ticket names, while that app's file is still that build. */
+  private void beamDownload(Http.Request r, String ticket, OutputStream out) throws IOException {
     String[] t = tickets.check(ticket);
     Catalog.App a = t == null ? null : catalog.find(t[0]);
     if (a == null || catalog.downloading(a)) {
@@ -2151,8 +2151,12 @@ public final class Serve {
       Http.text(out, 409, "this app's file has changed since the ticket was made: start again");
       return;
     }
-    System.err.printf("[serve] beam: %s downloaded by a visitor's agent%n", a.name());
-    Http.file(out, apk, "application/vnd.android.package-archive");
+    boolean head = r.method().equals("HEAD");
+    if (!head && r.header("range") == null) {
+      System.err.printf("[serve] beam: %s downloaded by a visitor's agent%n", a.name());
+    }
+    Http.file(out, apk, "application/vnd.android.package-archive", head, r.header("range"),
+        "X-Checksum-Sha256: " + t[1]);
   }
 
   /**
@@ -3315,6 +3319,16 @@ public final class Serve {
   private Catalog.App beamDownloadApk(String origin, java.net.URI u, java.util.function.Function<String, java.net.URI> hop,
       boolean anyBinary, String sha, String name, long size, List<String> launch) throws IOException {
     if (size > maxUploadMb << 20) throw new IOException("too large");
+    // Issue 674: when other builds are already stored in uploads/, reuse matching ZIP entries over HTTP Range,
+    // verifying the rebuilt file's full SHA-256 against `sha` and falling back to a whole GET otherwise.
+    dev.apksim.ZipRangeFetch.Result rf = dev.apksim.ZipRangeFetch.fetch(u.toString(),
+        dev.apksim.ZipRangeFetch.Options.forBeam(hop, anyBinary, sha, catalog.uploadsDir(), maxUploadMb << 20));
+    if (rf != null) {
+      Catalog.App a = catalog.publishStaged(rf.path(), rf.sha256(), name, launch, sha);
+      System.err.printf("[beam] %s: downloaded %s (%d MB: %d MB fetched, %d MB reused) itself%s%n", origin, a.name(),
+          rf.bytes() >> 20, rf.fetchedBytes() >> 20, rf.reusedBytes() >> 20, hop != null ? " from " + u.getHost() : "");
+      return a;
+    }
     java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
         .followRedirects(java.net.http.HttpClient.Redirect.NEVER).connectTimeout(java.time.Duration.ofSeconds(10)).build();
     for (int hops = 0; ; hops++) {

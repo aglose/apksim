@@ -440,6 +440,13 @@ shows it, and the tab may switch to it again by that name), and replaces the one
   every one of them goes to the URL's origin only: a redirect to another scheme, host or port (such as Artifactory
   redirecting to presigned S3/GCS URLs) carries none. Downloads use
   `ApkDownloader` (native `/usr/bin/curl` HTTP/2 fast path, or pure-Java parallel ranged HTTP with `-Dapksim.noCurl=true`).
+  When other builds are already stored in `uploads/` and the new build's SHA-256 is known ahead of time — either from
+  `"sha256"` in the request or from a server digest header on `HEAD` (`X-Checksum-Sha256`, `Repr-Digest: sha-256=:...:`,
+  or `Digest: sha-256=...`) — `ZipRangeFetch` reads the remote central directory over HTTP `Range`, reuses matching ZIP
+  entries from disk (cloning same-offset runs copy-on-write with `cp -c` / `--reflink=always` when possible), fetches
+  only the remaining ranges coalesced across small gaps, and verifies the rebuilt file's full SHA-256 before storing it
+  (falling back to a whole download on non-206, unread central directory, small overlap or hash mismatch;
+  `-Dapksim.rangeReuse=false` disables). If `HEAD`'s digest already matches a stored build, no body bytes are fetched.
   `options` are the
   app's launch options (above). The download is stored by content hash as uploads are, and the id follows the same
   rules: listed nowhere, deleted a day after its last use. Adds of one URL with the same `headers` share one download: while it runs they wait on it (and show its progress),
