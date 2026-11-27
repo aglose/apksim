@@ -41,6 +41,10 @@ Read README.md for results and limits; this file covers how to work on the code.
   the JVM turns compressed pointers off, and the startup cache (built with them) is refused altogether, ~1.1 s
   (Linux) to ~1.9 s (Mac) more on every cold launch; asked for, the JVM caps that default heap at ~30 GB. An
   `--jvm -Xmx` of 32 GB or more still loses the cache (the JVM warns "Max heap size too large for Compressed Oops").
+  Cold launches and test runs stop the JIT at C1 (`TieredStopAtLevel=1`), which shrinks the JVM's code cache to
+  48 MB; the launcher gives it tiered's 240 MB back (`-XX:ReservedCodeCacheSize=240m`, address space only): at 48 MB
+  every ~7 MB of new code started a full collection ("CodeCache GC Threshold"), 35-60 ms on the test app and up to
+  226 ms on a large app, dropping video frames (issue 492).
 - `runtime/src/main/java/dev/apksim/`
   - `Main`: entry point. Opens the window first, then installs app classes and runs Robolectric's JUnit runner on `Host`.
     A cold launch initializes Robolectric's `AndroidTestEnvironment` + `SimKeyStore`, `SimRunner`/`Host` runner,

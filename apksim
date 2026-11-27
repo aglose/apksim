@@ -872,7 +872,11 @@ if [[ -n "${APKSIM_SANDBOX_TEST:-}" ]]; then exec "${SANDBOX[@]+"${SANDBOX[@]}"}
 # background while idle, so they keep full tiered compilation. `--jvm -XX:TieredStopAtLevel=4` (after this) brings C2 back.
 JIT=()
 # Worker-pool standbys (crawl.py -j N) also stop at C1 so background standby boots do not saturate CPU cores with C2.
-[[ -z "$STANDBY_SOCK" || -n "${APKSIM_STANDBY_SLOT:-}" ]] && JIT=(-XX:TieredStopAtLevel=1)
+# At C1 alone the JVM reserves a 48 MB code cache instead of tiered's 240 MB, and SweeperThreshold (15% of it) then
+# starts a code-unloading collection every ~7 MB of new code: with the serial collector a full stop-the-world one,
+# 35-60 ms on the test app and 66-226 ms on a large app (issue 492: dropped video frames, hitches after launch). The
+# reservation is address space only (pages are committed as code is written), so give C1 tiered's size back.
+[[ -z "$STANDBY_SOCK" || -n "${APKSIM_STANDBY_SLOT:-}" ]] && JIT=(-XX:TieredStopAtLevel=1 -XX:ReservedCodeCacheSize=240m)
 # ArchiveRelocationMode=0: the cache is mapped where it was built for (train.sh picks an address macOS leaves free),
 # so its 60 MB of read-only metadata stay clean file pages, shared by every instance and standby. The JDK's default
 # moves it to a random address and rewrites every pointer: ~45 MB more of private memory in each process, and ~10 ms.
