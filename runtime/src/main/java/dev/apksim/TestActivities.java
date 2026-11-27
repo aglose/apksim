@@ -1065,6 +1065,16 @@ public final class TestActivities {
       return r;
     }
 
+    /** The String-target start (Activity.startActivityForResult(String who, ...), platform fragments): recorded too. */
+    @Implementation
+    @Override
+    protected Instrumentation.ActivityResult execStartActivity(Context who, IBinder contextThread, IBinder token,
+        String target, Intent intent, int requestCode, Bundle options) {
+      Instrumentation.ActivityResult r = super.execStartActivity(who, contextThread, token, target, intent, requestCode, options);
+      Restarts.started(intent);
+      return r;
+    }
+
     /**
    * --start-activities: a start of one of the app's activities that no running one takes (a new instance) launches it,
    * as ActivityThread does: the activity on top is paused, the new one created, started and resumed, then the one
