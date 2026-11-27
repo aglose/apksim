@@ -261,7 +261,7 @@ public final class TapCheck {
 
   /**
    * Issue 440: run with APKSIM_BEAM_LOOPBACK=PORT and without apksim.netCheckLoopback, as a beamed instance whose owner
-   * opened PORT is: a plain request to it is a row, and a request to another loopback port is not read.
+   * opened PORT is: a plain request to it is a row, a request to another loopback port is not read, and a loopback connect that fails is a row.
    */
   private static void allowedLoopback(int port) throws Exception {
     System.out.println("== allow-loopback");
@@ -292,6 +292,17 @@ public final class TapCheck {
     Net.drain(2000);
     check(find("/loop" + port) != null && "ok".equals(body(find("/loop" + port))), "a request to the opened port is an exchange in the inspector");
     check(find("/loop" + other.getLocalPort()) == null, "another loopback port stays untouched");
+    // A loopback connect that fails is a row all the same: a dev server that isn't running says so in the inspector.
+    ServerSocket closed = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+    int dead = closed.getLocalPort();
+    closed.close();
+    try {
+      Net.connect(new Socket(), new InetSocketAddress("127.0.0.1", dead), 5000);
+      check(false, "a loopback connect to a closed port fails");
+    } catch (IOException expected) {
+      check(Inspector.eventsForCheck().stream().anyMatch(e -> e.contains("\"CONNECT\"") && e.contains("127.0.0.1:" + dead) && e.contains("\"status\":0")),
+          "a loopback connect that failed is a row in the inspector");
+    }
   }
 
   private static void http1() throws Exception {
