@@ -593,7 +593,7 @@ final class Replay {
   private void finish(HostSide host) {
     try {
       String unmatched = host.run(new String[] {"network", "unmatched"});
-      if (unmatched != null && !unmatched.startsWith("no unmatched") && !unmatched.startsWith("error") && !unmatched.contains("not")) {
+      if (unmatched != null && !unmatched.startsWith("no unmatched") && !unmatched.startsWith("error")) {
         notes.add("requests the recording has no answer for: " + unmatched.replace('\n', ';'));
       }
     } catch (Exception e) {

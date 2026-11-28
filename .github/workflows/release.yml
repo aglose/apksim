@@ -119,7 +119,7 @@ jobs:
           # pr-evidence.py (docs/bug-to-pr.md) finds crawl.py and the launcher beside it in the installed tree.
           python3 "$D/scripts/pr-evidence.py" baseline "$APKSIM_HOME/testapp-$VERSION.apk" --out "$RUNNER_TEMP/evidence-map" \
             --depth 1 --max-seconds 180 --no-captures -- --no-network 2>&1 | tee evidence.log
-          grep -q 'with recorded dependencies' evidence.log
+          grep -qE ', [1-9][0-9]* with recorded dependencies' evidence.log
       - name: Checksums
         run: |
           cd dist

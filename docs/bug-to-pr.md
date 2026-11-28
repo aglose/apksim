@@ -85,8 +85,9 @@ Replay of `bug.apkrec` (com.example.app):
 
 How to read it:
 
-- **base matched** is the precondition: the old build still does what was recorded. If the base differs or crashes,
-  the verdict is FAIL whatever the new build does; the recording is of another build or other launch options.
+- **base matched** is the precondition: the old build still does what was recorded. If the base differs or crashes
+  (on a recording that does not end in a crash), the verdict is FAIL whatever the new build does; the recording is of
+  another build or other launch options.
 - **new first differs at** names the step before which the screens parted (`before down 300,260`, `before back`,
   `end`), with the pixel count and where on the frame. A fix should part where the bug showed, not earlier. The
   pictures are in `evidence/verify/new/points/NN-recorded.jpg`, `-replayed.jpg` and `-diff.png`. The replay proves the
@@ -94,11 +95,12 @@ How to read it:
 - **requests: N recorded, M asked** compares what the recording holds with what the replay asked for. Fewer asked on
   the new build is a request the fix no longer makes; "without a recorded answer" is one the recording does not have
   (answered 599), which is normal for analytics with a timestamp and a finding for anything else.
-- A recording that ends in a crash (the recorder saves one by itself) is a bug too: the base build must crash on the
-  replay, and the verdict is PASS when the new build plays the same steps to the end without crashing.
+- A recording that ends in a crash (the recorder saves one by itself, and marks it in the bundle) is a bug too: the
+  base build must crash on the replay, and the verdict is PASS when the new build plays the same steps to the end
+  without crashing.
 - Exit 0 for PASS. For a change that should show nothing (a refactor), `--expect same` passes when both builds match.
   Exit 1 for FAIL, 2 when a replay could not run (another signing key, a build without an activity of the recorded
-  stack).
+  stack) or a build ended before its replay did, leaving no finished `report.json`.
 
 `--base-option "OPTS"` and `--new-option "OPTS"` give one build's launches their own apksim options, for builds that
 differ by a flag rather than by code (write a single option as `--new-option=--flag`).

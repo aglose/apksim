@@ -798,8 +798,10 @@ Read README.md for results and limits; this file covers how to work on the code.
   left unexplored, counting the screens with no deps and why), `verify` (the recording replayed on a base and a new
   build side by side with `-Dapksim.networkTrace=true`: a pasteable verdict with the first divergence's label, pixels
   and region, read from the point's diff.png by crawl.py's `diff_regions`, and requests recorded against asked; exit 0
-  for base matched and new diverged, or both matched with `--expect same`; a recording that ends in a crash passes when the base crashes and the new build
-  does not; no compared point is no verdict, exit 2; the walks' `--data-slots` and `--fresh` after `--` are not given to
+  for base matched and new diverged, or both matched with `--expect same`; a recording that ends in a crash (its manifest's `crash`) passes when the base
+  crashes and the new build does not, and a base crash on any other recording is FAIL; no compared point, or a replay
+  without a finished `report.json`, is no verdict, exit 2; unanswered requests are counted from the replay log's
+  `network replay:` lines, and app text in the Markdown goes in code spans without query strings; the walks' `--data-slots` and `--fresh` after `--` are not given to
   a replay, which has its own slot), `diff` (`crawl-select.py --explored-only`
   by default, `--cautious` for its own default, then the `--seed --only-file --diff-seed` walk with the baseline's saved
   options), `comment` (Markdown, pictures copied under stable names, `--image-base URL`) and `run` for all four;

@@ -20,7 +20,8 @@ twice.
    - comment: the verdict, that screen's table with before, after and difference images copied under stable names.
 3. `verify --expect same` of the base build against itself exits 0; without `--expect same` it exits 1.
 4. The verdict for a recorded crash, for both builds crashing and for a replay that compared nothing, and the options
-   a replay is not given (`--data-slots`, `--fresh`), on made-up results.
+   a replay is not given (`--data-slots`, `--fresh`), the count of unanswered requests read from a made-up log, and
+   query strings and @names kept out of the Markdown.
 5. `comment --image-base URL` names the images under that address.
 
 --image IMAGE runs all of it inside the Linux image (this script mounted, pr-evidence.py the image's own). OUT
@@ -207,6 +208,20 @@ def run_evidence(out, name, args, want):
     return p.stdout
 
 
+def unit_checks(pe):
+    """The log NetEngine writes for requests the recording lacks, with the "closest:" line that follows one."""
+    log = ("[apksim] network replay: 200 GET https://a.test/ok\n"
+           "[apksim] network replay: no recorded response for GET https://a.test/v1/notes?token=SECRET;x=1\n"
+           "         closest: GET https://a.test/v1/notes?token=OTHER (query differs)\n"
+           "[apksim] network replay: no recorded response for POST https://a.test/p, and fetching it failed: timeout\n"
+           "[apksim] network replay: the recorded response for GET https://a.test/big?k=SECRET was too big to store\n"
+           "[apksim] replay note: requests the recording has no answer for: ...?token=SECRET\n")
+    got = pe.unanswered_of(log)
+    want = ["GET https://a.test/v1/notes", "POST https://a.test/p", "GET https://a.test/big (too big to store)"]
+    span = pe.code("crashed after open app://x/y?token=SECRET: java.lang.Error: @someone `x`")
+    return got == want and "SECRET" not in span and span.startswith("`") and span.endswith("`") and span.count("`") == 2
+
+
 def inside(apk, out):
     cert = os.path.join(out, "fixture/cert.pem")
     fixture_py = os.path.join(out, "network-fixture.py")
@@ -306,12 +321,19 @@ def inside(apk, out):
     spec.loader.exec_module(pe)
     ok_ = {"result": "matched", "points": 5}
     crash = {"result": "crashed", "points": 2, "crash": "crashed after open x"}
-    check(pe.verdict_of(crash, ok_, "fix")[0] is True, "a recorded crash the new build no longer has is a fix")
-    check(pe.verdict_of(crash, crash, "fix")[0] is False and pe.verdict_of(crash, ok_, "same")[0] is False,
+    check(pe.verdict_of(crash, ok_, "fix", True)[0] is True, "a recorded crash the new build no longer has is a fix")
+    check(pe.verdict_of(crash, crash, "fix", True)[0] is False and pe.verdict_of(crash, ok_, "same", True)[0] is False,
           "both builds crashing is not, nor is a crash recording with --expect same")
+    check(pe.verdict_of(crash, ok_, "fix")[0] is False, "a base build that crashes on a recording without a crash is not a fix")
+    diverged = {"result": "diverged", "points": 5, "first": {"label": "end"}}
+    check(pe.verdict_of(ok_, diverged, "fix", True)[0] is False, "a recorded crash the base build does not have is not a fix")
+    early = {"result": "exit 0 with no finished report.json", "points": 0}
+    check(pe.verdict_of(crash, early, "fix", True)[0] is None and pe.verdict_of(ok_, early, "same")[0] is None,
+          "a new build without a finished report gives no verdict")
     check(pe.verdict_of({"result": "matched", "points": 0}, ok_, "same")[0] is None, "a replay that compared no screen gives no verdict")
     check(pe.replay_options(["--data-slots", "map", "--fresh", "--network-trust", "c.pem"]) == ["--network-trust", "c.pem"],
           "the walks' --data-slots and --fresh do not reach a replay")
+    check(unit_checks(pe), "unanswered requests are counted once each, without query strings")
 
     print("== comment --image-base")
     hosted = os.path.join(out, "hosted.md")

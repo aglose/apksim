@@ -93,6 +93,31 @@ def plural(n, one, many=None):
     return f"{n} {one if n == 1 else (many or one + 's')}"
 
 
+def strip_queries(s):
+    """Cuts the query and fragment off every URL or path in s: they can hold tokens."""
+    return re.sub(r"((?:[A-Za-z][A-Za-z0-9+.-]*:|/)[^\s?#`]*)[?#][^\s`]*", r"\1", str(s))
+
+
+def code(s, limit=300):
+    """Text the app, a recording or a launch chose, for Markdown: one code span (so an @name mentions nobody) without
+    query strings."""
+    t = " ".join(strip_queries(s).replace("`", "'").split())[:limit]
+    return f"`{t}`" if t else "(none)"
+
+
+def cell_code(s):
+    return code(s).replace("|", "\\|")
+
+
+def forget(folder, *names):
+    """Removes an earlier run's results, so a step that fails leaves none to be read as its own."""
+    for n in names:
+        try:
+            os.remove(os.path.join(folder, n))
+        except OSError:
+            pass
+
+
 def run_stream(cmd, log):
     """Runs cmd with its output shown and kept in `log`; returns the exit status."""
     os.makedirs(os.path.dirname(log), exist_ok=True)
@@ -187,6 +212,7 @@ def cmd_baseline(a, crawl_opts, sim):
         die(f"no such APK: {a.apk}")
     out = os.path.abspath(a.out)
     log = os.path.join(out, "pr-evidence.log")
+    forget(out, STATE_FILE)
     crawl = sibling("crawl.py")
     depth = a.depth
     if has_option(crawl_opts, "--max-depth"):
@@ -200,10 +226,7 @@ def cmd_baseline(a, crawl_opts, sim):
     base_only = shlex.split(getattr(a, "base_option", "") or "")
     tail = (["--"] + sim + base_only) if sim or base_only else []
     t0 = time.time()
-    try:
-        os.remove(os.path.join(out, "crawl.json"))  # never read an earlier walk's result as this one's
-    except OSError:
-        pass
+    forget(out, "crawl.json")  # never read an earlier walk's result as this one's
     say(f"baseline: walking {os.path.basename(a.apk)} to depth {depth}")
     code = run_stream(base_cmd + walk_opts + tail, log)
     doc = load(os.path.join(out, "crawl.json"))
@@ -247,7 +270,7 @@ def cmd_baseline(a, crawl_opts, sim):
 
 def bundle_info(bundle):
     """What the recording holds: its requests (None without a HAR), events and checkpoint."""
-    info = {"requests": None, "events": None, "checkpoint": None, "package": None}
+    info = {"requests": None, "events": None, "checkpoint": None, "package": None, "crash": False}
     try:
         with zipfile.ZipFile(bundle) as z:
             names = set(z.namelist())
@@ -255,6 +278,7 @@ def bundle_info(bundle):
                 man = json.loads(z.read("manifest.json"))
                 info["package"] = man.get("package")
                 info["checkpoint"] = (man.get("checkpoint") or {}).get("id")
+                info["crash"] = bool(man.get("crash"))  # FlightRecorder: the recording was saved by a crash
             if "network.har" in names:
                 info["requests"] = len(json.loads(z.read("network.har")).get("log", {}).get("entries", []))
             if "input.jsonl" in names:
@@ -278,6 +302,21 @@ def replay_options(sim):
     """The shared launch options a replay may have: it runs in a data slot of its own, restored from the checkpoint,
     so the walks' --data-slots (a prepared sign-in slot) and --fresh must not reach it."""
     return without_option(without_option(sim, "--data-slots"), "--fresh", takes_value=False)
+
+
+def unanswered_of(log_text):
+    """The requests a replay's log says the recording could not answer, one entry each, without query strings. Read from
+    the line Net logs per request (NetEngine), not from the report's note, whose entries carry "closest:" parts."""
+    out = []
+    for m in re.finditer(r"^\[apksim\] network replay: (.*)$", log_text, re.M):
+        line = m.group(1).strip()
+        req = re.match(r"(no recorded response for|the recorded response for) ([A-Z][A-Z-]*) (\S+)", line)
+        if req:
+            too_big = " (too big to store)" if req.group(1).startswith("the") else ""
+            out.append(f"{req.group(2)} {strip_queries(req.group(3).rstrip(','))}{too_big}")
+        elif line.startswith("no recorded response for") or line.endswith("cannot be replayed"):
+            out.append(strip_queries(line))
+    return out
 
 
 def replay_one(name, bundle, apk, opts, out, timeout, result):
@@ -310,13 +349,10 @@ def replay_one(name, bundle, apk, opts, out, timeout, result):
          "points": len(pts), "max_pixels": max([p.get("pixels", 0) for p in pts], default=0),
          "threshold": rep.get("threshold"), "frame": rep.get("frameSize"), "events": rep.get("events"),
          "notes": rep.get("notes", []), "dir": d, "log": log}
-    # -Dapksim.networkTrace=true: one line per request answered from the recording; the report's notes name those
-    # the recording had no answer for.
+    # -Dapksim.networkTrace=true: one line per request answered from the recording; one it has no answer for is
+    # always logged.
     answered = re.findall(r"network replay: (\d+) (\S+) (\S+)", text)
-    unmatched = []
-    for n in r["notes"]:
-        if n.startswith("requests the recording has no answer for:"):
-            unmatched = [u.strip().split("?", 1)[0] for u in n.split(":", 1)[1].split(";") if u.strip()]  # no query strings: they can hold tokens
+    unmatched = unanswered_of(text)
     r["requests"] = {"answered": len(answered), "unanswered": len(unmatched), "unanswered_list": unmatched[:20]}
     if first:
         files = first.get("files", "").split()
@@ -330,7 +366,11 @@ def replay_one(name, bundle, apk, opts, out, timeout, result):
             r["first"]["size"] = found["size"]
     if code == 3 and not first:
         r["result"] = "exit 3 with no diverged point in its report"
-    if code == 10:
+    # A build that ended before the replay did (it exited by itself, or never got that far) compared nothing: its
+    # exit status, 0 included, is no result.
+    if r["result"] in ("matched", "diverged", "crashed") and rep.get("result") not in ("matched", "diverged", "crashed"):
+        r["result"] = f"exit {code} with no finished report.json"
+    if r["result"] == "crashed":
         r["crash"] = next((n for n in r["notes"] if n.startswith("crashed after")), "crashed")
     if r["result"] not in ("matched", "diverged", "crashed"):
         r["error"] = (re.findall(r"\[apksim\][^\n]*", text) or text.strip().splitlines() or ["no output"])[-1][:400]
@@ -359,57 +399,64 @@ def build_line(r, recorded):
              f"(at most {plural(r['max_pixels'], 'pixel')} differing, threshold {r['threshold']})")
     elif r["result"] == "diverged":
         f = r["first"]
-        s = (f"first differs at point {f['n']} of {r['points']} (`{f['label']}`, +{f['offset_ms']} ms): "
+        s = (f"first differs at point {f['n']} of {r['points']} ({code(f['label'])}, +{f['offset_ms']} ms): "
              f"{plural(f['pixels'], 'pixel')} (threshold {r['threshold']})")
         if f.get("regions"):
             n = len(f["regions"]) + f.get("regions_more", 0)
             s += f" in {plural(n, 'region')}, the largest {box_text(f['regions'][0])} of a {f['size'][0]}x{f['size'][1]} frame"
     elif r["result"] == "crashed":
-        s = r.get("crash", "crashed")
+        s = code(r.get("crash", "crashed"))
     else:
-        s = f"could not be replayed ({r['result']}): {r.get('error', '')}"
+        s = f"could not be replayed ({r['result']}): {code(r.get('error', ''))}"
     return f"{apk}: {s}; requests: {requests_line(r, recorded)}"
 
 
-def verdict_of(base, new, expect):
-    """(ok, sentence). A fix: the base build still shows what was recorded and the new build no longer does."""
+def verdict_of(base, new, expect, recorded_crash=False):
+    """(ok, sentence). A fix: the base build still shows what was recorded and the new build no longer does.
+    recorded_crash: the recording was saved by a crash (its manifest's `crash`), so the crash is the bug."""
     for r, which in ((base, "base"), (new, "new")):
         if r["result"] not in ("matched", "diverged", "crashed"):
-            return None, f"the replay on the {which} build could not run ({r['result']}): {r.get('error', '')}"
-    if base["result"] == "crashed":
-        # A recording that ends in the crash (the recorder saves one by itself): the bug is the crash.
+            return None, f"the replay on the {which} build could not run ({r['result']}): {code(r.get('error', ''))}"
+    if recorded_crash:
+        if base["result"] != "crashed":
+            return False, ("the recording ends in a crash and the base build did not crash on the replay, so it does not show "
+                           "the bug and nothing can be said about the change.")
         if expect == "same":
-            return False, f"the base build crashes on the recorded steps ({base.get('crash')}): not a recording to expect no change from."
+            return False, f"the base build crashes on the recorded steps ({code(base.get('crash'))}): not a recording to expect no change from."
         if new["result"] == "crashed":
-            return False, f"both builds crash on the recorded steps (base: {base.get('crash')}; new: {new.get('crash')})."
-        return True, (f"the base build crashes on the recorded steps ({base.get('crash')}) and the new build plays them to the end "
+            return False, f"both builds crash on the recorded steps (base: {code(base.get('crash'))}; new: {code(new.get('crash'))})."
+        return True, (f"the base build crashes on the recorded steps ({code(base.get('crash'))}) and the new build plays them to the end "
                       "without crashing. Look at the new build's last pictures: the replay shows it no longer crashes, not what it shows instead.")
+    if base["result"] == "crashed":
+        return False, (f"the base build crashes on the recorded steps ({code(base.get('crash'))}) and the recording does not end in a "
+                       "crash, so it does not show this build's behaviour and nothing can be said about the change.")
     for r, which in ((base, "base"), (new, "new")):
         if r["result"] == "matched" and not r["points"]:
             return None, (f"the replay on the {which} build compared no screen (a recording without the screen channel, e.g. "
                           "`--rec input`): there is nothing to tell the builds apart by. Record with `--rec all`.")
     if base["result"] != "matched":
-        return False, (f"the base build differs from the recording at `{base['first']['label']}`, so the recording does not show "
+        return False, (f"the base build differs from the recording at {code(base['first']['label'])}, so the recording does not show "
                        "this build's behaviour and nothing can be said about the change. Was it recorded on this build, with the same launch options?")
     if expect == "same":
         if new["result"] == "matched":
             return True, "both builds replay the recording to the same screens: no visible change along the recorded steps."
-        how = "crashes" if new["result"] == "crashed" else f"first differs at `{new['first']['label']}`"
+        how = "crashes" if new["result"] == "crashed" else f"first differs at {code(new['first']['label'])}"
         return False, f"expected no visible change, but the new build {how}."
     if new["result"] == "diverged":
-        return True, (f"the base build shows what was recorded and the new build does not, first at `{new['first']['label']}`. "
+        return True, (f"the base build shows what was recorded and the new build does not, first at {code(new['first']['label'])}. "
                       "Look at that point's pictures: a replay shows that the screen changed there, not that the change is the one wanted.")
     if new["result"] == "crashed":
-        return False, f"the new build crashes on the recorded steps ({new.get('crash')})."
+        return False, f"the new build crashes on the recorded steps ({code(new.get('crash'))})."
     return False, ("the new build replays the recording to the same screens as the base build: along the recorded steps "
                    "nothing visible changed. (`--expect same` if that is the point of the change.)")
 
 
 def cmd_verify(a, sim):
+    out = os.path.abspath(a.out)
+    forget(out, STATE_FILE, "verdict.md")
     for f in (a.bundle, a.base, a.new):
         if not os.path.isfile(f):
             die(f"no such file: {f}")
-    out = os.path.abspath(a.out)
     os.makedirs(out, exist_ok=True)
     info = bundle_info(a.bundle)
     say(f"verify: replaying {os.path.basename(a.bundle)} on both builds ({info['events']} input lines, "
@@ -425,7 +472,7 @@ def cmd_verify(a, sim):
     for t in threads:
         t.join()
     base, new = res["base"], res["new"]
-    ok, sentence = verdict_of(base, new, a.expect)
+    ok, sentence = verdict_of(base, new, a.expect, info["crash"])
     warnings = []
     if info["requests"] == 0:
         warnings.append("the recording holds no requests. If the app talked to a server on this machine, record it through "
@@ -434,7 +481,7 @@ def cmd_verify(a, sim):
     for r in (base, new):
         if r["requests"]["unanswered"]:
             warnings.append(f"{r['name']}: {plural(r['requests']['unanswered'], 'request')} had no recorded answer (answered 599): "
-                            + "; ".join("`" + u.replace("`", "'") + "`" for u in r["requests"]["unanswered_list"][:3]))
+                            + "; ".join(code(u) for u in r["requests"]["unanswered_list"][:3]))
     lines = [f"Replay of `{os.path.basename(a.bundle)}`" + (f" ({info['package']})" if info["package"] else "") + ":",
              "- base " + build_line(base, info["requests"]),
              "- new " + build_line(new, info["requests"]),
@@ -505,6 +552,7 @@ def cmd_diff(a, crawl_opts, sim):
     if out == base_dir:
         die("--out must not be the baseline's folder: the baseline is kept for the next change")
     os.makedirs(out, exist_ok=True)
+    forget(out, STATE_FILE, "select.json", "crawl.json")  # an earlier change's results are not this one's
     log = os.path.join(out, "pr-evidence.log")
     how = load(os.path.join(base_dir, STATE_FILE), {})
     if "start_deps" not in seed:
@@ -526,7 +574,8 @@ def cmd_diff(a, crawl_opts, sim):
     except ValueError:
         die(f"crawl-select.py failed (exit {p.returncode}): {(p.stderr or p.stdout).strip()[-600:]}")
     left_out = sum(1 for s in seed.get("screens", []) if s.get("deps") is None)
-    sel["left_out_unexplored"] = 0 if a.cautious else left_out
+    # A full walk takes every screen, the unexplored ones too: none is left out.
+    sel["left_out_unexplored"] = 0 if a.cautious or sel["mode"] == "full" else left_out
     sel["cautious"] = bool(a.cautious)
     dump(os.path.join(out, "select.json"), sel)
     print_selection(sel, seed, left_out, a.cautious)
@@ -534,12 +583,15 @@ def cmd_diff(a, crawl_opts, sim):
     result = {"kind": "diff", "baseline": base_dir, "apk": os.path.abspath(a.apk), "selection": os.path.join(out, "select.json"),
               "walked": False}
     if sel["mode"] == "none":
-        try:
-            os.remove(os.path.join(out, "crawl.json"))  # an earlier walk here is not this change's
-        except OSError:
-            pass
         dump(os.path.join(out, STATE_FILE), result)
-        say("diff: nothing to walk." + (" The unplaced files above are not covered by this." if sel.get("unplaced") else " Every screen of the baseline is carried unchanged."))
+        if sel.get("unplaced"):
+            tail = " The unplaced files above are not covered by this."
+        elif sel["left_out_unexplored"]:
+            tail = (f" No screen with recorded dependencies is reached; nothing is known about the "
+                    f"{plural(sel['left_out_unexplored'], 'screen')} without them.")
+        else:
+            tail = " Every screen of the baseline is carried unchanged."
+        say("diff: nothing to walk." + tail)
         return 0
 
     opts = crawl_opts or how.get("crawl_options") or []
@@ -556,10 +608,6 @@ def cmd_diff(a, crawl_opts, sim):
     cmd = [sys.executable, sibling("crawl.py"), a.apk, "--out", out, "--seed", base_dir, "--only-file", ids, "--diff-seed"] + opts
     if sim_all:
         cmd += ["--"] + sim_all
-    try:
-        os.remove(os.path.join(out, "crawl.json"))
-    except OSError:
-        pass
     t0 = time.time()
     say(f"diff: walking {plural(len(sel['selected']), 'screen')} on {os.path.basename(a.apk)} against the baseline")
     code = run_stream(cmd, log)
@@ -585,10 +633,6 @@ def cmd_diff(a, crawl_opts, sim):
 
 
 # ------------------------------------------------------------------------------------------------ comment
-
-def md_escape(s):
-    return str(s).replace("|", "\\|").replace("\n", " ").replace("`", "'")
-
 
 def safe_name(s):
     return re.sub(r"[^A-Za-z0-9._-]+", "-", s).strip("-")
@@ -619,15 +663,15 @@ class Images:
 def ui_diff_lines(ud):
     out = []
     if ud.get("title"):
-        out.append(f"title `{md_escape(ud['title'].get('from'))}` → `{md_escape(ud['title'].get('to'))}`")
+        out.append(f"title {code(ud['title'].get('from'))} → {code(ud['title'].get('to'))}")
     for key, label in (("texts", "text"), ("controls", "control")):
         d = ud.get(key) or {}
         for pair in d.get("replaced") or []:
-            out.append(f"{label} `{md_escape(pair[0])}` → `{md_escape(pair[1])}`")
+            out.append(f"{label} {code(pair[0])} → {code(pair[1])}")
         for x in d.get("added") or []:
-            out.append(f"{label} added: `{md_escape(x)}`")
+            out.append(f"{label} added: {code(x)}")
         for x in d.get("removed") or []:
-            out.append(f"{label} removed: `{md_escape(x)}`")
+            out.append(f"{label} removed: {code(x)}")
     return out
 
 
@@ -644,7 +688,7 @@ def comment_verify(v, images, md):
         files = {("recorded" if f.endswith("-recorded.jpg") else "replayed" if f.endswith("-replayed.jpg") else "diff"): os.path.join(new["dir"], f)
                  for f in first.get("files", [])}
         md.append("")
-        md.append(f"| Recorded (the bug) | New build at `{md_escape(first['label'])}` | Difference |")
+        md.append(f"| Recorded (the bug) | New build at {cell_code(first['label'])} | Difference |")
         md.append("|---|---|---|")
         md.append("| " + " | ".join([images.cell(files.get("recorded"), "replay-recorded.jpg", "recorded"),
                                      images.cell(files.get("replayed"), "replay-new.jpg", "new build"),
@@ -661,25 +705,28 @@ def comment_walk(walk_dir, images, md, max_screens):
     total = len(base_doc.get("screens", []))
     if sel:
         if sel.get("mode") == "full":
-            md.append(f"Every screen of the baseline map ({total}) was walked again: {md_escape(sel.get('fallback_reason'))}.")
+            md.append(f"Every screen of the baseline map ({total}) was walked again: {code(sel.get('fallback_reason'))}.")
         elif sel.get("mode") == "none":
-            md.append(f"No screen of the baseline map ({total}) depends on the changed files.")
+            unknown = sel.get("left_out_unexplored", 0)
+            md.append(f"No screen of the baseline map ({total}) depends on the changed files." if not unknown else
+                      f"No screen with recorded dependencies ({total - unknown} of {total}) depends on the changed files.")
         else:
             md.append(f"{len(sel.get('selected', []))} of {plural(total, 'screen')} in the baseline map can be reached by the changed files:")
             md.append("")
             for sid, why in (sel.get("screens") or {}).items():
                 files = sorted({(w.get("file") or "unexplored in the baseline") + (f" ({w['name']})" if w.get("name") else "") for w in why})
-                md.append(f"- `{sid}` ← " + ", ".join(f"`{md_escape(f)}`" for f in files))
+                md.append(f"- `{sid}` ← " + ", ".join(code(f) for f in files))
         if sel.get("unplaced"):
             md.append("")
             md.append("Changed sources no explored screen ran (the map cannot say where they show): "
-                      + ", ".join(f"`{md_escape(f)}`" for f in sel["unplaced"][:12]) + ".")
+                      + ", ".join(code(f) for f in sel["unplaced"][:12]) + ".")
         if sel.get("ignored"):
             md.append("")
             md.append(f"Ignored as not part of the app's screens: {plural(len(sel['ignored']), 'file')}.")
         if sel.get("left_out_unexplored"):
             md.append("")
-            md.append(f"Not walked: {plural(sel['left_out_unexplored'], 'screen')} the baseline found and never explored.")
+            md.append(f"Not selected: {plural(sel['left_out_unexplored'], 'screen')} without recorded dependencies (found and never "
+                      "explored). Nothing is known about whether the change reaches them.")
         md.append("")
     doc = load(os.path.join(walk_dir, "crawl.json"))
     if doc is None:
@@ -698,12 +745,12 @@ def comment_walk(walk_dir, images, md, max_screens):
         sid, bid = p["id"], p.get("base") or p["id"]
         ns, bs = by_id.get(sid, {}), base_by_id.get(bid, {})
         title = ns.get("title") or bs.get("title") or sid
-        md.append(f"#### Changed: `{md_escape(title)}` (`{sid}`)")
+        md.append(f"#### Changed: {code(title)} (`{sid}`)")
         md.append("")
         for line in ui_diff_lines(p.get("ui_diff") or {}):
             md.append("- " + line)
         if p.get("unstable"):
-            md.append(f"- animates for ever in {', '.join(p['unstable'])}: those captures are not compared")
+            md.append(f"- animates for ever in {', '.join(code(u) for u in p['unstable'])}: those captures are not compared")
         if shown >= max_screens:
             md.append("- (pictures left out: see report.html)")
             md.append("")
@@ -717,7 +764,7 @@ def comment_walk(walk_dir, images, md, max_screens):
             stem = f"screen-{safe_name(sid)}-{safe_name(c)}"
             n = len(d.get("regions", [])) + d.get("regions_more", 0)
             where = f"{d.get('pixels')} pixels in {plural(n, 'region')}" + (f", the largest {box_text(d['regions'][0])}" if d.get("regions") else "")
-            rows.append("| " + " | ".join([md_escape(c),
+            rows.append("| " + " | ".join([cell_code(c),
                                            images.cell(os.path.join(walk_dir, (bs.get("captures") or {}).get(c, "-")), stem + "-before.png", "before"),
                                            images.cell(os.path.join(walk_dir, (ns.get("captures") or {}).get(c, "-")), stem + "-after.png", "after"),
                                            images.cell(os.path.join(walk_dir, d.get("map") or "-"), stem + "-diff.png", "difference"),
@@ -728,31 +775,37 @@ def comment_walk(walk_dir, images, md, max_screens):
             md.append("|---|---|---|---|---|")
             md += rows
         elif not (p.get("ui_diff") or p.get("unstable")):
-            md.append(f"- {md_escape(p.get('why') or 'changed')}")
+            md.append(f"- {code(p.get('why') or 'changed')}")
         md.append("")
     for status, head in (("new", "New screens"), ("gone", "Screens no longer reached"), ("unknown", "Screens that could not be checked")):
         some = [p for p in pairs if p["status"] == status]
         if some:
-            md.append(f"**{head}:** " + "; ".join(f"`{p.get('id') or p.get('base')}`" + (f" ({md_escape(p['why'])})" if p.get("why") else "") for p in some[:12]))
+            md.append(f"**{head}:** " + "; ".join(f"`{p.get('id') or p.get('base')}`" + (f" ({code(p['why'])})" if p.get("why") else "") for p in some[:12]))
             md.append("")
     same = [p for p in pairs if p["status"] == "same"]
     walked_same = [p for p in same if by_id.get(p.get("id"), {}).get("origin") == "walked"]
-    carried = len(same) - len(walked_same)
+    # Carried says something only of a screen whose dependencies the baseline recorded.
+    no_deps = {s["id"] for s in base_doc.get("screens", []) if s.get("deps") is None}
+    unknown = [p for p in same if p not in walked_same and p.get("id") in no_deps]
+    carried = len(same) - len(walked_same) - len(unknown)
     if not changed:
         md.append("No walked screen changed.")
         md.append("")
     md.append(f"Unchanged: {plural(len(walked_same), 'screen')} walked again and found the same, {carried} carried from the baseline without a walk (nothing they depend on changed).")
+    if unknown:
+        md.append("")
+        md.append(f"Not walked and not counted as unchanged: {plural(len(unknown), 'screen')} without recorded dependencies.")
     if walked_same:
         md.append("")
-        md.append("<details><summary>Walked again, same</summary>\n\n" + "\n".join(f"- `{p['id']}` `{md_escape(by_id.get(p['id'], {}).get('title') or '')}`" for p in walked_same[:60]) + "\n\n</details>")
+        md.append("<details><summary>Walked again, same</summary>\n\n" + "\n".join(f"- `{p['id']}` {code(by_id.get(p['id'], {}).get('title') or '')}" for p in walked_same[:60]) + "\n\n</details>")
     crashes = [f for f in doc.get("findings", []) if f.get("kind") == "crash" and f.get("build", "new") == "new"]
     if crashes:
         md.append("")
-        md.append(f"**{plural(len(crashes), 'crash', 'crashes')} on the new build:** " + "; ".join(md_escape(f.get("detail", ""))[:160] for f in crashes[:5]))
+        md.append(f"**{plural(len(crashes), 'crash', 'crashes')} on the new build:** " + "; ".join(code(f.get("detail", ""), 160) for f in crashes[:5]))
     cut = [x for x in doc.get("incomplete", []) if not x.startswith("seed: ")]
     if cut:
         md.append("")
-        md.append("The walk was cut short: " + "; ".join(md_escape(x) for x in cut[:4]) + ".")
+        md.append("The walk was cut short: " + "; ".join(code(x) for x in cut[:4]) + ".")
     md.append("")
 
 
@@ -760,6 +813,11 @@ def cmd_comment(a):
     out = os.path.abspath(a.out)
     md_dir = os.path.dirname(out)
     folder = os.path.abspath(a.images) if a.images else os.path.splitext(out)[0] + "-images"
+    forget(md_dir, os.path.basename(out))
+    if os.path.isdir(folder):  # only the names this script writes: --images may hold other files
+        forget(folder, *[n for n in os.listdir(folder)
+                         if n in ("replay-recorded.jpg", "replay-new.jpg", "replay-diff.png")
+                         or re.fullmatch(r"screen-.+-(before|after|diff)\.png", n)])
     images = Images(folder, md_dir, a.image_base)
     md = ["## Evidence from apksim", ""]
     v = load(os.path.join(a.verify, STATE_FILE)) if a.verify else None
@@ -807,7 +865,7 @@ def cmd_run(a, crawl_opts, sim):
                                     cautious=a.cautious, new_option=a.new_option, ignore=a.ignore), [], sim)
     except SystemExit as e:  # the verdict is still worth its comment
         failed = e.code or 2
-        shutil.rmtree(os.path.join(work, "diff"), ignore_errors=True)
+        forget(os.path.join(work, "diff"), STATE_FILE, "select.json", "crawl.json")  # not the log its message names
     say()
     cmd_comment(argparse.Namespace(out=os.path.join(work, "comment.md"), verify=os.path.join(work, "verify"), walk=os.path.join(work, "diff"),
                                    images=a.images, image_base=a.image_base, pictures=a.pictures))
