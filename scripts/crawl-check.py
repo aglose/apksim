@@ -32,6 +32,10 @@ Usage: crawl-check.py [--apk APK] [--out DIR] [--quick] [--docker IMAGE] [-j N] 
 13. A walk stopped with SIGTERM while it explores depth 1 exits 143 within 4 s with crawl.json written (`stopped`,
    `cut_by`, `unexplored` ids); `--seed` on it with `--only-file` of those ids ends with walk 1's screens and
    transitions, every screen captured.
+14. A walk from `apksim://login` (a username and password form) without `--autofill` finds the form alone and warns
+   that its start screen has a password field; with `--autofill` and the test app's sign-in saved (in the state
+   folder, or mounted into the image), each launch signs in first and the walk finds the account screen behind it, with
+   no relaunch; crawl.json records the zone (UTC). Skipped on the Mac when a sign-in is already saved for the test app.
 
 --quick (CI, where the image is slow) walks to depth 2. --docker IMAGE runs crawl.py in the Linux image
 (`--entrypoint crawl.py`, OUT mounted at /work) as scripts/ci-smoke.sh does. Exit status 1 on any failed expectation.
@@ -67,10 +71,12 @@ def check(ok, what, detail=""):
 DOCKER = None  # (image, platform, work folder on the host)
 
 
-def crawl(apk, out, *extra, expect=(0, 1)):
+def crawl(apk, out, *extra, expect=(0, 1), mounts=()):
+    """[mounts]: (host file, container path) pairs added with --docker (the image's state folder is /opt/apksim/work)."""
     if DOCKER:
         image, platform, work = DOCKER
-        cmd = ["docker", "run", "--rm", "--platform", platform, "-v", f"{work}:/work", "--entrypoint", "crawl.py", image,
+        vols = [a for host, cont in mounts for a in ("-v", f"{host}:{cont}:ro")]
+        cmd = ["docker", "run", "--rm", "--platform", platform, "-v", f"{work}:/work", *vols, "--entrypoint", "crawl.py", image,
                "/work/app.apk", "--out", "/work/" + os.path.relpath(out, work), *extra]
     else:
         cmd = [sys.executable, CRAWL, apk, "--out", out, *extra]
@@ -546,10 +552,64 @@ def main():
         for d in (prepared, prepared + ".device"):
             shutil.rmtree(d, ignore_errors=True)
 
+    # 14: an app behind a sign-in form (apksim://login, the test app's own test values saved as its autofill sign-in).
+    # Without --autofill the walk finds the form alone and warns that it stays signed out; with it every launch signs in
+    # before the walk reads the screen, so it finds the signed-in screen and the account screen behind it, with no
+    # relaunch for the sign-in's write, and the warning does not fire. crawl.json records the zone (UTC).
+    signin = "Username=tester\nPassword=apksim-test\nsubmit=Sign in\n"
+    secs_s = 0
+    if DOCKER:
+        saved = os.path.join(args.out, "autofill.properties")
+        with open(saved, "w") as f:
+            f.write(signin)
+        os.chmod(saved, 0o644)  # read by the image's user; the test app's own values
+        mounts = [(saved, "/opt/apksim/work/autofill/dev.apksim.composeapp.properties")]
+        restore = lambda: None  # noqa: E731
+    else:
+        state = os.environ.get("APKSIM_HOME") or (os.path.expanduser("~/.apksim") if os.path.exists(
+            os.path.join(ROOT, "work", "release")) else os.path.join(ROOT, "work"))
+        saved = os.path.join(state, "autofill", "dev.apksim.composeapp.properties")
+        os.makedirs(os.path.dirname(saved), exist_ok=True)
+        mounts = []
+        restore = lambda: os.remove(saved)  # noqa: E731
+        if os.path.exists(saved):  # someone's own sign-in for the test app: left alone, and this step with it
+            print(f"skip 14: {saved} exists (a sign-in saved for the test app); move it away to run the sign-in walks")
+            saved = None
+        else:
+            fd = os.open(saved, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(signin)
+    if saved:
+        try:
+            login = ["--start", "apksim://login", "--max-depth", "2", "-j", "1", "--matrix", "appearance=light"]
+            out_d = os.path.join(args.out, "signed-out")
+            doc_o, secs_o, p_o = crawl(args.apk, out_d, *login, mounts=mounts)
+            out_i = os.path.join(args.out, "signed-in")
+            doc_i, secs_s, p_i = crawl(args.apk, out_i, *login, "--autofill", mounts=mounts)
+        finally:
+            restore()
+        acts_o = sorted({s["activity"].rsplit(".", 1)[-1] for s in doc_o["screens"]})
+        acts_i = sorted({s["activity"].rsplit(".", 1)[-1] for s in doc_i["screens"]})
+        texts_i = " ".join(t for s in doc_i["screens"] for t in s.get("texts", []))
+        check(acts_o == ["LoginActivity"] and doc_o["signin"]["warnings"] and "password field" in p_o.stdout
+              and not doc_o["signin"]["autofill"],
+              "signed out: the walk finds only the sign-in form and warns that its start screen has a password field",
+              f"activities {acts_o}, warnings {doc_o['signin']['warnings']}")
+        check("LoginAccountActivity" in acts_i and "Signed in as tester" in texts_i and not doc_i["signin"]["warnings"]
+              and any(k.startswith("done: filled Username, Password; pressed Sign in") for k in doc_i["signin"]["states"])
+              and doc_i["relaunches"] == 0,
+              "--autofill: each launch signs in before the walk reads it; the account screen behind the form is found",
+              f"activities {acts_i}, signin {doc_i['signin']}, relaunches {doc_i['relaunches']}, texts {texts_i[:120]!r}")
+        check(doc_o.get("timezone") == "UTC" and doc_i.get("timezone") == "UTC", "crawl.json records the zone the walk ran in (UTC)",
+              f"{doc_o.get('timezone')!r}, {doc_i.get('timezone')!r}")
+        bad = [f["detail"][:80] for d in (doc_o, doc_i) for f in d["findings"] if f["kind"] in ("replay", "capture", "flaky", "crash")]
+        check(not bad, "the sign-in walks replay and capture every screen", str(bad))
+
     print(f"timings: walk+captures {secs_a:.0f} s ({len(screens)} screens, {len(doc['edges'])} transitions), repeat walk {secs_b:.0f} s, "
           f"compare {secs_c:.0f} s, prepared {secs_d:.0f} s, sweep {secs_e:.0f} s ({secs_f:.0f} s with an allow-list), "
           f"seeded walk of one screen {secs_g:.0f} s, walk with --record-deps {secs_deps:.0f} s (without {secs_plain:.0f} s), "
-          f"slot walk with a relaunch {secs_h:.0f} s, kept-data walk on two instances {secs_k:.0f} s")
+          f"slot walk with a relaunch {secs_h:.0f} s, kept-data walk on two instances {secs_k:.0f} s, "
+          f"signed-in walk {secs_s:.0f} s")
     if failures:
         print(f"crawl-check: {len(failures)} check(s) failed", file=sys.stderr)
         sys.exit(1)

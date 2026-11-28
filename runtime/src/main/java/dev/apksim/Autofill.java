@@ -26,8 +26,11 @@ import java.util.Properties;
  *
  * Each key names a field by the text a person would read for it: its placeholder or hint, or the label just above
  * it. Fields are found through the accessibility tree (framework API, so minified apps work too), filled with
- * ACTION_SET_TEXT, and then the button whose text is `submit` is pressed. It signs in at most once per launch, only
- * when every named field is on screen, and logs which fields it filled, never their values.
+ * ACTION_SET_TEXT, and then the button whose text is `submit` is pressed. It signs in at most once per launch (and
+ * once again after a `restart`, which starts the app's activities as a launch does, if the form shows within
+ * {@link #REARM_NANOS}: past that the app is taken for signed in, so a form reached later, a re-authentication say, is
+ * left alone), only when every named field is on screen, and logs which fields it filled, never their values. The `autofill` command reports where it is
+ * ({@link #state}), so a script (scripts/crawl.py --autofill) can wait for the sign-in before it reads the screen.
  */
 final class Autofill {
   private final Map<String, String> fields = new LinkedHashMap<>();
@@ -39,8 +42,33 @@ final class Autofill {
   private int fills;
   private Map<String, Nodes.Node> filled;  // The nodes filled last, found again by identity: a filled field loses its placeholder.
   private Nodes.Node filledButton;
+  private String outcome;  // How the last sign-in ended (`filled ...`, `gave up: ...`, `idle: ...`); null while it has not.
+  private long armedUntilNanos;  // After a restart: when to stop looking for a form that has not shown; 0 at launch.
+  static final long REARM_NANOS = 10_000_000_000L;
 
   private Autofill() {}
+
+  /**
+   * `waiting` (no form with every named field yet), `filling` (filled, checking the values stuck), `done: filled A, B;
+   * pressed X`, `gave up: WHY` or `idle: ...` (no form within REARM_NANOS of a restart). Never a value.
+   */
+  synchronized String state() {
+    if (done) return outcome != null && (outcome.startsWith("gave up") || outcome.startsWith("idle")) ? outcome : "done: " + outcome;
+    return fills > 0 ? "filling" : "waiting";
+  }
+
+  /** After `restart`: look for the form again, as a launch does (an app that signs in per start shows it again). */
+  synchronized void rearm() {
+    done = false;
+    fills = 0;
+    seenSinceNanos = 0;
+    lastTexts = null;
+    filled = null;
+    filledButton = null;
+    outcome = null;
+    nextLookNanos = 0;
+    armedUntilNanos = System.nanoTime() + REARM_NANOS;
+  }
 
   /** The autofill for this package, or null when its owner saved none. */
   static Autofill load(Path cacheRoot, String pkg) {
@@ -70,9 +98,14 @@ final class Autofill {
    * unchanged for 1.5 s, fills them, checks on the next look that the values stuck (filling again up to three
    * times), and only then presses the button.
    */
-  void tick(java.util.function.Supplier<List<View>> rootViews) {
+  synchronized void tick(java.util.function.Supplier<List<View>> rootViews) {
     long now = System.nanoTime();
     if (done || now < nextLookNanos) return;
+    if (fills == 0 && seenSinceNanos == 0 && armedUntilNanos != 0 && now > armedUntilNanos) {
+      done = true;
+      outcome = "idle: no form within " + REARM_NANOS / 1_000_000_000L + " s of the restart";
+      return;
+    }
     List<View> roots = rootViews.get();
     nextLookNanos = now + 500_000_000L;
     if (fills > 0) {
@@ -117,6 +150,7 @@ final class Autofill {
       Nodes.Node now = e.getValue().refresh();
       if (now == null) {
         done = true;
+        outcome = "gave up: the form went away before it could be checked";
         System.err.println("[apksim] autofill: the form went away before it could be checked");
         return;
       }
@@ -125,10 +159,12 @@ final class Autofill {
     if (stuck) {
       done = true;
       boolean pressed = filledButton != null && filledButton.click();
-      System.err.println("[apksim] autofill: filled " + String.join(", ", filled.keySet())
-          + (filledButton == null ? "" : pressed ? "; pressed " + submit : "; could not press " + submit));
+      outcome = "filled " + String.join(", ", filled.keySet())
+          + (filledButton == null ? "" : pressed ? "; pressed " + submit : "; could not press " + submit);
+      System.err.println("[apksim] autofill: " + outcome);
     } else if (fills == 3) {
       done = true;
+      outcome = "gave up: the app kept replacing the values";
       System.err.println("[apksim] autofill: the app kept replacing the values; gave up without pressing " + submit);
     } else {
       fill();

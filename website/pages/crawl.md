@@ -92,6 +92,7 @@ Tests every discovered screen against process death, activity recreation, rotati
 | `--matrix AXIS=V,V` / `--matrix-file SPEC.json` | Capture every screen across `device`, `appearance`, `locale`, and `fontscale` |
 | `--standby` | Reuse a shared warm-launch standby pool for much faster crawls |
 | `--keep-data` | Start from a pre-signed-in data slot (cloned per worker; enables `--biometrics auto`) |
+| `--autofill` | Sign each launch in with the sign-in saved for the app (`autofill/PACKAGE.properties` in the state folder), waiting for it before reading the screen |
 | `--freeze-network`, `--deterministic` | Freeze server answers into one HAR recording so live feeds replay identically |
 | `--base APK`, `--seed RUN --diff-seed` | Compare against a base build or diff incrementally against a seed crawl |
 | `--record-deps` | Record per-screen classes, source files, and resolved resources for `crawl-select.py` |
