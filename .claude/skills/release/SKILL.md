@@ -91,7 +91,7 @@ then delete and re-push the tag.
 ## 6. Release notes and publish
 1. Write notes from the merged PRs since the last tag: a short headline paragraph, then grouped bullets (Added,
    Changed, Fixed), each with a PR link `[owner/repo#N](url)`. Same privacy and no-attribution rules.
-2. `gh release edit vX.Y.Z --notes-file FILE --draft=false` publishes the draft. (AGENTS.md says the draft is
+2. `gh release edit vX.Y.Z --notes-file FILE --draft=false` publishes the draft. (docs/internals/releases-and-linux.md says the draft is
    normally published by hand after reading its notes; this skill is that reading, so check the notes against the
    privacy rules once more before running it.) Publishing triggers the `tap` job (Homebrew cask) and `image-latest`.
 3. Watch those in the foreground too, as in step 5 (`gh run list --workflow release.yml --limit 3`, the run whose

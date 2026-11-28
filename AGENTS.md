@@ -32,7 +32,8 @@ area, read its file; to find a class, option, command or issue number, `grep -rn
   on the class path. Re-copy and re-apply the changes at every Robolectric upgrade (robolectric-overrides.md).
 - `runtime/stubs/`: compile-only org.webrtc signatures. Never give a stub field an initializer (javac inlines it).
 - `native/`: `simwindow.m` (Cocoa window), `elfloader.c`, `bionic.c`, `jnibridge.c` (Android ELF loader and shims),
-  `gpushader.m`, `standby.c`, `apksim-client.c`, `heaptrim.c`, `devicepaths.c`; `native/linux/` for the image.
+  `gpushader.m`, `standby.c`, `apksim-client.c`, `heaptrim.c`, `devicepaths.c` and others; `native/linux/` for the
+  image.
 - `scripts/`: build (`setup.sh`, `build.sh`, `build-native.sh`, `train.sh`), drivers (`drive.py`, `ctl.py`,
   `relaunch.sh`), runners (`instrument.py`, `snapshot.py`, `crawl.py`, `fleet.py`, `bench.py`), and a `*-check.*`
   script per feature; `ci-smoke.sh` is what CI runs in the Linux image (scripts-docs-ci.md lists them all).
@@ -45,7 +46,8 @@ area, read its file; to find a class, option, command or issue number, `grep -rn
   manifest, extracted `.so` files, app data).
 
 ## Reference notes (`docs/internals/`)
-Quoted names are the section titles other docs and code comments cite as `AGENTS.md "..."`.
+Quoted names are the section titles other docs and code comments cite as `AGENTS.md "..."`. An older doc or
+comment that sends you to AGENTS.md for something not in this file means these notes: grep them.
 - `launch.md`: the launcher's JVM flags and why, `Main`, startup threads, `FrameworkFlattener`, `HeapTrim`, the AOT
   cache, "Warm launches" (standbys), rules for launch and memory benchmarks.
 - `host.md`: `Host`'s frame loop, vsync and clock, input dispatch, window placement, the activity stack

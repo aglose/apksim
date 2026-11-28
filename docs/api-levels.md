@@ -140,7 +140,7 @@ on one fails). Against the API 36 jar it reports none of these but the 3 methods
 
 The scan does not see a constant whose value changed, nor framework members reached by name: about 200 call sites use `ReflectionHelpers` or
 `java.lang.reflect` with a string (#9 was one), and each needs reading. Nor does it see behaviour: Robolectric's own
-shadows branch on the API level in hundreds of places, and what AGENTS.md records about them (which sticky broadcasts
+shadows branch on the API level in hundreds of places, and what docs/internals records about them (which sticky broadcasts
 it never sends, how its Choreographer and looper behave, what its window session does) was traced on API 36 only.
 
 **HWUI.** `HwRenderer` (HardwareRenderer, RenderNode, FrameDrawingCallback: all API 29) drew every frame unchanged

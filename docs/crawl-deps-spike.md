@@ -80,7 +80,7 @@ without probes):
 No difference above noise at launch; the walk is ~4% slower at the median, inside the spread. The commands
 themselves: `deps read` 1.0 ms, `deps resources` 2.1 ms (168 names, 5.5 KB), `deps resources all` 5.6 ms (21 KB),
 `deps reset` 0.2 ms. The real cost is elsewhere: probed classes have their own class cache (`Probes.cacheKey`), so the
-first probed launch of a build translates every class (as after a rebuild: ~1.15 s more on a warm launch of the test app, AGENTS.md), and a probed launch cannot be
+first probed launch of a build translates every class (as after a rebuild: ~1.15 s more on a warm launch of the test app, docs/internals/launch.md), and a probed launch cannot be
 handed to a standby (the property is read as the JVM boots).
 
 ## Proposed design

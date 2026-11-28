@@ -158,7 +158,7 @@ Three changes, each for one of the bold rows:
   else is placed: 64 of 64 launches (headless, `--no-network`, `--no-sandbox`, a window; macOS 26.1) mapped it there.
   332 → 288 MB (4 interleaved pairs), and the ~12 ms of rewriting goes. The price is the random placement of the JVM's
   class metadata, so beamed instances (a site's APK) keep the JDK's default, and so does Linux until it is measured.
-- **The heap's unused pages given back while idle** (`HeapTrim`, `native/heaptrim.c`; AGENTS.md has how). After 3 s
+- **The heap's unused pages given back while idle** (`HeapTrim`, `native/heaptrim.c`; docs/internals/launch.md has how). After 3 s
   of a still screen, and in a standby once warmed up, the end of a collection replaces the free part of every heap
   space with fresh pages. 288 → 226 MB (the median of four; malloc's swing put single runs between 223 and 270). The young generation's size is unchanged while the app runs, so collections
   are as rare and short as before; what it costs is a page fault per 16 KB as eden is written again.
@@ -350,7 +350,7 @@ turn either into an unknown option, which would stop every launch.
 
 The largest object in an idle instance's heap was the framework's `resources.arsc`, inflated from the framework jar
 into one 16.66 MB `byte[]` in every instance and standby; the app's own table was a second array (0.72 MB for the test
-app, 0.6-1 MB for a large app's R8 and debug builds). Both are mapped files now (`MappedResources`; AGENTS.md has how): the framework's is
+app, 0.6-1 MB for a large app's R8 and debug builds). Both are mapped files now (`MappedResources`; docs/internals/robolectric-overrides.md has how): the framework's is
 inflated once into `STATE/cache/framework/`, named by its CRC and length, and an APK's stored table is mapped where
 it lies in the APK. Two of Robolectric's classes are copied to do it: `CppApkAssets`, whose `LoadImpl` is the one
 place a table becomes a buffer, and `ResourceString`, whose `decodeString` was the one reader that asked the buffer
@@ -569,7 +569,7 @@ warm launch that is left. It also needs the classes in a jar on the class path (
 archivable), hence a cold start or a standby per APK. Spike: frames for one DEX file, verified with
 `-XX:+BytecodeVerificationRemote`, then one APK's cache on JDK 25 and the test app's launch and suite times.
 
-**E2. A standby prepared for the last APK** (AGENTS.md, "Not tried"): its classes defined, and with E1 its cache.
+**E2. A standby prepared for the last APK** (docs/internals/launch.md "Warm launches", "Not tried"): its classes defined, and with E1 its cache.
 Worth it only if E1's spike shows the gain, since it doubles standby memory unless C4 is in.
 
 **E4. Robolectric's NATIVE resources mode** (C1's way through): build the native runtime with `ApkAssets` and

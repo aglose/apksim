@@ -1,7 +1,7 @@
 # Host: the main loop, activity stack, windows, crashes and exits
 
-Agent reference notes, moved out of AGENTS.md so they are read only when needed. Quoted section names
-("Video", "Warm launches") are sections of these files: AGENTS.md's index says which file has each.
+Agent reference notes, moved out of AGENTS.md so they are read only when needed. A section another doc or a
+code comment cites as `AGENTS.md "Name"` is in one of these files: AGENTS.md's index says which.
 
 ## Code notes
 - `Host`: the Android main thread. Activity stack, input dispatch, the frame loop (on the display's vsync, else a 120 Hz grid), and the `--control`
@@ -22,7 +22,7 @@ Agent reference notes, moved out of AGENTS.md so they are read only when needed.
   `-Dapksim.idleGcMB` (256) since the last check, a full collection runs then (HotSpot does not count native memory);
   under the Mac's memory pressure GpuBitmaps' caches go and a collection runs at once, and a standby quits
   (`Footprint.pressure`). Once the screen has been still for 3 s (`-Dapksim.idleTrimMs`, 0 for never) the heap's
-  unused pages go back to the system (`HeapTrim`, below), again whenever the footprint has grown 16 MB past what
+  unused pages go back to the system (`HeapTrim`, launch.md), again whenever the footprint has grown 16 MB past what
   the last trim left, at most every 10 s; the next frame or input ends it. Before (2026-11-07), slow drags drew ~170 frames a second at 120 Hz, a third never shown
   (`-Dapksim.offVsyncFrames=true` restores it). Without a window, `vsync PERIOD_US SHIFT_US` (sent by serve's page
   twice a second) makes a viewer's display the vsync to follow (`SimWindow.remoteVsync`) until 1.5 s pass without

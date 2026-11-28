@@ -1,7 +1,7 @@
 # The test app, other test APKs and comparing with the emulator
 
-Agent reference notes, moved out of AGENTS.md so they are read only when needed. Quoted section names
-("Video", "Warm launches") are sections of these files: AGENTS.md's index says which file has each.
+Agent reference notes, moved out of AGENTS.md so they are read only when needed. A section another doc or a
+code comment cites as `AGENTS.md "Name"` is in one of these files: AGENTS.md's index says which.
 
 ## The test app
 - `testapks/composeapp`: the test app, and the sample app Greenroom ships (each release's `apksim-testapp-VERSION.apk`).

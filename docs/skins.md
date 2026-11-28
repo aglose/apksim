@@ -152,7 +152,7 @@ cover. Every frame is drawn from the device's published sizes, not taken from ar
 millimetre, so the bezels are the device's, by `scripts/gen-device-skins.java` (`java scripts/gen-device-skins.java`
 writes the frames, backs and skin.json files; the
 panels must agree with `Fold.java`). In the Mac window a fold plays as the device closing or opening in its frame
-(AGENTS.md, `Fold`); `scripts/fold-frames.m` renders that animation from a skin's frames, with no app running.
+(docs/internals/fold-and-skins.md, `Fold`); `scripts/fold-frames.m` renders that animation from a skin's frames, with no app running.
 
 ## Where skins are
 

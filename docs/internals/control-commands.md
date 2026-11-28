@@ -1,7 +1,7 @@
 # Control commands (`--control`) and what stands behind each
 
-Agent reference notes, moved out of AGENTS.md so they are read only when needed. Quoted section names
-("Video", "Warm launches") are sections of these files: AGENTS.md's index says which file has each.
+Agent reference notes, moved out of AGENTS.md so they are read only when needed. A section another doc or a
+code comment cites as `AGENTS.md "Name"` is in one of these files: AGENTS.md's index says which.
 
 ## Control commands
 Control commands: `tap x y`, `swipe x1 y1 x2 y2 [ms]` (a finger moving over ms of real time, 300 by default as `input swipe`, lifting at the end point so the release
@@ -24,9 +24,9 @@ AndroidViews; the reply joins lines with `; `, FILE gets them as lines, `adb she
 last call, then what reached the screen per display vsync), `fps` (per-stage cost), `display`, `shaders` (which AGSL runs on GPU vs CPU), `stats`
 (frames, heap, `footprintMb`: the physical footprint as `footprint PID` shows it (`Footprint`), `cpuMs`, PID, data slot, `clockAheadMs`: how far SystemClock has run ahead of real time, `lastDown`: where the last touch went down, in display pixels, `inputMerged`: queued moves and wheel events merged into a later one), `redraw`, `stream [QUALITY] [h264 [KBPS]]` (the connection becomes a JPEG or H.264 frame stream: see "apksim serve"), whose connection may then send `key`, `pace MS` and `viewport W H` (serve.html sends the canvas's size: a display shown at half size or less is encoded divided by a whole factor, the device's size in the header's upper 16 bits, `0 0` for full; issue 499, docs/serve.md, `scripts/viewport-check.py`, `viewport-page-check.py`), `ping`, `quit`,
 `audio [on|mute]` (sound or silence now, open AudioTracks included; off is launch only) and `video [on|blank]` (next codec),
-`maxfps [N]` (frame rate cap, 1-120; see "Per-instance costs" below), `animscale N` (animation speed, any time),
+`maxfps [N]` (frame rate cap, 1-120; see media.md "Per-instance costs"), `animscale N` (animation speed, any time),
 `vsync [PERIOD_US SHIFT_US|off]` (pace to a viewer's display: see `Host`).
-`gaps` (`Gaps`, see Layout): framework natives with no shadow that this process called, outside the baseline of harmless ones.
+`gaps` (`Gaps`, see robolectric-overrides.md): framework natives with no shadow that this process called, outside the baseline of harmless ones.
 `deps [reset|read|mark|resources [all]|start [resources]]` (`dex.Probes`, `ResourceHits`; with `--jvm -Dapksim.deps=true`): the app classes whose code ran and the resources resolved since the last reset or `restart` (each `restart` opens a span), and the app-start span; `crawl.py --record-deps` reads them per screen (docs/crawl.md "Per-screen dependencies").
 For screenshot tests (docs/snapshots.md): `settle [MAX_MS] [QUIET_MS] [HORIZON_MS]` (answers once nothing is queued,
 dirty or wanting a frame (a vsync requested for HORIZON_MS with no frame drawn, as an open Compose Popup's position polling does, is ignored and the answer says so: issue 612, `Host.busy`) and no main-thread message is due within HORIZON_MS (not counting a caret blink or AndroidX ProfileInstaller's delayed startup write), for QUIET_MS of real time with no frame
@@ -41,13 +41,13 @@ from the launcher intent (MAIN/LAUNCHER, the only activity in the stack) and not
 the instance stays and `resume` or a click brings it back (issue 480). The launcher test reads the activity's current intent, so one that called `setIntent` with another still finishes (a device uses the task's base intent).
 Simulator-style device controls (`DeviceControls.java`; each is also a Mac menu item, see "Simulator features"):
 `appearance dark|light|toggle`, `locale fr-FR`, `fontscale 1.3|+|-`, `timezone [ZONE]` (the zone the app sees; set at
-launch with `--timezone America/New_York`; see `TimeZones` below), `config` (configuration the app sees),
+launch with `--timezone America/New_York`; see `TimeZones` in mac-window.md), `config` (configuration the app sees),
 `fold [open|half|closed|toggle|angle DEGREES]` (a folding device's posture and hinge angle, see `Fold`),
 `device [phone|foldable|tablet|desktop|tv|pixel-10-pro-fold|galaxy-...|WxH[@density]]` (switch devices while the app runs: size, density, system
 bars, and for TV UI_MODE_TYPE_TELEVISION, no touchscreen and a D-pad), `size WxH` (display size in dp, same device),
 `window WxH [MS]` (the Mac window's content in points, as dragging its corner would: checks the drag path; with MS a
 live drag over that much real time, 120 steps a second: `scripts/window-resize-check.py PORT`, run by hand on the Mac),
-`window front|show|background|minimize|hide` (as `--window`, below; `window` alone reports visible/minimized/hidden,
+`window front|show|background|minimize|hide` (as `--window`, mac-window.md; `window` alone reports visible/minimized/hidden,
 whether the app is active, the content's size in points and the device pixels per point), `window click X Y` (a left
 click at a point of the window's content, in points from its top left, sent through the window as a real one: checks
 which view takes it), `skin [NAME|off]` (`Skinning`: a stored skin around the screen; alone, where it falls), `window close` (as the close button: while a stream viewer is attached, apksim beam's

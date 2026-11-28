@@ -1,7 +1,7 @@
 # apksim serve, apksim beam and the MCP server
 
-Agent reference notes, moved out of AGENTS.md so they are read only when needed. Quoted section names
-("Video", "Warm launches") are sections of these files: AGENTS.md's index says which file has each.
+Agent reference notes, moved out of AGENTS.md so they are read only when needed. A section another doc or a
+code comment cites as `AGENTS.md "Name"` is in one of these files: AGENTS.md's index says which.
 
 ## apksim serve (APKs in a browser tab)
 `./apksim serve [--port 8080] [--bind ADDR] [--token FILE] [--max 4] [--idle 600] [--apps DIR|FILE]... [--max-upload MB] [--allow-share]`:

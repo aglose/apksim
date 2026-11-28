@@ -1,7 +1,7 @@
 # Folding devices, the fold animation and device skins
 
-Agent reference notes, moved out of AGENTS.md so they are read only when needed. Quoted section names
-("Video", "Warm launches") are sections of these files: AGENTS.md's index says which file has each.
+Agent reference notes, moved out of AGENTS.md so they are read only when needed. A section another doc or a
+code comment cites as `AGENTS.md "Name"` is in one of these files: AGENTS.md's index says which.
 
 ## Code notes
 - `Fold`, `FoldExtensions`, `androidx/window/extensions/` (in apksim.jar): folding devices (`--device
