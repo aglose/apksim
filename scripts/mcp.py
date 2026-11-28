@@ -175,8 +175,10 @@ def describe_change(added, removed, changed):
         o = n["_from"]
         lines.append("~ %s %s -> %s" % (n["ref"], json.dumps(label(o)), json.dumps(label(n))) if label(o) != label(n)
                      else "~ " + line(n))
-    lines += ["- " + line(n) for n in removed if label(n) or n["click"]]
+    # What is new before what went: when a whole screen changes, the answer's line limit cuts the end, and the screen
+    # the action led to is what the next step needs.
     lines += ["+ " + line(n) for n in added if label(n) or n["click"]]
+    lines += ["- " + line(n) for n in removed if label(n) or n["click"]]
     if len(lines) > ANSWER_LINES:
         extra = len(lines) - ANSWER_LINES
         lines = lines[:ANSWER_LINES] + ["... %d more changes: call nodes" % extra]

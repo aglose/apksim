@@ -56,7 +56,7 @@ class BleTest {
   private val instrumentation = InstrumentationRegistry.getInstrumentation()
   private val context = instrumentation.targetContext
   private val adapter get() = context.getSystemService(BluetoothManager::class.java).adapter
-  private val scanner: BluetoothLeScanner get() = adapter.bluetoothLeScanner
+  private val scanner: BluetoothLeScanner get() = adapter.bluetoothLeScanner!!
   private val gatts = mutableListOf<BluetoothGatt>()
 
   private fun shell(command: String): String {

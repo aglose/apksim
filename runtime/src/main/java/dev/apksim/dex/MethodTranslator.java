@@ -3044,6 +3044,14 @@ final class MethodTranslator implements Opcodes {
       mv.visitInsn(DUP);
       mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "composeIdling", "(Ljava/lang/Object;)V", false);
     }
+    if (opcode == INVOKESPECIAL && "androidx/compose/ui/test/RobolectricIdlingStrategy".equals(ownerName) && "<init>".equals(m.name())
+        && ("(Landroidx/compose/ui/test/ComposeRootRegistry;Landroidx/compose/ui/test/ComposeIdlingResource;"
+            + "Landroidx/compose/ui/test/IdlingResourceRegistry;)V").equals(m.descriptor())) {
+      // Compose ui-test 1.12 added the rule's idling resource registry as a third argument: the resource is second
+      // from the top.
+      mv.visitInsn(DUP2);
+      mv.visitMethodInsn(INVOKESTATIC, "dev/apksim/TestActivities", "composeIdling", "(Ljava/lang/Object;Ljava/lang/Object;)V", false);
+    }
     if ((opcode == INVOKEINTERFACE || opcode == INVOKEVIRTUAL) && "loopMainThreadUntilIdle".equals(m.name())
         && "()V".equals(m.descriptor()) && ownerName.startsWith("androidx/test/espresso/")) {
       // Espresso's wait for the main thread: on a device it also waits for Compose (dev.apksim.TestActivities).

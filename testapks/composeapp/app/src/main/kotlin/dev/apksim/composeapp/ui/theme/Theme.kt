@@ -1,65 +1,124 @@
-/*
- * Copyright 2026 The Android Open Source Project
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     https://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 package dev.apksim.composeapp.ui.theme
 
-import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MaterialExpressiveTheme
+import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
 
-private val DarkColorScheme = darkColorScheme(
-    primary = primaryDark,
-    primaryContainer = primaryContainerDark,
-    secondary = secondaryDark,
-    tertiary = tertiaryDark
+private val LightScheme = lightColorScheme(
+  primary = primaryLight,
+  onPrimary = onPrimaryLight,
+  primaryContainer = primaryContainerLight,
+  onPrimaryContainer = onPrimaryContainerLight,
+  inversePrimary = inversePrimaryLight,
+  secondary = secondaryLight,
+  onSecondary = onSecondaryLight,
+  secondaryContainer = secondaryContainerLight,
+  onSecondaryContainer = onSecondaryContainerLight,
+  tertiary = tertiaryLight,
+  onTertiary = onTertiaryLight,
+  tertiaryContainer = tertiaryContainerLight,
+  onTertiaryContainer = onTertiaryContainerLight,
+  background = backgroundLight,
+  onBackground = onBackgroundLight,
+  surface = surfaceLight,
+  onSurface = onSurfaceLight,
+  surfaceVariant = surfaceVariantLight,
+  onSurfaceVariant = onSurfaceVariantLight,
+  surfaceTint = surfaceTintLight,
+  inverseSurface = inverseSurfaceLight,
+  inverseOnSurface = inverseOnSurfaceLight,
+  error = errorLight,
+  onError = onErrorLight,
+  errorContainer = errorContainerLight,
+  onErrorContainer = onErrorContainerLight,
+  outline = outlineLight,
+  outlineVariant = outlineVariantLight,
+  scrim = scrimLight,
+  surfaceBright = surfaceBrightLight,
+  surfaceContainer = surfaceContainerLight,
+  surfaceContainerHigh = surfaceContainerHighLight,
+  surfaceContainerHighest = surfaceContainerHighestLight,
+  surfaceContainerLow = surfaceContainerLowLight,
+  surfaceContainerLowest = surfaceContainerLowestLight,
+  surfaceDim = surfaceDimLight,
+  primaryFixed = primaryFixedLight,
+  primaryFixedDim = primaryFixedDimLight,
+  onPrimaryFixed = onPrimaryFixedLight,
+  onPrimaryFixedVariant = onPrimaryFixedVariantLight,
+  secondaryFixed = secondaryFixedLight,
+  secondaryFixedDim = secondaryFixedDimLight,
+  onSecondaryFixed = onSecondaryFixedLight,
+  onSecondaryFixedVariant = onSecondaryFixedVariantLight,
+  tertiaryFixed = tertiaryFixedLight,
+  tertiaryFixedDim = tertiaryFixedDimLight,
+  onTertiaryFixed = onTertiaryFixedLight,
+  onTertiaryFixedVariant = onTertiaryFixedVariantLight,
 )
 
-private val LightColorScheme = lightColorScheme(
-    primary = primaryLight,
-    primaryContainer = primaryContainerLight,
-    secondary = secondaryLight,
-    tertiary = tertiaryLight
+private val DarkScheme = darkColorScheme(
+  primary = primaryDark,
+  onPrimary = onPrimaryDark,
+  primaryContainer = primaryContainerDark,
+  onPrimaryContainer = onPrimaryContainerDark,
+  inversePrimary = inversePrimaryDark,
+  secondary = secondaryDark,
+  onSecondary = onSecondaryDark,
+  secondaryContainer = secondaryContainerDark,
+  onSecondaryContainer = onSecondaryContainerDark,
+  tertiary = tertiaryDark,
+  onTertiary = onTertiaryDark,
+  tertiaryContainer = tertiaryContainerDark,
+  onTertiaryContainer = onTertiaryContainerDark,
+  background = backgroundDark,
+  onBackground = onBackgroundDark,
+  surface = surfaceDark,
+  onSurface = onSurfaceDark,
+  surfaceVariant = surfaceVariantDark,
+  onSurfaceVariant = onSurfaceVariantDark,
+  surfaceTint = surfaceTintDark,
+  inverseSurface = inverseSurfaceDark,
+  inverseOnSurface = inverseOnSurfaceDark,
+  error = errorDark,
+  onError = onErrorDark,
+  errorContainer = errorContainerDark,
+  onErrorContainer = onErrorContainerDark,
+  outline = outlineDark,
+  outlineVariant = outlineVariantDark,
+  scrim = scrimDark,
+  surfaceBright = surfaceBrightDark,
+  surfaceContainer = surfaceContainerDark,
+  surfaceContainerHigh = surfaceContainerHighDark,
+  surfaceContainerHighest = surfaceContainerHighestDark,
+  surfaceContainerLow = surfaceContainerLowDark,
+  surfaceContainerLowest = surfaceContainerLowestDark,
+  surfaceDim = surfaceDimDark,
+  primaryFixed = primaryFixedDark,
+  primaryFixedDim = primaryFixedDimDark,
+  onPrimaryFixed = onPrimaryFixedDark,
+  onPrimaryFixedVariant = onPrimaryFixedVariantDark,
+  secondaryFixed = secondaryFixedDark,
+  secondaryFixedDim = secondaryFixedDimDark,
+  onSecondaryFixed = onSecondaryFixedDark,
+  onSecondaryFixedVariant = onSecondaryFixedVariantDark,
+  tertiaryFixed = tertiaryFixedDark,
+  tertiaryFixedDim = tertiaryFixedDimDark,
+  onTertiaryFixed = onTertiaryFixedDark,
+  onTertiaryFixedVariant = onTertiaryFixedVariantDark,
 )
 
+/**
+ * The app's Material 3 Expressive theme: its own colour roles (Color.kt) in light and dark, the expressive motion
+ * scheme (springs that overshoot a little for movement, none for colour and opacity) and the expressive shape and
+ * type defaults, whose emphasized styles the screens use for the one thing each wants read first.
+ */
 @Composable
-fun ComposeAppTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    // Dynamic color is available on Android 12+
-    dynamicColor: Boolean = false,
-    content: @Composable () -> Unit
-) {
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
-    }
-
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography,
-        content = content
-    )
+fun ComposeAppTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
+  MaterialExpressiveTheme(
+    colorScheme = if (darkTheme) DarkScheme else LightScheme,
+    motionScheme = MotionScheme.expressive(),
+    content = content,
+  )
 }
-

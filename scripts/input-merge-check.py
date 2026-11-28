@@ -34,8 +34,10 @@ def main():
         return int(re.search(r"inputMerged=(\d+)", ctl("stats")).group(1))
 
     def first_item():
-        m = re.search(r'text="Item (\d+)"', ctl("nodes"))
-        return int(m.group(1)) if m else -1
+        """(number, -top) of the first list row on screen: grows as the list scrolls, even while that row is still
+        partly on screen (the test app's header is taller than a short drag)."""
+        m = re.search(r'\[\d+,(-?\d+),\d+,\d+\] text="Item (\d+)"', ctl("nodes"))
+        return (int(m.group(2)), -int(m.group(1))) if m else (-1, 0)
 
     failed = []
 
@@ -55,7 +57,8 @@ def main():
     check(settled.startswith("settled"), f"the screen settles after the burst ({settled})")
     n = merged() - before
     check(10 <= n <= 199, f"queued moves merged ({n} of 200)")
-    check(first_item() > top, f"the list scrolled, so the moves and the up arrived (Item {top} -> Item {first_item()})")
+    now = first_item()
+    check(now > top, f"the list scrolled, so the moves and the up arrived (Item {top[0]} at y {-top[1]} -> Item {now[0]} at y {-now[1]})")
 
     before = merged()
     replies = burst(["wheel 400 900 1"] * 60)

@@ -100,9 +100,10 @@ def uiautomator_dump(serial):
         fail(f"uiautomator dump has no clickable node with resource-id 'fab': {[n.attrib for n in fab]}")
     if not any(n.get("content-desc") == "Add" for n in fab[0].iter("node")):
         fail("uiautomator dump has no content-desc 'Add' in the FAB")
-    # Every element `nodes` lists is in the dump, with the same bounds.
+    # Every element `nodes` lists is in the dump, with the same bounds, except those it marks offscreen (wholly hidden,
+    # here under the navigation bar): the stock dumper leaves out nodes not visible to the user.
     bounds = {n.get("bounds") for n in nodes}
-    listed = re.findall(r"\[(\d+),(\d+),(\d+),(\d+)\]", adb(serial, "shell", "apksim", "nodes"))
+    listed = re.findall(r"\[(\d+),(\d+),(\d+),(\d+)\](?! offscreen)", adb(serial, "shell", "apksim", "nodes"))
     missing = [b for b in listed if "[%s,%s][%s,%s]" % b not in bounds]
     if not listed or missing:
         fail(f"uiautomator dump lacks bounds that `nodes` reports: {missing or 'nodes listed nothing'}")
