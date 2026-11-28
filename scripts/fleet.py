@@ -17,10 +17,10 @@ Commands are drive.py's control commands (tap, swipe, type, key, back, nodes, sh
 
 Prints, per instance, how long it took to answer its first ping, how long the script took, and the first failure if
 any; then the peak resident memory of all instances together and per instance. Exits 1 if any instance failed.
-Each instance keeps its own app data (`instance-N` slots, see docs/internals/storage-and-device.md), so a script that writes data runs N times
-in parallel without the instances sharing it. An instance answers `ping` before its first frame, and input sent
-before the UI is there is lost, so start a script by waiting for something on screen. Example (the test app: three
-FAB taps, then the Trips tab):
+Each instance keeps its own app data (`instance-N` slots, see docs/internals/storage-and-device.md), so a script
+that writes data runs N times in parallel without the instances sharing it. An instance answers `ping` before its
+first frame, and input sent before the UI is there is lost, so start a script by waiting for something on screen.
+Example (the test app: three FAB taps, then the Trips tab):
   scripts/fleet.py 8 app-debug.apk -- 'until 30000 FAB clicks: 0' 'tap 733 1533' 'tap 733 1533' 'tap 733 1533' \\
       'until 3000 FAB clicks: 3' 'tap 350 1690' 'until 5000 vacation'
 """

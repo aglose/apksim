@@ -20,10 +20,12 @@ APK cannot be read (2 for a bad option).
 import json, re, struct, sys, zipfile
 
 # ---------------------------------------------------------------------------------------------------------------
-# apksim's status per subsystem, in one place. Take them from docs/internals and the README's Limitations; update an
-# entry when a stand-in lands. status: simulated | partial | in progress | missing.
+# apksim's status per subsystem, in one place. Take them from the subsystem's docs/internals/*.md file (and
+# docs/internals/open-work.md) and the README's Limitations; update an entry when a stand-in lands.
+# status: simulated | partial | in progress | missing.
 STATUS = {
-    'sensors': ('simulated', 'sensor, --sensor', 'an emulator\'s sensor list, events at the requested rate (docs/internals/control-commands.md, `sensor`)'),
+    'sensors': ('simulated', 'sensor, --sensor', 'an emulator\'s sensor list, events at the requested rate '
+                '(docs/internals/control-commands.md, `sensor`)'),
     'health-connect': ('simulated', '--health, health', 'scripted records answer HealthConnectClient (docs/health-connect.md)'),
     'play-location': ('missing', '', 'FusedLocationProviderClient needs Play Services; the plain LocationManager is simulated'),
     'play-services': ('missing', '', 'no Play Services: a bind to a missing service returns false (FCM pushes alone work, see firebase)'),
