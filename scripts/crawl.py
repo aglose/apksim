@@ -1093,14 +1093,18 @@ class Instance(snapshot.Worker):
         self.note_signin(state)  # something was typed: `done: ...` or `gave up: ...`
         self.await_signed_in(state)
 
+    def password_shown(self):
+        """A password field in any shown window, those under a dialog too (`nodes tree all`): a refused sign-in's dialog
+        covers its form, which accessibility then does not report."""
+        return any("p" in r.flags for r in parse_tree(self.say("nodes tree all")))
+
     def await_form(self, seconds):
         """The sign-in's state once a password field is on screen (`waiting`) or it has moved on by itself; with neither
         within [seconds], what `autofill off` answers."""
         self.settle(SETTLE)
         deadline = time.time() + seconds
         while True:
-            _act, recs = self.read_ui()
-            if any("p" in r.flags for r in recs):
+            if self.password_shown():
                 return "waiting"
             state = self.say("autofill")
             if state != "waiting":
@@ -1116,9 +1120,9 @@ class Instance(snapshot.Worker):
         clear_since = None
         while True:
             settled = self.settle(SETTLE)
-            act, recs = self.read_ui()
+            act, _recs = self.read_ui()
             now = time.time()
-            if act != "none" and not any("p" in r.flags for r in recs):
+            if act != "none" and not self.password_shown():
                 clear_since = clear_since or now
                 if now - clear_since >= (AUTOFILL_CLEAR_S if settled else AUTOFILL_UNSETTLED_S):
                     return
@@ -1783,6 +1787,14 @@ class Explorer:
             except Exception as e:  # noqa: BLE001  (any launch failure ends the run with the reason)
                 errors.append(str(e))
 
+        def up_disarmed(inst):
+            up(inst)
+            if self.ctx.get("autofill") and not errors:
+                try:
+                    inst.say("autofill off")  # armed again by its first restart: no form is filled unwatched
+                except Exception as e:  # noqa: BLE001
+                    errors.append(str(e))
+
         rest = self.instances
         if self.ctx.get("autofill"):
             # One instance signs in first: a sign-in that is refused stops the walk after one try, not one per instance.
@@ -1793,7 +1805,7 @@ class Explorer:
                 except Exception as e:  # noqa: BLE001
                     errors.append(str(e))
             rest = [] if errors else self.instances[1:]
-        threads = [threading.Thread(target=up, args=(inst,)) for inst in rest]
+        threads = [threading.Thread(target=up_disarmed, args=(inst,)) for inst in rest]
         for t in threads:
             t.start()
         for t in threads:
@@ -4152,7 +4164,7 @@ def recording_option(opts):
             return "--network record"
         if o == "--network-unmatched" and v.startswith("fetch:"):
             return "--network-unmatched fetch:"
-        if o == "--rec" and {"net", "all"} & {c.strip() for c in v.split(",")}:
+        if o == "--rec" and {"net", "all"} & set(re.split(r"[,\s]+", v)):
             return f"--rec {v}"
         if o == "--jvm" and v.startswith(("-Dapksim.network=record", "-Dapksim.networkUnmatched=fetch", "-Dapksim.rec=")):
             return f"--jvm {v.split('=')[0]}"
@@ -4310,7 +4322,7 @@ def load_seed(args, out, combos):
             seed = json.load(f)
     except (OSError, ValueError) as e:
         fail(f"--seed: cannot read {os.path.join(seed_dir, 'crawl.json')}: {e}")
-    if args.autofill and (seed.get("network") or os.path.exists(os.path.join(seed_dir, "network.har"))):
+    if getattr(args, "autofill", False) and (seed.get("network") or os.path.exists(os.path.join(seed_dir, "network.har"))):
         fail(AUTOFILL_NO_RECORDING.format("--seed of a --freeze-network walk"))
     known = {s["id"] for s in seed.get("screens", [])}
     unknown = [o for o in args.only_ids if o not in known]
@@ -4460,8 +4472,10 @@ def end_walk(why, code):
                     w.kept.remove()
                 shutil.rmtree(w.stage, ignore_errors=True)
         finally:
-            sys.stdout.flush()
-            os._exit(code)
+            try:
+                sys.stdout.flush()
+            finally:
+                os._exit(code)
 
 
 def main():
