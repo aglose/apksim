@@ -367,9 +367,11 @@ final class Recording {
     return method + " " + url + " " + started;
   }
 
+  private boolean secretsFailed;
+
   /**
-   * Writes FILE.secrets, readable by its owner alone, when an entry has redacted answer headers to keep. Left alone when
-   * none has: a file from an earlier launch is not this launch's to remove.
+   * Writes FILE.secrets, readable by its owner alone, when an entry has redacted answer headers to keep. When none has,
+   * a file left by an earlier launch goes: FILE is this launch's now, and that one's sessions are not to linger beside it.
    */
   private void saveSecrets(List<Entry> all) throws IOException {
     List<Object> list = new ArrayList<>();
@@ -382,7 +384,10 @@ final class Recording {
       m.put("responseHeaders", headers(e.secretResp));
       list.add(m);
     }
-    if (list.isEmpty()) return;
+    if (list.isEmpty()) {
+      Files.deleteIfExists(secretsPath(path));
+      return;
+    }
     Map<String, Object> root = new LinkedHashMap<>();
     root.put("comment", "apksim: the values of the headers redacted in " + path.getFileName()
         + ", so a replay can sign the app in again. Private: do not share or commit this file.");
@@ -433,7 +438,15 @@ final class Recording {
       all.sort(java.util.Comparator.comparingLong(e -> e.wallMs));
       json = Json.write(harRoot(all, certificates, connections));
       // Before the HAR: a reader that finds an entry finds its secrets.
-      if (tapless) saveSecrets(all);
+      if (tapless) {
+        try {
+          saveSecrets(all);
+        } catch (IOException e) {
+          // The recording is still worth writing: replayed without the file, its sign-in sets no cookie (and says so).
+          if (!secretsFailed) Net.log("network fetch: cannot write " + secretsPath(path) + ": " + e);
+          secretsFailed = true;
+        }
+      }
     }
     // A fixed name beside the file: the launcher's sandbox allows writing exactly these two paths (one recording
     // process per file).

@@ -1392,6 +1392,7 @@ class NetFreeze:
         self.not_kept = 0  # 401/403 answers launches fetched and left out (a sign-in replayed without its cookie)
         self.not_kept_requests = []  # the first few, for crawl.json
         self.not_kept_seen = set()
+        self.not_kept_by_launch = {}  # tag: what its running launch's file said so far (the file's count only grows)
 
     SECRETS = ".secrets"
 
@@ -1460,6 +1461,7 @@ class NetFreeze:
     def options(self, tag):
         """The launch options of instance [tag]'s next launch; what its last launch fetched is merged first."""
         self.merge(tag)
+        self.not_kept_by_launch.pop(tag, None)  # that launch has ended: the next one counts from 0
         replay = os.path.join(self.dir, f"replay-{tag}.har")
         with self.lock:
             shutil.copyfile(self.master, replay)
@@ -1495,7 +1497,10 @@ class NetFreeze:
                 self.fetched += added
             left_out = got["log"].get("_apksimNotKept")
             if isinstance(left_out, dict):
-                self.not_kept += int(left_out.get("count") or 0)
+                # A launch still running writes its file again, with its whole count: only the increase is new.
+                count = int(left_out.get("count") or 0)
+                self.not_kept += max(0, count - self.not_kept_by_launch.get(tag, 0))
+                self.not_kept_by_launch[tag] = max(count, self.not_kept_by_launch.get(tag, 0))
                 for r in left_out.get("requests") or []:
                     k = (r.get("method"), r.get("url"), r.get("status"))
                     if k not in self.not_kept_seen and len(self.not_kept_requests) < 20:

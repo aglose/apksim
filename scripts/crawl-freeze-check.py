@@ -129,6 +129,9 @@ def main():
     ws = crawl.walk_settings()["network"]
     check(ws.get("not_kept") == 2 and ws.get("not_kept_requests", [{}])[0].get("status") == 401,
           "crawl.json counts the 401/403 answers launches fetched and did not keep", str(ws))
+    write(f1, doc1)  # the launch, still running, writes its file again: the same two, not two more
+    sec.merge_all()
+    check(sec.not_kept == 2, "a running launch's file merged twice is counted once", str(sec.not_kept))
     seeded2 = crawl.NetFreeze(tempfile.mkdtemp(prefix="crawl-freeze-check-seeded2-"), os.path.dirname(sec.master))
     check(os.path.exists(seeded2.master + ".secrets") and "sid=s3cret" in open(seeded2.master + ".secrets").read(),
           "a seeded walk starts with its seed's secrets too")
