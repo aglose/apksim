@@ -154,7 +154,11 @@ final class Autofill {
 
   private void fill() {
     fills++;
-    for (Map.Entry<String, Nodes.Node> e : filled.entrySet()) e.getValue().setText(fields.get(e.getKey()));
+    for (Map.Entry<String, Nodes.Node> e : filled.entrySet()) {
+      // The flight recorder leaves a password out of the requests that carry it, as it does a typed one.
+      if (e.getValue().info.isPassword()) FlightRecorder.leftOutValue(fields.get(e.getKey()));
+      e.getValue().setText(fields.get(e.getKey()));
+    }
   }
 
   /** Filled last time: did it stick? Password fields may not report their text, so only the others are checked. */

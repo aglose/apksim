@@ -163,6 +163,8 @@ jobs:
         run: scripts/check-net-fetch.sh
       - name: replay match check (left-out input in requests, loose query values, failed connects, the per-request report)
         run: scripts/check-replay-match.sh
+      - name: recording passwords check (sealing, what a sealed file is bound to, apksim rec secrets)
+        run: scripts/check-secrets.sh
       - name: Pinned releases (apksim use)
         run: scripts/check-use.sh
       - name: journey.py check (its start, and steps' timing, against a stand-in apksim)

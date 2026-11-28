@@ -56,6 +56,8 @@ public final class ReplayPlan {
           throw new Refused("an argument holds a line break: " + a.replace("\n", "\\n").replace("\r", "\\r"));
         }
       }
+      // First line: the passwords (base64 JSON, or nothing), which the launcher puts on a pipe the instance reads once.
+      System.out.println(typed.isEmpty() ? "" : java.util.Base64.getEncoder().encodeToString(Secrets.json(typed)));
       for (String a : launch) System.out.println(a);
     } catch (Refused e) {
       System.err.println("apksim replay: " + e.getMessage());
@@ -68,7 +70,7 @@ public final class ReplayPlan {
   }
 
   static final String USAGE = "usage: apksim replay [--apk APK] [--live-network] [--loose] [--out DIR] [--compare all|end|none]"
-      + " [--threshold N] [--journey] [--input all|none] [APKSIM OPTIONS...] BUNDLE.apkrec";
+      + " [--threshold N] [--journey] [--input all|none] [--secrets store|FILE|off] [APKSIM OPTIONS...] BUNDLE.apkrec";
 
   static List<String> plan(String[] args, Path state) throws Exception {
     String apkArg = null;
@@ -79,6 +81,7 @@ public final class ReplayPlan {
     boolean journey = false;
     boolean loose = false;
     String input = "all";
+    String secrets = null;
     List<String> pass = new ArrayList<>();
     for (int i = 0; i < args.length; i++) {
       switch (args[i]) {
@@ -91,6 +94,7 @@ public final class ReplayPlan {
           if (!input.matches("all|none")) throw new Refused("--input takes all or none");
         }
         case "--out" -> outArg = need(args, ++i);
+        case "--secrets" -> secrets = need(args, ++i);
         case "--compare" -> {
           compare = need(args, ++i);
           if (!compare.matches("all|end|none")) throw new Refused("--compare takes all, end or none");
@@ -217,10 +221,56 @@ public final class ReplayPlan {
         // --loose: a request that differs from a recorded one only in query values (made at run time) gets its answer.
         if (loose) launch.add("--network-loose");
       }
+      passwords(secrets, m, pkg, apk, state, live || !har, pass);
       launch.addAll(pass);
       launch.add(apk.toString());
       return launch;
     }
+  }
+
+  /** The passwords to type, which main() hands to the launcher on a pipe, never in the launch's arguments. */
+  private static Map<String, String> typed = Map.of();
+
+  /** Options with which what the app sends is kept or shown somewhere: no real password is typed then. */
+  private static final java.util.Set<String> KEEPS = java.util.Set.of("--network", "--network-unmatched", "--network-inspect", "--rec", "--jvm", "--debug");
+
+  /**
+   * `--secrets store` (the default when the recording's answers are replayed): what `apksim rec secrets` kept for this
+   * recording; FILE: its `s1=VALUE` lines; off: x for each. A live replay sends them to the real server, so it types
+   * them only when asked by name.
+   */
+  private static void passwords(String how, Map<String, Object> m, String pkg, Path apk, Path state, boolean live, List<String> pass)
+      throws Refused, IOException {
+    Map<String, Object> s = map(m.get("secrets"));
+    if (s == null || "off".equals(how) || how == null && live) {
+      if (s != null && how == null) System.err.println("apksim replay: x is typed for passwords (a live replay types them only with --secrets store or --secrets FILE)");
+      return;
+    }
+    String keeps = null;
+    for (String p : pass) if (KEEPS.contains(p)) keeps = p;
+    if (keeps != null) {
+      if (how != null) throw new Refused("--secrets cannot be used with " + keeps + ", which can keep or show what the app sends");
+      System.err.println("apksim replay: x is typed for passwords (" + keeps + " can keep or show what the app sends)");
+      return;
+    }
+    if (how != null && !how.equals("store")) {
+      typed = Secrets.file(Path.of(how).toAbsolutePath());
+      return;
+    }
+    String id = s.get("id") instanceof String i ? i : null;
+    String signers = signers(apk);  // the build about to run, not what the bundle says of it
+    String why = id == null ? "none were kept for it" : signers == null ? "the APK's signer cannot be read" : null;
+    if (why == null) {
+      try {
+        typed = Secrets.kept(state, id, pkg, certs(signers));
+        if (typed.isEmpty()) why = "they are not on this machine";
+      } catch (IOException e) {
+        why = e.getMessage();
+      }
+    }
+    if (why == null) return;
+    if (how != null) throw new Refused("no passwords for this recording: " + why);
+    System.err.println("apksim replay: x is typed for the recording's passwords: " + why + " (docs/replay.md \"Passwords in a recording\")");
   }
 
   /**

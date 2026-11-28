@@ -1358,6 +1358,7 @@ final class NetEngine {
         cout.flush();
       }
       streamRequestBody(req, OutputStream.nullOutputStream());
+      req = blanked(req);
       Recording.Entry e = Net.recording.find(req.method, req.url, req.headers, req.bodySha);
       if (e == null && Net.fetched != null) return fetch(req, startWall);
       Conditions.sleep(Net.conditions.rtt() + (e != null && Net.recordedTiming ? e.wait : 0));
@@ -1379,6 +1380,36 @@ final class NetEngine {
       writeRecorded(req, e);
       inspectReplay(req, startWall, e.status, redacted(e.respHeaders), e.respBody);
       return true;
+    }
+
+    /** The request as a recording would hold it: the passwords this replay types as x (Net.blank); itself without any. */
+    static Request blanked(Request req) {
+      String url = req.url;
+      byte[] body = req.bodyTruncated ? null : req.body;
+      boolean changed = false;
+      for (Net.Blank b : Net.blanks) {
+        byte[] u = Recording.scrub(url.getBytes(StandardCharsets.UTF_8), b.text(), b.length());
+        byte[] d = Recording.scrub(body, b.text(), b.length());
+        if (u != null) url = new String(u, StandardCharsets.UTF_8);
+        if (d != null) body = d;
+        changed |= u != null || d != null;
+      }
+      if (!changed) return req;
+      Request r = new Request();
+      r.method = req.method;
+      r.target = req.target;
+      r.version = req.version;
+      r.url = url;
+      for (String[] h : req.headers) {
+        boolean length = body != null && h[0].equalsIgnoreCase("Content-Length");
+        r.headers.add(length ? new String[] {h[0], String.valueOf(body.length)} : h);
+      }
+      r.body = req.bodyTruncated ? req.body : body;
+      r.bodySha = body == null ? req.bodySha : Recording.sha256(body);
+      r.hasBody = req.hasBody;
+      r.bodyTruncated = req.bodyTruncated;
+      r.toProxy = req.toProxy;
+      return r;
     }
 
     /** The 599 a request nothing can answer gets: logged, listed by `network unmatched`, and (policy fail) failing a test. */

@@ -169,7 +169,9 @@ A bundle is meant to be sent to someone else, so by default it leaves out:
   `input` channel on (without it nothing knows what was typed), only text of 4 characters or more (shorter turns up by
   chance), only in a request's URL and body (not its headers, a compressed body, WebSocket messages or answers), and
   not in a body over 32 MB. A run edited after a tap (Delete once the field was touched again) is not the field's text
-  and is not found: compare `counts.redactedInput` with `counts.harRedactedInput` before sending a bundle of a sign-in;
+  and is not found: compare `counts.redactedInput` with `counts.harRedactedInput` before sending a bundle of a sign-in. `rec clear` does not forget
+  what was typed (it is in memory only). To type the real password in a replay, see [replay.md](replay.md) "Passwords in
+  a recording": its names and lengths are the manifest's `secrets`, its value is never in the bundle;
 - clipboard text (`clipboard set TEXT` is kept as its length);
 - `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` headers (`--network-redact` adds more names);
 - database values, unless `db+values` is on: bound arguments, ContentValues, query results, and literals written into
@@ -178,8 +180,9 @@ A bundle is meant to be sent to someone else, so by default it leaves out:
 Still in a bundle: response bodies, the app's data folder (`checkpoint/data.zip`), the screen, anything the app
 logs, and typed text a request carries in another form (hashed, encrypted, a token made from it), or sent by a request
 that began before the save's window or was typed with keys whose characters the key map does not give. A password
-that did not come through input dispatch is not left out of anything: one apksim's autofill (or an accessibility
-`setText`) put in a field is in the requests that carried it. And a checkpoint is the app's own state, taken as it is:
+that did not come through input dispatch is left out of requests when apksim's autofill put it in its field, when it is
+in a View's password field as a touch or a key begins, or when it was the clipboard's while a password field had the
+focus (Ctrl+V, the Paste menu); one that an accessibility `setText` put in a Compose field is not. And a checkpoint is the app's own state, taken as it is:
 `checkpoint/state.bin` (the saved instance state, which can hold a password field's text) and the data folder
 (whatever the app stored) are not searched. Treat a bundle from a signed-in session like the device itself.
 

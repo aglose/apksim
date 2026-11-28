@@ -82,7 +82,11 @@ final class Replay {
   private Journey journey;
 
   /** One line of input.jsonl: an event to dispatch or a command to run, and whether a gesture starts with it. */
-  record Item(long t, long w, SimWindow.Event event, String[] command, boolean point, String what) {}
+  record Item(long t, long w, SimWindow.Event event, String[] command, boolean point, String what, Secret secret) {}
+
+  /** The character of a kept password an event types, in place of its placeholder (only into a password field). */
+  record Secret(String name, int ch) {}
+
 
   /** One compared point: where, how many pixels differ in the best recorded candidate, and the verdict. */
   record Point(int n, String label, long offsetMs, long over, long total, boolean diverged, String files) {}
@@ -127,7 +131,20 @@ final class Replay {
     long total = movie == null ? 0 : (long) movie.w * movie.h;
     double th = t == null ? 0.00005 : Double.parseDouble(t);
     threshold = th < 1 ? Math.max(16, th * total) : th;
+    // Passwords the owner kept, or gave (Secrets): typed for their placeholders, and blanked in what the app sends before
+    // it is matched with the recording, where they are blank too.
+    Map<String, String> values = Secrets.fromLauncher();
+    Map<String, int[]> typedOf = new LinkedHashMap<>();
+    Map<String, Integer> eventsOf = new LinkedHashMap<>();
+    if (!values.isEmpty()) blank(values);
     Path input = dir.resolve("input.jsonl");
+    if (!values.isEmpty() && Files.isRegularFile(input)) {
+      for (String line : Files.readAllLines(input, StandardCharsets.UTF_8)) {
+        if (!line.contains("\"secret\"")) continue;
+        Map<String, Object> m = ReplayPlan.map(json(line));
+        if ((long) num(m.get("t")) >= cpUptime && m.get("secret") instanceof String s) eventsOf.merge(s, 1, Integer::sum);
+      }
+    }
     // --input none: the checkpoint only (scripts/journey.py drives from there).
     if (Files.isRegularFile(input) && !"none".equals(plan.getProperty("input"))) {
       int down = 0;
@@ -141,7 +158,7 @@ final class Replay {
           if (m.get("cmd") instanceof List<?> c) {
             String[] a = c.stream().map(String::valueOf).toArray(String[]::new);
             if (a.length == 0) continue;
-            items.add(new Item(at, wall, null, a, true, String.join(" ", a)));
+            items.add(new Item(at, wall, null, a, true, String.join(" ", a), null));
             continue;
           }
           int type = (int) num(m.get("type"));
@@ -149,7 +166,23 @@ final class Replay {
           float x = (float) num(m.get("x"));
           float y = (float) num(m.get("y"));
           float v = (float) num(m.get("v"));
-          if (Boolean.TRUE.equals(m.get("redacted"))) {
+          String value = m.get("secret") instanceof String s ? values.get(s) : null;
+          if (m.get("secretDelete") instanceof String s && values.containsKey(s)) continue;  // its final text is typed
+          int[] chars = {};
+          if (value != null) {
+            // One character an event, as it was typed; a value of another length (--secrets) ends early or late.
+            String name = (String) m.get("secret");
+            int[] cps = value.codePoints().toArray();
+            int[] at0 = typedOf.computeIfAbsent(name, k -> new int[1]);
+            int i = at0[0]++;
+            if (i >= cps.length) continue;
+            chars = i == eventsOf.get(name) - 1 ? Arrays.copyOfRange(cps, i, cps.length) : new int[] {cps[i]};
+            kept++;
+            type = SimWindow.CHAR;
+            x = 0;
+            y = 0;
+            v = 'x';
+          } else if (Boolean.TRUE.equals(m.get("redacted"))) {
             leftOut++;
             // Left out of the recording (a password field, pasted text): a placeholder of the same kind.
             if (type == SimWindow.KEY) {
@@ -172,11 +205,34 @@ final class Replay {
           if (type == SimWindow.DOWN || type == SimWindow.TOUCH2_DOWN) down++;
           else if (type == SimWindow.UP || type == SimWindow.CANCEL || type == SimWindow.TOUCH2_UP) down = Math.max(0, down - 1);
           String what = String.valueOf(m.get("ev")) + (type == SimWindow.CHAR || type == SimWindow.KEY ? "" : " " + Math.round(x) + "," + Math.round(y));
-          items.add(new Item(at, wall, new SimWindow.Event(type, x, y, v), null, point, what));
+          if (chars.length == 0) items.add(new Item(at, wall, new SimWindow.Event(type, x, y, v), null, point, what, null));
+          for (int i = 0; i < chars.length; i++) {
+            items.add(new Item(at, wall, new SimWindow.Event(type, x, y, v), null, point && i == 0, what, new Secret((String) m.get("secret"), chars[i])));
+          }
         }
       }
     }
     items.sort(java.util.Comparator.comparingLong(Item::t));
+  }
+
+  private int kept;
+
+  /** What the app sends that carries these, written as the recording has it: as many x as the recorded one was long. */
+  private void blank(Map<String, String> values) {
+    Map<String, Integer> lengths = new LinkedHashMap<>();
+    Map<String, Object> s = ReplayPlan.map(manifest.get("secrets"));
+    if (s != null && s.get("items") instanceof List<?> l) {
+      for (Object o : l) {
+        Map<String, Object> i = ReplayPlan.map(o);
+        if (i != null && i.get("length") instanceof Number n && n.intValue() >= 0 && n.intValue() <= Secrets.MAX_VALUE) {
+          lengths.put(String.valueOf(i.get("name")), n.intValue());
+        }
+      }
+    }
+    // Every one that is typed is blanked, with its own length when the recording does not say the recorded one's.
+    List<dev.apksim.net.Net.Blank> out = new ArrayList<>();
+    values.forEach((name, v) -> out.add(new dev.apksim.net.Net.Blank(v, lengths.getOrDefault(name, v.length()))));
+    dev.apksim.net.Net.blank(out);
   }
 
   /** Whether the journal has been played and the result is known (main thread). */
@@ -325,6 +381,9 @@ final class Replay {
       if (e.type() == SimWindow.DOWN || e.type() == SimWindow.TOUCH2_DOWN) pointers++;
       else if (e.type() == SimWindow.UP || e.type() == SimWindow.CANCEL || e.type() == SimWindow.TOUCH2_UP) pointers = Math.max(0, pointers - 1);
       dispatched++;
+      // (The journey above has the placeholder.) Into a password field only: a bundle someone else made could otherwise
+      // have the password typed where it is shown or sent.
+      if (it.secret != null && FlightRecorder.passwordFocused(false)) return new SimWindow.Event(e.type(), e.x(), e.y(), it.secret.ch);
       return e;
     }
     // The journal is done: wait for the recording's end (the save), then for the screen to be still (300 ms without a
@@ -733,6 +792,7 @@ final class Replay {
     m.put("points", ps);
     if (firstDivergence != null) m.put("firstDivergence", firstDivergence.n);
     if (leftOut > 0) m.put("redactedInput", leftOut);
+    if (kept > 0) m.put("secretInput", kept);
     if (requests != null) m.put("requests", requests);
     m.put("notes", notes);
     try {

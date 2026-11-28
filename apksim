@@ -98,6 +98,7 @@ Usage: apksim [options] APP.apk
        apksim --instrument TEST.apk [-e KEY VALUE]... APP.apk
        apksim skin add|list|show|preview|remove|export   device skins (docs/skins.md)
        apksim replay [--apk APK] [--live-network] [OPTIONS] BUNDLE.apkrec   a flight recording replayed (docs/replay.md)
+       apksim rec secrets [on|off|list|forget ID|all]   passwords typed while recording kept apart, for replays
        apksim --version | --train | --stop-standbys
        apksim use [X.Y.Z|latest|default]   switch this Mac to a release, older or newer (a web app's pinned version)
        apksim inspect [optional|on|off]    allow a web app's network inspector, and restart the beam agent
@@ -186,7 +187,9 @@ EOF
   replay) SERVE=1; REPLAY=1; shift ;;
   # The flight recorder's trace viewer (docs/trace-viewer.md): `apksim rec view FILE` serves the page and the file on
   # loopback and opens the browser. (Other `rec` words are control commands, not launcher ones.)
-  rec) if [[ "${2:-}" == view ]]; then SERVE=1; TRACEVIEW=1; shift 2; fi ;;
+  # `apksim rec secrets`: passwords kept apart from recordings, for replays (docs/replay.md).
+  rec) if [[ "${2:-}" == view ]]; then SERVE=1; TRACEVIEW=1; shift 2
+       elif [[ "${2:-}" == secrets ]]; then SERVE=1; RECSECRETS=1; shift 2; fi ;;
   beam) SERVE=1; shift; set -- --beam "$@"
     APKSIM_LAUNCHER_PATH="${BASH_SOURCE[0]}"; [[ "$APKSIM_LAUNCHER_PATH" == /* ]] || APKSIM_LAUNCHER_PATH="$PWD/$APKSIM_LAUNCHER_PATH"
     export APKSIM_LAUNCHER_PATH
@@ -435,6 +438,10 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     # App data in slots NAME-0, NAME-1... instead of default, instance-N (apksim serve: never the owner's own data).
     --data-slots) EXTRA+=("-Dapksim.dataSlots=$2"); shift 2 ;;
     # Set by `apksim replay` (ReplayPlan): the unpacked bundle, and where its report goes.
+    # The descriptor `apksim replay` left a pipe open on, with the passwords to type (read once; a cold launch, since a
+    # standby gets only stdin, stdout and stderr).
+    --replay-secrets) [[ "$2" =~ ^[0-9]+$ ]] || { echo "--replay-secrets takes a descriptor" >&2; exit 2; }
+      EXTRA+=("-Dapksim.replay.secrets=$2"); shift 2 ;;
     --replay-dir) EXTRA+=("-Dapksim.replay=$2"); shift 2 ;;
     --replay-out) mkdir -p "$2" && REPLAY_OUT="$(cd "$2" && pwd)"; EXTRA+=("-Dapksim.replay.out=$REPLAY_OUT"); shift 2 ;;
     # Run a test APK (androidTest build) against the app, as `am instrument -w -r [-e KEY VALUE]...` would.
@@ -605,6 +612,8 @@ STANDBY_ON=""
 if [[ "$OS" == Darwin ]]; then [[ "${APKSIM_STANDBY:-1}" != 0 ]] && STANDBY_ON=1
 elif [[ "$OS" == Linux && ( "${APKSIM_STANDBY:-}" == 1 || "${APKSIM_STANDBY:-}" == cold ) ]]; then STANDBY_ON=1; fi
 WARM_OK="" COLD_OPT=""
+# Passwords typed while recording are kept, sealed to this key (apksim rec secrets on; Secrets.java).
+[[ -f "${HOME:-}/.apksim-secrets/public.key" ]] && EXTRA+=("-Dapksim.rec.seal=$HOME/.apksim-secrets/public.key")
 if [[ -n "$STANDBY_ON" && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSIM_SANDBOX_TEST:-}" && -z "$STANDBY_SOCK" ]]; then
   WARM_OK=1
   # A standby's JVM has the device-path library in front of libc from its start: a launch without it goes cold.
@@ -670,13 +679,27 @@ if [[ -n "${SKIN:-}" ]]; then
 fi
 if [[ -n "${REPLAY:-}" ]]; then
   mkdir -p "$STATE/tmp"
-  PLAN="$(mktemp "$STATE/tmp/replay-plan.XXXXXX")" || exit 2
-  "$JAVA" -XX:+UseSerialGC -Xmx512m -XX:TieredStopAtLevel=1 -Djava.awt.headless=true -Dapksim.state="$STATE" \
-    -cp "$ROOT/work/apksim.jar" dev.apksim.ReplayPlan "$@" > "$PLAN" || { S=$?; rm -f "$PLAN"; exit $S; }
+  # The plan goes through a variable, not a file: its first line is the passwords to type, if any, and a file in STATE
+  # could be read by any running app. printf is a builtin, so they are in no process's arguments either.
+  PLAN="$("$JAVA" -XX:+UseSerialGC -Xmx512m -XX:TieredStopAtLevel=1 -Djava.awt.headless=true -Dapksim.state="$STATE" \
+    -cp "$ROOT/work/apksim.jar" dev.apksim.ReplayPlan "$@")" || exit $?
+  # (Taken apart with expansions: a here-string is a file in the temp folder.)
+  TYPED="${PLAN%%$'\n'*}"; PLAN="${PLAN#*$'\n'}"
   ARGS=()
-  while IFS= read -r L || [[ -n "$L" ]]; do ARGS+=("$L"); done < "$PLAN"
-  rm -f "$PLAN"
+  while [[ -n "$PLAN" ]]; do
+    ARGS+=("${PLAN%%$'\n'*}")
+    if [[ "$PLAN" == *$'\n'* ]]; then PLAN="${PLAN#*$'\n'}"; else PLAN=""; fi
+  done
+  if [[ -n "$TYPED" ]]; then
+    exec 9< <(printf '%s' "$TYPED" | base64 -d)
+    TYPED=""
+    exec "$ROOT/apksim" --replay-secrets 9 "${ARGS[@]}"
+  fi
   exec "$ROOT/apksim" "${ARGS[@]}"
+fi
+if [[ -n "${RECSECRETS:-}" ]]; then
+  exec "$JAVA" -XX:+UseSerialGC -Xmx256m -XX:TieredStopAtLevel=1 -Dapksim.state="$STATE" -Dapksim.secrets.dir="$HOME/.apksim-secrets" \
+    -cp "$ROOT/work/apksim.jar" dev.apksim.Secrets "$@"
 fi
 if [[ -n "${TRACEVIEW:-}" ]]; then
   exec "$JAVA" -XX:+UseSerialGC -Xmx256m -XX:TieredStopAtLevel=1 -cp "$ROOT/work/apksim.jar" dev.apksim.serve.TraceView "$@"

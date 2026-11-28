@@ -327,6 +327,18 @@ public final class Net {
     return () -> har.get().getBytes(java.nio.charset.StandardCharsets.UTF_8);
   }
 
+  /** A password a replay types, and how long the recorded one was: that many x stand for it in the recording. */
+  public record Blank(String text, int length) {}
+
+  static volatile List<Blank> blanks = List.of();
+
+  /** Replaying with kept passwords: what is matched, logged and reported has them blanked as the recording does. */
+  public static void blank(List<Blank> b) {
+    List<Blank> l = new ArrayList<>(b);
+    l.sort((x, y) -> y.text().length() - x.text().length());
+    blanks = List.copyOf(l);
+  }
+
   /** Whether the network inspector is on (`--network-inspect`). */
   public static boolean inspecting() {
     return Inspector.on;
