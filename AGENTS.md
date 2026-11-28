@@ -896,8 +896,10 @@ Read README.md for results and limits; this file covers how to work on the code.
 - `testapks/composeapp`: the test app, and the sample app Greenroom ships (each release's `apksim-testapp-VERSION.apk`).
   Material 3 Expressive (material3 1.5.0's `MaterialExpressiveTheme`, expressive motion, its own colour roles in
   `ui/theme/Color.kt`, generated from seed #6A3DE8 with the 2025 colour spec's expressive variant; edge to edge). Home
-  (`Home.kt`) has a search field, a counter card ("FAB clicks: N", its shapes turning a notch per count), an All/Saved
-  filter and a list of 100 places ("Item N", a segmented list: a tap saves one, its arrow opens the place's page);
+  (`Home.kt`) has a counter card ("FAB clicks: N", its shapes turning a notch per count; first, so a watch shows it), a
+  search field, an All/Saved filter and a list of 100 places ("Item N", a segmented list: a tap or the row's heart
+  saves one, its arrow opens the place's page; every row has the heart, so saving changes no row's structure, which
+  `crawl.py` would otherwise count as a screen per saved row);
   the place's page (`Detail.kt`: a large flexible app bar, a floating toolbar, a date picker, a slider, a single choice,
   checkboxes, a confirmation dialog, a snackbar; Back returns); Trips (`Trips.kt`; SQLite rename: "Italian vacation" ↔
   "Roman vacation"); Settings (grouped sections); and a **Shader** tab, a full-screen unthrottled noise shader used as

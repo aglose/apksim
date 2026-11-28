@@ -109,7 +109,7 @@ fun HomeScreen(state: HomeState, count: Int, wide: Boolean, listState: androidx.
               Text(place.name, style = MaterialTheme.typography.titleMedium)
               Text(place.tagline, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            PlaceActions(place, i in state.saved, onOpen)
+            PlaceActions(place, i in state.saved, { state.toggle(i) }, onOpen)
           }
         }
       }
@@ -128,18 +128,25 @@ fun HomeScreen(state: HomeState, count: Int, wide: Boolean, listState: androidx.
               if (i in state.saved) MaterialTheme.colorScheme.surfaceContainerHighest else MaterialTheme.colorScheme.surfaceContainer),
           leadingContent = { PlaceBadge(i, 40.dp) },
           supportingContent = { Text(place.tagline) },
-          trailingContent = { PlaceActions(place, i in state.saved, onOpen) },
+          trailingContent = { PlaceActions(place, i in state.saved, { state.toggle(i) }, onOpen) },
         ) { Text(place.name) }
       }
     }
   }
 }
 
-/** The saved mark, and the way to a place's page. */
+/**
+ * The saved mark, a toggle on every row whether saved or not, and the way to a place's page. Saving changes a row's
+ * state, never its structure, so saved and unsaved rows are alike to a crawler (scripts/crawl.py writes a run of
+ * identical rows once; a heart shown only on saved rows made each saved row's place a screen of its own).
+ */
 @Composable
-private fun PlaceActions(place: Place, saved: Boolean, onOpen: (Int) -> Unit) {
+private fun PlaceActions(place: Place, saved: Boolean, onToggle: () -> Unit, onOpen: (Int) -> Unit) {
   Row(verticalAlignment = Alignment.CenterVertically) {
-    if (saved) Icon(Icons.Filled.Favorite, "Saved", tint = MaterialTheme.colorScheme.primary)
+    IconToggleButton(saved, { onToggle() }) {
+      Icon(if (saved) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder, if (saved) "Saved" else "Save ${place.name}",
+          tint = if (saved) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+    }
     IconButton({ onOpen(place.number) }) { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, "Open ${place.name}") }
   }
 }
