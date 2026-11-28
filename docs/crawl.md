@@ -298,7 +298,7 @@ So each replay starts from the data the app had at its launch:
 
 What it does not cover: state an app keeps in memory only (a static that a tap changed and nothing writes) outlives a
 `restart`, as before. External storage is at a device's path, `/storage/emulated/0`, in every instance
-(`DevicePaths` in AGENTS.md), so a screen that prints it is the same in each. The app's internal folders
+(`DevicePaths` in docs/internals/storage-and-device.md), so a screen that prints it is the same in each. The app's internal folders
 (`getFilesDir`, `getCacheDir`, databases) are still host folders of the instance's slot, so a screen that prints one
 of those still differs between instances.
 

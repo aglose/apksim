@@ -274,7 +274,7 @@ the manual checks listed.
      sent over loopback and decoded in the tab: ~7 ms more from presented to on screen than the window's direct
      IOSurface present, and 4 Mbps loses detail in fine full-screen motion.
    - **Two clocks**: a headless instance paces on its own 120 Hz grid, the browser shows frames on the display's
-     vsync. The window's display pacing put a new frame on 98-99% of vsyncs where the grid got 69-100% (AGENTS.md,
+     vsync. The window's display pacing put a new frame on 98-99% of vsyncs where the grid got 69-100% (docs/internals/open-work.md,
      vsync pacing); the tab has not been measured that way.
    - **Drags**: serve measured 72 fps with H.264 against 82 with JPEG while dragging (the encode waited for); not yet
      compared with the window under the same input.
@@ -1247,7 +1247,7 @@ What it would take for `apksim beam` on a Linux desktop (the page offers beam on
 
 An app in a Linux serve's catalog runs there with a library linked for 4 KB pages (Linux maps 4 KB pages), but macOS
 maps 16 KB pages: a library whose writable data outside RELRO shares a page with its code is refused by the native
-loader unless the launch has `--move-shared-data` (AGENTS.md, "Hard-won rules"). A catalog written for a Linux serve has
+loader unless the launch has `--move-shared-data` (docs/internals/native.md, "Rules"). A catalog written for a Linux serve has
 no reason to say so, and the beamed app exited at its first `loadLibrary` (a `NoClassDefFoundError` for that class on
 the next try); the page fell back to the server each time, and the operator never knew.
 
@@ -1258,7 +1258,7 @@ one has such data, with a line in the agent's log and the session's naming the l
 cannot be read is taken as fine: the loader says what is wrong with it if the app loads it. The flag changes only how
 those libraries are mapped (any other loads as before), and the instance is in the beam sandbox. A library whose
 data cannot be moved (code after it) is still refused, with the loader's own message. What the move cannot promise
-(references it cannot find, AGENTS.md) holds here too; without it the app does not start on the Mac at all. An app
+(references it cannot find, docs/internals/native.md) holds here too; without it the app does not start on the Mac at all. An app
 that catches the refusal and runs without the library now gets it loaded, moved. `beam-check.py` checks the line
 appears for the test app (whose `libpagefixturenorelro.so` is such a library), that the session then streams, and
 that `run` of its kept session adds the flag too.

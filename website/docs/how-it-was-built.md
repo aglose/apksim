@@ -89,4 +89,4 @@ Four habits did most of the work:
     compiler thread while a standby booted. App Nap throttles the timers of a hidden window. The window server brings a
     newly launched app to the front whether asked or not, so windows that must not take focus start as accessory apps.
 
-What is still open is under [Limitations](limitations.md) and in [AGENTS.md](https://github.com/aglose/apksim/blob/main/AGENTS.md), "Open work".
+What is still open is under [Limitations](limitations.md) and in [docs/internals/open-work.md](https://github.com/aglose/apksim/blob/main/docs/internals/open-work.md).

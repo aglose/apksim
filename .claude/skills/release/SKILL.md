@@ -1,6 +1,6 @@
 ---
 name: release
-description: Merge every open apksim pull request, refresh the docs (website/, docs/, AGENTS.md, README.md) for what landed, then tag the next version and publish the release. Use when the owner says "release", "cut a release", "merge everything and publish", or "ship it".
+description: Merge every open apksim pull request, refresh the docs (website/, docs/, docs/internals/, README.md) for what landed, then tag the next version and publish the release. Use when the owner says "release", "cut a release", "merge everything and publish", or "ship it".
 ---
 
 # apksim release
@@ -56,7 +56,10 @@ origin/main`.
    PRs are merge commits) and `git diff --stat LAST_TAG..origin/main`.
 2. Update docs the changes made stale, and only those: `website/docs/*.md` and `website/pages/*.md` (options,
    features, results, limits, install and image tags), `README.md` (only if the top-level summary or links changed),
-   `AGENTS.md` (layout, commands, new classes and options), and the matching `docs/*.md`. Match the existing style:
+   the matching `docs/internals/*.md` (new classes, options, commands, what was measured: AGENTS.md's "Reference
+   notes" says which file has what), and the matching `docs/*.md`. `AGENTS.md` itself is loaded into every session
+   and stays short: change it only for a new top-level folder, an everyday command, or a rule every session must
+   know, a line or two each. Match the existing style:
    concrete numbers measured, what was checked, what is not done. Do not invent measurements; if a number needs a
    run, run it or leave the old one and say so.
 3. Image tag and version references: `grep -rn "ghcr.io/aglose/apksim:" README.md website docs packaging` and update
@@ -88,7 +91,7 @@ then delete and re-push the tag.
 ## 6. Release notes and publish
 1. Write notes from the merged PRs since the last tag: a short headline paragraph, then grouped bullets (Added,
    Changed, Fixed), each with a PR link `[owner/repo#N](url)`. Same privacy and no-attribution rules.
-2. `gh release edit vX.Y.Z --notes-file FILE --draft=false` publishes the draft. (AGENTS.md says the draft is
+2. `gh release edit vX.Y.Z --notes-file FILE --draft=false` publishes the draft. (docs/internals/releases-and-linux.md says the draft is
    normally published by hand after reading its notes; this skill is that reading, so check the notes against the
    privacy rules once more before running it.) Publishing triggers the `tap` job (Homebrew cask) and `image-latest`.
 3. Watch those in the foreground too, as in step 5 (`gh run list --workflow release.yml --limit 3`, the run whose

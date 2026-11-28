@@ -21,8 +21,8 @@ check and a privacy check; `linux-smoke` passes when all of them did. `linux-smo
 suite in the arm64 image. On an Apple Silicon runner, `startup-gate`
 fails a pull request whose launches are slower than their budget against a fixed release
 ([docs/startup-gate.md](https://github.com/aglose/apksim/blob/main/docs/startup-gate.md)). CI can't cover the other Mac-only parts (the window, Metal,
-VideoToolbox), so say in the PR what you checked locally. [AGENTS.md](https://github.com/aglose/apksim/blob/main/AGENTS.md) is the full guide to building,
-running and measuring.
+VideoToolbox), so say in the PR what you checked locally. [AGENTS.md](https://github.com/aglose/apksim/blob/main/AGENTS.md) is the guide to building,
+running and measuring, and [docs/internals](https://github.com/aglose/apksim/tree/main/docs/internals) has the notes on how each part works.
 
 `scripts/package-release.sh VERSION` packages a release. Pushing a `v*` tag builds it and makes a draft release, and
 publishing the draft updates the Homebrew tap and the image.
