@@ -51,6 +51,7 @@ the app is back on its own connections.
                              Proxy-Authorization, Cookie, Set-Cookie); "-Name" takes one off the default list
 --network-match FIELDS       what a replayed request must match: method,url,body (default), plus headers
 --network-ignore-query NAMES query parameters left out of the match (cache busters, timestamps); case-sensitive
+--network-loose              a request no entry matches is answered by one that differs only in query values ("Matching")
 --network-ignore-header NAMES request headers left out of the match when it includes headers
 --network-unmatched POLICY   what an unmatched replay request gets: fail (default: 599 response, logged, and in a
                              test run the test fails), respond (599 only), or fetch:OUT (with --network replay: sent to
@@ -197,6 +198,10 @@ listed again as headers), and header names in lower case as they were sent. Each
 - `_apksimError` on an entry: why it has no whole answer (`the server closed the connection before its answer was
   whole`, `the app reset the stream: CANCEL`, `java.net.SocketTimeoutException: Read timed out`, `closed by the app`).
   Its status is 0 when no answer began. A failed request is evidence, so it is kept; replay never answers with one.
+  A connect that failed is an entry too, `CONNECT host:port` with `connect failed: EXCEPTION` ("Failed connects").
+- `_apksimRedactedInput` on an entry of a flight recording: the request carried text the recorder leaves out of its
+  input journal (a typed password), and its body and URL hold as many `x` instead (flight-recorder.md "Privacy").
+  Replay answers a request with that method and URL from it even when the body differs.
 - `_apksimUnfinished` on an entry: still going on when the recording was written (a gRPC or event stream that stays
   open): what there was of it by then.
 - `response._apksimTrailers`: trailers after the body (gRPC's `grpc-status` and `grpc-message`).
@@ -235,6 +240,13 @@ An unmatched request is logged on stderr with the closest recorded entry and wha
 [apksim] network replay: no recorded response for POST https://api.example.test/v1/items
          closest: POST https://api.example.test/v1/items (body differs: 3f2a.. recorded, 9c1e.. now)
 ```
+
+When the closest entry has the same method, body and query parameter names and only values differ, a third line names
+the parameters (`--network-ignore-query device matches it`): a value made at run time, such as an id the app generates.
+`--network-loose` (what `apksim replay --loose` passes) answers such a request without naming them: from the entry with
+the same method, path, parameter names and body whose values differ in the fewest parameters, one not yet served
+first. Exact matches always come first, then an entry marked `_apksimRedactedInput` with the request's method and URL,
+then the loose one. `apksim replay` reports how each entry was matched (replay.md "What happened to each request").
 
 It gets a `599 No Recorded Response` with header `X-Apksim-Replay: unmatched` and that text as its body. In a test
 run the test it happened in then fails with the same text (after its own result: a passing test becomes a failure),
@@ -438,6 +450,24 @@ fine. Record with one process: parallel processes recording to one file overwrit
 way: `--wifi`, `--cellular` and `--wifi-signal` set each test's start, and a test's `executeShellCommand("apksim
 network wifi off")` (or `svc wifi disable`) lasts until the next test's setup (`RadiosTest`).
 
+## Failed connects
+
+A connect that fails before any request is sent leaves no exchange, and a replay that knew nothing of it accepted the
+connection and answered the first request with a 599: an app that had seen "connection refused" once while recording
+saw a server error in the replay and retried it (16 times, in one large app). So a recording keeps such a connect as an
+entry of its own: method `CONNECT`, URL `host:port` as the app named them (not where `--network-host` sent them),
+status 0, `_apksimError: "connect failed: java.net.ConnectException: Connection refused"` (the exception as it was
+thrown), and how long it took. Both ways a connect is made record it: through the engine (a host `--network-host` maps
+to a port nothing listens on, any host under network conditions) and directly (the tap: a host the `--no-network`
+sandbox refuses, an address with no route). Loopback connects are left out, as all of loopback is.
+
+Replaying, a connect to a host and port the recording has such entries for, and no answer from, fails with the recorded
+exception's class and message (after the recorded time with `--network-replay-timing recorded`); the entries are
+served in order, the last repeating. A host and port that also has answers in the recording is connected as before: its
+failures were passing, and failing every connect to it would lose the answers. Not kept: a name that did not resolve
+(the app's lookup fails before any connect; replaying, every name resolves to a placeholder), and connects that fail
+while `rec off net` has the capture paused.
+
 ## Checks
 
 - `scripts/check-net-tap.sh` (`TapCheck`; CI's quick checks): the tap as translated app code meets it, against servers
@@ -448,6 +478,9 @@ network wifi off")` (or `svc wifi disable`) lasts until the next test's setup (`
   permessage-deflate, fragmented); a body cut short, a request never answered, a connect refused; HttpsURLConnection
   with no proxy in between; bytes that are not HTTP; which hosts a rule sends through the engine; a relayed
   connection keeping its own TLS; and 80 MB written in 31 ms while the decoder stood still for 4 s.
+- `scripts/check-replay-match.sh` (`ReplayMatchCheck`; CI's quick checks): left-out input taken out of requests and the
+  marked entry's match, loose query values and the option named for them, failed connects recorded and failed again, and
+  the per-entry report `apksim replay` writes.
 - `scripts/check-net-fetch.sh` (`FetchCheck`; CI's quick checks): `--network-unmatched fetch:OUT` against servers on the
   same machine: a request IN has answered from IN (the server never asked); ones it lacks fetched over plain HTTP and TLS
   (a POST body, gzip, chunked, a 404, a host looked up by its real name) and kept in OUT with Authorization and Set-Cookie

@@ -99,6 +99,10 @@ final class Replay {
   private long quietSince;
   private String result;  // null while running
   private int pointers;
+  /** Characters the journal left out (password fields, pasted text), typed here as `x`. */
+  private int leftOut;
+  /** What the app asked of the recorded network (Net.replayReport), once the replay is over; null with a live network. */
+  private Map<String, Object> requests;
 
   private Replay(Path dir) throws IOException {
     this.dir = dir;
@@ -146,6 +150,7 @@ final class Replay {
           float y = (float) num(m.get("y"));
           float v = (float) num(m.get("v"));
           if (Boolean.TRUE.equals(m.get("redacted"))) {
+            leftOut++;
             // Left out of the recording (a password field, pasted text): a placeholder of the same kind.
             if (type == SimWindow.KEY) {
               x = 0;
@@ -599,6 +604,7 @@ final class Replay {
     } catch (Exception e) {
       // not replaying the network
     }
+    String asked = requests();
     if (journey != null) {
       try {
         System.err.println("[apksim] replay: journey " + journey.finish());
@@ -611,14 +617,53 @@ final class Replay {
     String line = firstDivergence != null
         ? "diverged at point " + firstDivergence.n + " of " + points.size() + " (" + firstDivergence.label + ", +" + firstDivergence.offsetMs + " ms)"
         : points.isEmpty() ? "done (nothing compared)" : "matched at all " + points.size() + " points";
-    System.err.println("[apksim] replay: " + line + "; " + dispatched + " events, " + commandsRun + " commands; report "
-        + out.resolve("report.json") + (notes.isEmpty() ? "" : "; " + notes.size() + " notes"));
+    System.err.println("[apksim] replay: " + line + "; " + dispatched + " events, " + commandsRun + " commands; "
+        + (asked == null ? "" : asked + "; ") + "report " + out.resolve("report.json") + (notes.isEmpty() ? "" : "; " + notes.size() + " notes"));
     for (String n : notes) System.err.println("[apksim] replay note: " + n);
     if (control) {
       System.err.println("[apksim] replay: the app is yours (--control); `replay` reports, `quit` ends it");
     } else {
       host.exit(firstDivergence != null ? DIVERGED : 0, "replay " + result);
     }
+  }
+
+  /**
+   * What the app asked of the recorded network, for the report (`requests`) and the summary line ("N of M recorded
+   * requests asked again, K unmatched"); null with a live network. Adds a note naming the option that would have
+   * matched requests that differ from a recorded one in one way only: a value made at run time in the query, or a body
+   * that carried input the recording left out.
+   */
+  private String requests() {
+    try {
+      requests = dev.apksim.net.Net.replayReport();
+    } catch (RuntimeException e) {
+      notes.add("requests not reported: " + e);
+    }
+    if (requests == null) return null;
+    java.util.Set<String> names = new java.util.TreeSet<>();
+    int query = 0, body = 0;
+    if (requests.get("unmatchedRequests") instanceof List<?> l) {
+      for (Object o : l) {
+        Map<String, Object> m = ReplayPlan.map(o);
+        if (m == null) continue;
+        if (m.get("ignoreQuery") instanceof List<?> q) {
+          query++;
+          for (Object n : q) names.add(String.valueOf(n));
+        }
+        if (Boolean.TRUE.equals(m.get("bodyOnly"))) body++;
+      }
+    }
+    if (query > 0) {
+      notes.add(query + " unmatched request" + (query == 1 ? " differs" : "s differ") + " from a recorded one only in the value of "
+          + String.join(", ", names) + " in the query (made at run time?): --network-ignore-query " + String.join(",", names)
+          + " matches " + (query == 1 ? "it" : "them") + ", or `apksim replay --loose` for every such value");
+    }
+    if (body > 0 && leftOut > 0) {
+      notes.add(body + " unmatched request" + (body == 1 ? " differs" : "s differ") + " from a recorded one only in the body, and the recording left "
+          + leftOut + " typed or pasted character" + (leftOut == 1 ? "" : "s") + " out (typed here as x): if the body carries them (a sign-in),"
+          + " --network-match method,url matches it without its body");
+    }
+    return requests.get("asked") + " of " + requests.get("recorded") + " recorded requests asked again, " + requests.get("unmatched") + " unmatched";
   }
 
   /** The app crashed during the replay (Crashes.terminate): the report says where. */
@@ -629,6 +674,7 @@ final class Replay {
     String where = r.next > 0 && r.next <= r.items.size() ? r.items.get(r.next - 1).what + " at +" + (r.items.get(r.next - 1).t - r.cpUptime) + " ms"
         : "before the first event";
     r.notes.add("crashed after " + where + ": " + e);
+    r.requests();
     if (r.journey != null) {
       // The steps up to the crash: a journey that reproduces it is as useful as one that ends normally.
       try {
@@ -685,6 +731,8 @@ final class Replay {
     }
     m.put("points", ps);
     if (firstDivergence != null) m.put("firstDivergence", firstDivergence.n);
+    if (leftOut > 0) m.put("redactedInput", leftOut);
+    if (requests != null) m.put("requests", requests);
     m.put("notes", notes);
     try {
       Files.createDirectories(out);

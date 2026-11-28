@@ -29,6 +29,8 @@ final class Recording {
   private static final Set<String> HOP = Set.of("connection", "keep-alive", "proxy-connection", "transfer-encoding",
       "te", "trailer", "upgrade", "content-length", "host", "expect");
   static final String REDACTED = "REDACTED";
+  /** How a failed connect's `_apksimError` begins; the exception follows, as its toString(). */
+  static final String CONNECT_FAILED = "connect failed: ";
 
   /** What a replayed request must match (docs/network.md "Matching"). */
   record Match(Set<String> fields, Set<String> ignoreQuery, Set<String> ignoreHeaders, Set<String> redact) {}
@@ -79,6 +81,19 @@ final class Recording {
      * `--network-unmatched fetch:FILE` fetched, kept in FILE.secrets and never in the HAR. A replay sends them to the app.
      */
     List<String[]> secretResp;
+    /**
+     * Typed input the flight recorder left out (a password) was in this request: its body and URL hold as many `x`
+     * instead, as a replay types them (`_apksimRedactedInput`). Replay matches it without its body if the body differs.
+     */
+    boolean redactedInput;
+    /** Replaying: the order number of the first request this entry answered (0: none yet), and how each was matched. */
+    int firstSeq;
+    java.util.Set<String> how;
+
+    /** A connect that failed (no request was ever sent): `CONNECT host:port` with the failure as its error. */
+    boolean connectFailed() {
+      return "CONNECT".equals(method) && status == 0 && error != null && error.startsWith(CONNECT_FAILED);
+    }
 
     /** Whether replay can answer with this entry: a whole answer from a server, not an upgrade or a tunnel. */
     boolean replayable() {
@@ -117,10 +132,15 @@ final class Recording {
 
   /** bodySha: the SHA-256 of the request's whole body (EMPTY_SHA, or null, for none). */
   String key(String method, String url, List<String[]> headers, String bodySha) {
+    return key(method, url, headers, bodySha, true, true);
+  }
+
+  /** The key without its URL's query (`query` false) or without the body (`body` false), for the looser matches. */
+  private String key(String method, String url, List<String[]> headers, String bodySha, boolean query, boolean body) {
     StringBuilder k = new StringBuilder();
     if (match.fields.contains("method")) k.append(method.toUpperCase(Locale.ROOT)).append(' ');
-    if (match.fields.contains("url")) k.append(normalizeUrl(url, match.ignoreQuery)).append(' ');
-    if (match.fields.contains("body")) k.append(bodySha == null ? EMPTY_SHA : bodySha).append(' ');
+    if (match.fields.contains("url")) k.append(query ? normalizeUrl(url, match.ignoreQuery) : withoutQuery(normalizeUrl(url, match.ignoreQuery))).append(' ');
+    if (body && match.fields.contains("body")) k.append(bodySha == null ? EMPTY_SHA : bodySha).append(' ');
     if (match.fields.contains("headers")) {
       List<String> hs = new ArrayList<>();
       for (String[] h : headers) {
@@ -174,53 +194,212 @@ final class Recording {
     }
   }
 
+  private static String withoutQuery(String url) {
+    int q = url.indexOf('?');
+    return q < 0 ? url : url.substring(0, q);
+  }
+
+  /** Entries marked `_apksimRedactedInput`, by their key without the body. */
+  private final Map<String, List<Entry>> byRedacted = new HashMap<>();
+  /** Connects that failed while recording, by "host:port" (lower case), and the "host:port"s some entry has an answer from. */
+  private final Map<String, List<Entry>> failedConnects = new HashMap<>();
+  private final Set<String> answeredHosts = new java.util.HashSet<>();
+  /**
+   * `apksim replay --loose` (`--network-loose`): a request no entry matches is answered by one that differs from it only
+   * in the values of query parameters (docs/replay.md "Values made at run time").
+   */
+  boolean looseQuery;
+
   private void index(Entry e) {
     if (e.reqSha == null) e.reqSha = e.reqBody == null ? EMPTY_SHA : sha256(e.reqBody);
     e.key = key(e.method, e.url, e.reqHeaders, e.reqSha);
-    if (e.replayable()) byKey.computeIfAbsent(e.key, k -> new ArrayList<>()).add(e);
+    if (e.connectFailed()) {
+      failedConnects.computeIfAbsent(e.url.toLowerCase(Locale.ROOT), k -> new ArrayList<>()).add(e);
+      return;
+    }
+    if (!e.replayable()) return;
+    byKey.computeIfAbsent(e.key, k -> new ArrayList<>()).add(e);
+    if (e.redactedInput) byRedacted.computeIfAbsent(key(e.method, e.url, e.reqHeaders, null, true, false), k -> new ArrayList<>()).add(e);
+    String hp = hostPort(e.url);
+    if (hp != null) answeredHosts.add(hp);
   }
 
-  /** The answer for a request: entries with its key in recorded order, the last repeating; null if none. */
+  /** "host:port" of an http(s) URL, lower case, with the scheme's port when it names none; null without a host. */
+  static String hostPort(String url) {
+    try {
+      URI u = URI.create(url);
+      if (u.getHost() == null || u.getScheme() == null) return null;
+      int port = u.getPort() > 0 ? u.getPort() : u.getScheme().equalsIgnoreCase("https") ? 443 : 80;
+      return u.getHost().toLowerCase(Locale.ROOT) + ":" + port;
+    } catch (IllegalArgumentException e) {
+      return null;
+    }
+  }
+
+  // ------------------------------------------------------------------ what a replay asked for
+
+  /** Requests answered or failed so far, in order; each entry keeps the number of its first. */
+  private int seq;
+  /** Requests no entry answered, oldest first (the first MISSED_KEPT of them; `missedCount` has them all). */
+  private final List<Map<String, Object>> missed = new ArrayList<>();
+  private int missedCount;
+  private static final int MISSED_KEPT = 500;
+
+  private Entry serve(Entry e, String how) {
+    e.served++;
+    seq++;
+    if (e.firstSeq == 0) e.firstSeq = seq;
+    if (e.how == null) e.how = new java.util.LinkedHashSet<>();
+    e.how.add(how);
+    return e;
+  }
+
+  /** The next of these to serve: in recorded order, the last repeating; null for none. */
+  private static Entry next(List<Entry> list) {
+    if (list == null || list.isEmpty()) return null;
+    for (Entry e : list) if (e.served == 0) return e;
+    return list.get(list.size() - 1);
+  }
+
+  /**
+   * The answer for a request: entries with its key in recorded order, the last repeating. Then, for a request whose
+   * recorded body had typed input left out, the entry marked so with its method and URL (the body is what the replay
+   * could not type). Then, with `looseQuery`, the entry that differs in the fewest query values. Null if none.
+   */
   synchronized Entry find(String method, String url, List<String[]> headers, String bodySha) {
-    List<Entry> list = byKey.get(key(method, url, headers, bodySha));
-    if (list == null) return null;
-    for (Entry e : list) {
-      if (e.served == 0) {
-        e.served++;
-        return e;
+    Entry e = next(byKey.get(key(method, url, headers, bodySha)));
+    if (e != null) return serve(e, "exact");
+    if (match.fields.contains("body")) {
+      e = next(byRedacted.get(key(method, url, headers, null, true, false)));
+      if (e != null) return serve(e, "redacted-input");
+    }
+    if (looseQuery && match.fields.contains("url")) {
+      List<String> names = new ArrayList<>();
+      e = loose(method, url, headers, bodySha, names);
+      if (e != null) return serve(e, "loose-query: " + String.join(",", names));
+    }
+    return null;
+  }
+
+  /** The replayable entry that differs from the request only in query values, in the fewest; `names`: which. */
+  private Entry loose(String method, String url, List<String[]> headers, String bodySha, List<String> names) {
+    String want = key(method, url, headers, bodySha, false, true);
+    String wantNoBody = key(method, url, headers, null, false, false);
+    Entry best = null;
+    List<String> bestNames = null;
+    for (Entry e : entries) {
+      if (!e.replayable() || e.connectFailed()) continue;
+      boolean same = e.redactedInput ? key(e.method, e.url, e.reqHeaders, null, false, false).equals(wantNoBody)
+          : key(e.method, e.url, e.reqHeaders, e.reqSha, false, true).equals(want);
+      if (!same) continue;
+      List<String> d = queryDiff(e.url, url);
+      if (d == null || d.isEmpty()) continue;
+      // Fewer differing values first; among those, one not served yet (recorded order), as find serves repeats.
+      if (best == null || d.size() < bestNames.size() || d.size() == bestNames.size() && best.served > 0 && e.served == 0) {
+        best = e;
+        bestNames = d;
       }
     }
-    Entry last = list.get(list.size() - 1);
-    last.served++;
-    return last;
+    if (best != null) names.addAll(bestNames);
+    return best;
+  }
+
+  /**
+   * The query parameters whose values differ between two URLs that have the same parameter names (each as often),
+   * `--network-ignore-query` names left out; null when the names differ or a URL cannot be read.
+   */
+  List<String> queryDiff(String recorded, String now) {
+    Map<String, List<String>> a = query(recorded), b = query(now);
+    if (a == null || b == null || !a.keySet().equals(b.keySet())) return null;
+    List<String> out = new ArrayList<>();
+    for (Map.Entry<String, List<String>> p : a.entrySet()) {
+      List<String> other = b.get(p.getKey());
+      if (other.size() != p.getValue().size()) return null;
+      if (!other.equals(p.getValue())) out.add(p.getKey());
+    }
+    return out;
+  }
+
+  /** A URL's query as name -> its raw values, sorted, names decoded and sorted; null for a URL that cannot be read. */
+  private Map<String, List<String>> query(String url) {
+    String q;
+    try {
+      q = URI.create(url).getRawQuery();
+    } catch (IllegalArgumentException e) {
+      return null;
+    }
+    Map<String, List<String>> out = new java.util.TreeMap<>();
+    if (q == null || q.isEmpty()) return out;
+    for (String p : q.split("&")) {
+      int eq = p.indexOf('=');
+      String name;
+      try {
+        name = URLDecoder.decode(eq < 0 ? p : p.substring(0, eq), StandardCharsets.UTF_8);
+      } catch (IllegalArgumentException e) {
+        name = eq < 0 ? p : p.substring(0, eq);
+      }
+      if (match.ignoreQuery.contains(name)) continue;
+      out.computeIfAbsent(name, k -> new ArrayList<>()).add(eq < 0 ? "" : p.substring(eq + 1));
+    }
+    for (List<String> v : out.values()) java.util.Collections.sort(v);
+    return out;
   }
 
   /** A recorded answer given before the body (Expect: 100-continue) to this request, or null. */
   synchronized Entry findExpectAnswered(String method, String url, List<String[]> headers) {
     // The entry find would serve next for an empty body (recorded order, the last repeating), but only if it was
     // answered before its body: otherwise the body is read and matched as for any request.
-    List<Entry> list = byKey.get(key(method, url, headers, EMPTY_SHA));
-    if (list == null) return null;
-    Entry next = list.get(list.size() - 1);
-    for (Entry e : list) {
-      if (e.served == 0) {
-        next = e;
-        break;
-      }
+    Entry next = next(byKey.get(key(method, url, headers, EMPTY_SHA)));
+    if (next == null || !next.expectAnswered) return null;
+    return serve(next, "exact");
+  }
+
+  /**
+   * A connect to host:port that failed while recording, to fail again: only for a host and port the recording has no
+   * answer from at all (one that failed now and then is connected, and its requests answered). Null otherwise.
+   */
+  synchronized Entry connectFailure(String host, int port) {
+    String hp = host.toLowerCase(Locale.ROOT) + ":" + port;
+    if (answeredHosts.contains(hp)) return null;
+    Entry e = next(failedConnects.get(hp));
+    return e == null ? null : serve(e, "connect-failed");
+  }
+
+  /** "ERR Class message" (the engine's reply to a connect) for a recorded failure, as Net.exception reads it. */
+  static String connectReply(Entry e) {
+    String x = e.error.substring(CONNECT_FAILED.length());
+    int colon = x.indexOf(": ");
+    String cls = colon < 0 ? x : x.substring(0, colon);
+    String msg = colon < 0 ? "" : x.substring(colon + 2);
+    cls = cls.substring(cls.lastIndexOf('.') + 1).replaceAll("[^A-Za-z0-9_$]", "");
+    return "ERR " + (cls.isEmpty() ? "ConnectException" : cls) + " " + msg.replace('\r', ' ').replace('\n', ' ') + "\r\n";
+  }
+
+  /**
+   * The recorded entry most like a request that matched none: what differs, and what would make it match
+   * (`ignoreQuery`: it differs only in these query parameters' values; `bodyOnly`: only in its body).
+   */
+  record Closest(Entry entry, List<String> diffs, List<String> ignoreQuery, boolean bodyOnly) {
+    String text() {
+      return entry.method + " " + entry.url + (diffs.isEmpty() ? "" : " (" + String.join("; ", diffs) + ")");
     }
-    if (!next.expectAnswered) return null;
-    next.served++;
-    return next;
+
+    /** What would make the entry match, when one option does: a line after the unmatched one ("" otherwise). */
+    String hint() {
+      if (ignoreQuery == null) return "";
+      return "\n         --network-ignore-query " + String.join(",", ignoreQuery) + " matches it (a value made at run time; `apksim replay --loose` for all such)";
+    }
   }
 
   /** The recorded entry most like a request that matched none, and what differs; null if nothing is close. */
-  synchronized String closest(String method, String url, List<String[]> headers, String bodySha) {
+  synchronized Closest closest(String method, String url, List<String[]> headers, String bodySha) {
     URI want;
     try {
       want = URI.create(url);
     } catch (IllegalArgumentException x) {
       return null;
     }
+    String hb = bodySha == null ? EMPTY_SHA : bodySha;
     Entry best = null;
     int bestScore = -1;
     for (Entry e : entries) {
@@ -232,9 +411,15 @@ final class Recording {
       }
       if (u.getHost() == null || want.getHost() == null) continue;
       int score = 0;
-      if (e.method.equalsIgnoreCase(method)) score += 4;
-      if (u.getHost().equalsIgnoreCase(want.getHost())) score += 2; else continue;
-      if (String.valueOf(u.getRawPath()).equals(String.valueOf(want.getRawPath()))) score += 8;
+      if (e.method.equalsIgnoreCase(method)) score += 16;
+      if (u.getHost().equalsIgnoreCase(want.getHost())) score += 8; else continue;
+      if (String.valueOf(u.getRawPath()).equals(String.valueOf(want.getRawPath()))) {
+        score += 32;
+        // Among entries for the same path: one with the same parameter names, the same body, an answer to give.
+        if (queryDiff(e.url, url) != null) score += 4;
+        if ((e.reqSha == null ? EMPTY_SHA : e.reqSha).equals(hb)) score += 2;
+        if (e.replayable()) score += 1;
+      }
       if (score > bestScore) {
         bestScore = score;
         best = e;
@@ -242,14 +427,90 @@ final class Recording {
     }
     if (best == null) return null;
     List<String> diffs = new ArrayList<>();
-    if (!best.method.equalsIgnoreCase(method)) diffs.add("method " + best.method + " recorded");
+    boolean methodSame = best.method.equalsIgnoreCase(method);
+    if (!methodSame) diffs.add("method " + best.method + " recorded");
     String a = normalizeUrl(best.url, match.ignoreQuery), b = normalizeUrl(url, match.ignoreQuery);
-    if (!a.equals(b)) diffs.add(URI.create(a).getRawPath().equals(URI.create(b).getRawPath())
-        ? "query differs: " + URI.create(a).getRawQuery() + " recorded" : "path differs");
-    String ha = best.reqSha == null ? EMPTY_SHA : best.reqSha, hb = bodySha == null ? EMPTY_SHA : bodySha;
-    if (match.fields.contains("body") && !ha.equals(hb)) diffs.add("body differs: " + ha.substring(0, 8) + ".. recorded, " + hb.substring(0, 8) + ".. now");
+    boolean urlSame = a.equals(b);
+    List<String> names = null;
+    if (!urlSame) {
+      boolean samePath = withoutQuery(a).equals(withoutQuery(b));
+      names = samePath ? queryDiff(best.url, url) : null;
+      if (names != null && names.isEmpty()) names = null;
+      diffs.add(!samePath ? "path differs" : "query differs: " + (a.indexOf('?') < 0 ? "none" : a.substring(a.indexOf('?') + 1)) + " recorded"
+          + (names == null ? "" : " (only the value" + (names.size() == 1 ? "" : "s") + " of " + String.join(", ", names) + ")"));
+    }
+    String ha = best.reqSha == null ? EMPTY_SHA : best.reqSha;
+    boolean bodySame = !match.fields.contains("body") || ha.equals(hb) || best.redactedInput;
+    if (!bodySame) diffs.add("body differs: " + ha.substring(0, 8) + ".. recorded, " + hb.substring(0, 8) + ".. now");
     if (diffs.isEmpty() && match.fields.contains("headers")) diffs.add("headers differ");
-    return best.method + " " + best.url + (diffs.isEmpty() ? "" : " (" + String.join("; ", diffs) + ")");
+    if (diffs.isEmpty() && !best.replayable()) {
+      diffs.add(best.error != null ? "recorded without an answer: " + best.error : best.unfinished ? "still going on when the recording was saved"
+          : "not an exchange a replay can answer (status " + best.status + ")");
+    }
+    boolean rest = methodSame && !match.fields.contains("headers") && best.replayable();
+    return new Closest(best, diffs, rest && bodySame && names != null ? names : null, rest && urlSame && !bodySame);
+  }
+
+  /** A request nothing answered (the 599): kept for the report, with the closest entry and what would match it. */
+  synchronized void missed(String method, String url, Closest c, String why) {
+    seq++;
+    missedCount++;
+    if (missed.size() >= MISSED_KEPT) return;
+    Map<String, Object> m = new LinkedHashMap<>();
+    m.put("seq", seq);
+    m.put("method", method);
+    m.put("url", url);
+    if (why != null) m.put("why", why);
+    if (c != null) {
+      Map<String, Object> cl = new LinkedHashMap<>();
+      cl.put("entry", entries.indexOf(c.entry));
+      cl.put("method", c.entry.method);
+      cl.put("url", c.entry.url);
+      m.put("closest", cl);
+      m.put("differs", c.diffs);
+      if (c.ignoreQuery != null) m.put("ignoreQuery", c.ignoreQuery);
+      if (c.bodyOnly) m.put("bodyOnly", true);
+    }
+    missed.add(m);
+  }
+
+  /**
+   * What the replay asked of this recording so far (`report.json`'s `requests`, docs/replay.md): each entry with how
+   * often it was asked for and how it matched, the requests no entry answered, in order (`seq` numbers every request
+   * the replay made), and the counts.
+   */
+  synchronized Map<String, Object> report() {
+    List<Object> recorded = new ArrayList<>();
+    int can = 0, askedEntries = 0;
+    for (int i = 0; i < entries.size(); i++) {
+      Entry e = entries.get(i);
+      Map<String, Object> m = new LinkedHashMap<>();
+      m.put("entry", i);
+      m.put("method", e.method);
+      m.put("url", e.url);
+      boolean failed = e.connectFailed();
+      if (failed || e.error != null) m.put("error", e.error);
+      else m.put("status", e.status);
+      if (e.redactedInput) m.put("redactedInput", true);
+      m.put("asked", e.served);
+      if (e.served > 0) {
+        m.put("first", e.firstSeq);
+        m.put("matched", new ArrayList<>(e.how));
+        askedEntries++;
+      }
+      if (failed || e.replayable()) can++;
+      else m.put("replayable", false);
+      recorded.add(m);
+    }
+    Map<String, Object> out = new LinkedHashMap<>();
+    out.put("recorded", can);
+    out.put("asked", askedEntries);
+    out.put("unmatched", missedCount);
+    out.put("total", seq);
+    if (looseQuery) out.put("loose", true);
+    out.put("entries", recorded);
+    out.put("unmatchedRequests", new ArrayList<>(missed));
+    return out;
   }
 
   // ------------------------------------------------------------------ recording
@@ -275,6 +536,13 @@ final class Recording {
           same.remove(old);
           if (same.isEmpty()) byKey.remove(old.key);
         }
+        if (old.connectFailed()) {
+          List<Entry> failed = failedConnects.get(old.url.toLowerCase(Locale.ROOT));
+          if (failed != null) {
+            failed.remove(old);
+            if (failed.isEmpty()) failedConnects.remove(old.url.toLowerCase(Locale.ROOT));
+          }
+        }
       }
     }
   }
@@ -299,7 +567,7 @@ final class Recording {
    * (the flight recorder's bundle, on its save thread). Entries do not change once added.
    */
   synchronized java.util.function.Supplier<String> harLater(java.util.function.LongPredicate keep, List<Entry> unfinished,
-      List<Object> connections) {
+      List<Object> connections, List<Typed> typed, int[] scrubbed) {
     List<Entry> some = new ArrayList<>();
     for (Entry e : entries) if (keep.test(e.wallMs)) some.add(e);
     for (Entry e : unfinished) if (keep.test(e.wallMs)) some.add(e);
@@ -316,13 +584,56 @@ final class Recording {
         // no host to match
       }
     }
-    return () -> Json.write(harRoot(some, certs, connections));
+    return () -> Json.write(harRoot(some, certs, connections, typed, scrubbed));
+  }
+
+  /**
+   * Text the flight recorder left out of its input journal (typed into a password field, pasted), and when its first
+   * character was dispatched: requests begun from then on that carry it are written with as many `x` in its place,
+   * which is what a replay types, and marked `_apksimRedactedInput` (docs/flight-recorder.md "What is left out").
+   */
+  record Typed(long fromWallMs, String text) {}
+
+  /** Shorter left-out text is not looked for: two or three characters turn up in any body by chance. */
+  static final int TYPED_MIN = 4;
+
+  /**
+   * `data` with `secret` replaced by as many `x` wherever it stands as written, form- or percent-encoded, or escaped
+   * as JSON; null when it is not there. Bytes, so a body that is not text is searched too.
+   */
+  static byte[] scrub(byte[] data, String secret) {
+    if (data == null || data.length == 0 || secret.length() < TYPED_MIN) return null;
+    String form = java.net.URLEncoder.encode(secret, StandardCharsets.UTF_8);
+    StringBuilder json = new StringBuilder();
+    for (int i = 0; i < secret.length(); i++) {
+      char c = secret.charAt(i);
+      if (c == '"' || c == '\\') json.append('\\');
+      json.append(c);
+    }
+    Set<String> forms = new java.util.LinkedHashSet<>();
+    // The longest first: an encoded form holds the plain one when nothing in it needed encoding.
+    for (String f : new String[] {form.replace("+", "%20").replace("*", "%2A"), form.replace("+", "%20"), form,
+        json.toString().replace("/", "\\/"), json.toString(), secret}) {  // org.json writes a slash as \/
+      forms.add(new String(f.getBytes(StandardCharsets.UTF_8), StandardCharsets.ISO_8859_1));
+    }
+    String hay = new String(data, StandardCharsets.ISO_8859_1);
+    String x = "x".repeat(secret.length());
+    boolean found = false;
+    for (String f : forms) {
+      if (!hay.contains(f)) continue;
+      hay = hay.replace(f, x);
+      found = true;
+    }
+    return found ? hay.getBytes(StandardCharsets.ISO_8859_1) : null;
   }
 
   /** Forgets every entry (the flight recorder's `rec clear`; only for a recording with no file). */
   synchronized void clearCaptured() {
     entries.clear();
     byKey.clear();
+    byRedacted.clear();
+    failedConnects.clear();
+    answeredHosts.clear();
     bytes = 0;
   }
 
@@ -436,7 +747,7 @@ final class Recording {
       List<Entry> all = new ArrayList<>(entries);
       all.addAll(more);
       all.sort(java.util.Comparator.comparingLong(e -> e.wallMs));
-      json = Json.write(harRoot(all, certificates, connections));
+      json = Json.write(harRoot(all, certificates, connections, null, null));
       // Before the HAR: a reader that finds an entry finds its secrets.
       if (tapless) {
         try {
@@ -455,9 +766,14 @@ final class Recording {
     Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
   }
 
-  private Map<String, Object> harRoot(List<Entry> some, Map<String, List<String>> certificates, List<Object> connections) {
+  private Map<String, Object> harRoot(List<Entry> some, Map<String, List<String>> certificates, List<Object> connections,
+      List<Typed> typed, int[] scrubbed) {
     List<Object> list = new ArrayList<>();
-    for (Entry e : some) list.add(toHar(e));
+    for (Entry e : some) {
+      Map<String, Object> m = toHar(e, typed);
+      if (scrubbed != null && Boolean.TRUE.equals(m.get("_apksimRedactedInput"))) scrubbed[0]++;
+      list.add(m);
+    }
     Map<String, Object> log = new LinkedHashMap<>();
     log.put("version", "1.2");
     log.put("creator", Map.of("name", "apksim", "version", "1"));
@@ -489,7 +805,65 @@ final class Recording {
     return m;
   }
 
-  private Map<String, Object> toHar(Entry e) {
+  private Map<String, Object> toHar(Entry e0, List<Typed> typed) {
+    Entry e = e0;
+    if (typed != null && !e0.connectFailed()) {
+      // Left-out input this request carries: a copy of the entry with placeholders (the entry itself never changes).
+      String url = e0.url;
+      byte[] body = e0.reqTruncated ? null : e0.reqBody;
+      boolean changed = false;
+      for (Typed t : typed) {
+        if (e0.wallMs < t.fromWallMs()) continue;
+        byte[] u = scrub(url.getBytes(StandardCharsets.UTF_8), t.text());
+        if (u != null) {
+          url = new String(u, StandardCharsets.UTF_8);
+          changed = true;
+        }
+        byte[] b = scrub(body, t.text());
+        if (b != null) {
+          body = b;
+          changed = true;
+        }
+      }
+      if (changed) {
+        e = new Entry();
+        e.wallMs = e0.wallMs;
+        e.started = e0.started;
+        e.timeMs = e0.timeMs;
+        e.method = e0.method;
+        e.url = url;
+        e.httpVersion = e0.httpVersion;
+        e.reqHeaders = new ArrayList<>();
+        for (String[] h : e0.reqHeaders) {
+          boolean length = h[0].equalsIgnoreCase("Content-Length") && body != null && e0.reqBody != null && body.length != e0.reqBody.length;
+          e.reqHeaders.add(length ? new String[] {h[0], String.valueOf(body.length)} : h);
+        }
+        e.reqBody = e0.reqTruncated ? e0.reqBody : body;
+        e.reqSha = e0.reqTruncated || body == null ? e0.reqSha : sha256(body);
+        e.reqTruncated = e0.reqTruncated;
+        e.expectAnswered = e0.expectAnswered;
+        e.status = e0.status;
+        e.statusText = e0.statusText;
+        e.respHeaders = e0.respHeaders;
+        e.respBody = e0.respBody;
+        e.gzip = e0.gzip;
+        e.truncated = e0.truncated;
+        e.connect = e0.connect;
+        e.send = e0.send;
+        e.wait = e0.wait;
+        e.receive = e0.receive;
+        e.respVersion = e0.respVersion;
+        e.reqSize = e0.reqSize >= 0 && body != null && e0.reqBody != null ? e0.reqSize + body.length - e0.reqBody.length : e0.reqSize;
+        e.respSize = e0.respSize;
+        e.trailers = e0.trailers;
+        e.error = e0.error;
+        e.unfinished = e0.unfinished;
+        e.conn = e0.conn;
+        e.serverIp = e0.serverIp;
+        e.ws = e0.ws;
+        e.redactedInput = true;
+      }
+    }
     Map<String, Object> req = new LinkedHashMap<>();
     req.put("method", e.method);
     req.put("url", e.url);
@@ -578,6 +952,7 @@ final class Recording {
     if (e.serverIp != null) m.put("serverIPAddress", e.serverIp);
     if (e.conn > 0) m.put("connection", String.valueOf(e.conn));
     if (e.error != null) m.put("_apksimError", e.error);
+    if (e.redactedInput) m.put("_apksimRedactedInput", true);
     if (e.unfinished) m.put("_apksimUnfinished", true);
     if (e.ws != null) {
       List<Object> messages = new ArrayList<>();
@@ -652,6 +1027,7 @@ final class Recording {
         }
       }
       e.error = m.get("_apksimError") instanceof String why ? why : null;
+      e.redactedInput = Boolean.TRUE.equals(m.get("_apksimRedactedInput"));
       e.unfinished = Boolean.TRUE.equals(m.get("_apksimUnfinished"));
       e.status = (int) num(resp.get("status"));
       e.statusText = String.valueOf(resp.getOrDefault("statusText", ""));

@@ -211,6 +211,7 @@ public final class Net {
           case "replay" -> {
             mode = Mode.REPLAY;
             recording = Recording.load(file, match);
+            recording.looseQuery = Boolean.getBoolean("apksim.networkLoose");
             if (fetch) {
               Path out = Path.of(unmatchedPolicy.substring("fetch:".length()));
               if (out.toString().isEmpty()) throw new IllegalArgumentException("--network-unmatched fetch: needs a file");
@@ -300,12 +301,29 @@ public final class Net {
    * Exchanges still going on (a stream that stays open) are in it as they stand, marked unfinished.
    */
   public static java.util.function.Supplier<byte[]> captured(java.util.function.LongPredicate keep) {
+    return captured(keep, null, null, null);
+  }
+
+  /**
+   * `typedFrom`/`typed`: text the flight recorder left out of its input journal (a password, pasted text) and when each
+   * was first dispatched: the HAR has placeholders where requests carried it (Recording.Typed), and `scrubbed[0]` is
+   * the number of entries that did, once the result has been called.
+   */
+  public static java.util.function.Supplier<byte[]> captured(java.util.function.LongPredicate keep, long[] typedFrom, String[] typed,
+      int[] scrubbed) {
+    List<Recording.Typed> left = null;
+    if (typed != null && typed.length > 0) {
+      left = new ArrayList<>();
+      for (int i = 0; i < typed.length; i++) left.add(new Recording.Typed(typedFrom[i], typed[i]));
+      // The longest first: one run may be the start of another (a character deleted and typed again).
+      left.sort((a, b) -> b.text().length() - a.text().length());
+    }
     Recording r = recording;
     if (r == null || mode != Mode.LIVE) return null;
     // No lock of Net's is held while the tap's thread is asked (it may be behind): only the recording's own, after.
     List<Recording.Entry> unfinished = Tap.unfinished();
     List<Object> connections = Tap.connections(keep);
-    java.util.function.Supplier<String> har = r.harLater(keep, unfinished, connections);
+    java.util.function.Supplier<String> har = r.harLater(keep, unfinished, connections, left, scrubbed);
     return () -> har.get().getBytes(java.nio.charset.StandardCharsets.UTF_8);
   }
 
@@ -350,6 +368,37 @@ public final class Net {
    */
   public static boolean busy(long quietMs, long youngMs) {
     return Tap.busy(quietMs, youngMs);
+  }
+
+  /**
+   * Replaying: what the app asked of the recording so far (Recording.report: every entry with how often it was asked
+   * for, and the requests nothing answered); null when not replaying.
+   */
+  public static Map<String, Object> replayReport() {
+    Recording r = recording;
+    return r != null && mode == Mode.REPLAY ? r.report() : null;
+  }
+
+  /**
+   * A connect that failed before any request (a mapped host with nothing listening, a host the sandbox refuses): kept
+   * as an entry of its own, `CONNECT host:port` with the failure, so a replay fails that connect again instead of
+   * answering what the app never got to ask (docs/network.md "Failed connects"). Any thread.
+   */
+  static void connectFailed(String host, int port, String error, long startWall, long ms) {
+    Recording r = recording;
+    if (r == null || mode != Mode.LIVE || host == null) return;
+    Recording.Entry e = new Recording.Entry();
+    e.wallMs = startWall;
+    e.started = java.time.Instant.ofEpochMilli(startWall).toString();
+    e.keepAtStart = r.keep;
+    e.method = "CONNECT";
+    e.url = host + ":" + port;
+    e.error = error.startsWith(Recording.CONNECT_FAILED) ? error : Recording.CONNECT_FAILED + error;
+    e.timeMs = ms;
+    e.connect = ms;
+    r.add(e);
+    if (Boolean.getBoolean("apksim.networkTrace")) log("network record: " + e.error + " " + e.url);
+    changed();
   }
 
   /** A tapped exchange, finished or cut short: kept by the recording, shown by the inspector. The tap's thread. */
@@ -859,7 +908,14 @@ public final class Net {
     if (TabRelay.on && TabRelay.isHost(host) && !(f instanceof SSLSocketFactory)) return relayed(f, new InetSocketAddress(host, port));
     if (!conditions.offline() && route(host) == Route.DIRECT) {
       long t0 = System.nanoTime();
-      return made(f.createSocket(host, port), host, port, t0);  // as the factory makes it
+      Socket s;
+      try {
+        s = f.createSocket(host, port);  // as the factory makes it
+      } catch (IOException e) {
+        if (!(e instanceof UnknownHostException)) Tap.connectFailed(host, port, e);
+        throw e;
+      }
+      return made(s, host, port, t0);
     }
     return createSocket(f, new InetSocketAddress(host, port), host);
   }
@@ -1141,6 +1197,7 @@ public final class Net {
       case "UnknownHostException" -> new UnknownHostException(msg);
       case "SocketTimeoutException" -> new SocketTimeoutException(msg);
       case "NoRouteToHostException" -> new NoRouteToHostException(msg);
+      case "SocketException" -> new java.net.SocketException(msg);
       case "SSLPeerUnverifiedException" -> new SSLPeerUnverifiedException(msg);
       case "SSLHandshakeException", "SSLException", "CertificateException", "ValidatorException" -> new SSLHandshakeException(msg);
       default -> tls ? new SSLHandshakeException(cls + ": " + msg) : new IOException(cls + ": " + msg);

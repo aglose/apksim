@@ -350,13 +350,11 @@ final class NetEngine {
         // Plain HTTP from the JDK's client: read here whenever exchanges are kept or a rule may concern it.
         answered = Net.mode == Net.Mode.REPLAY || Net.recording != null || Net.route(host) == Net.Route.MITM;
         Conditions.sleep(Net.conditions.rtt());
-        if (Net.mode != Net.Mode.REPLAY || Net.conditions.offline()) {
-          String err = inspected(connectUpstream());
-          if (err != null) {
-            cout.write(("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nX-Apksim-Error: " + err.trim() + "\r\n\r\n")
-                .getBytes(StandardCharsets.ISO_8859_1));
-            return;
-          }
+        String err = inspected(connectUpstream());  // replaying: only a connect the recording has as failed
+        if (err != null) {
+          cout.write(("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nX-Apksim-Error: " + err.trim() + "\r\n\r\n")
+              .getBytes(StandardCharsets.ISO_8859_1));
+          return;
         }
       }
 
@@ -566,16 +564,27 @@ final class NetEngine {
       }
     }
 
-    /** Connects to where the client was going (not when replaying); an "ERR ..." reply on failure, else null. */
+    /**
+     * Connects to where the client was going; an "ERR ..." reply on failure, else null. Replaying, nothing is connected:
+     * a connect the recording has as failed (and no answer from that host and port) fails again, as it did.
+     */
     String connectUpstream() {
       if (Net.conditions.offline()) return "ERR ConnectException connect failed: ENETUNREACH (Network is unreachable)\r\n";
-      if (Net.mode == Net.Mode.REPLAY) return null;
+      if (Net.mode == Net.Mode.REPLAY) {
+        Recording.Entry failed = Net.recording.connectFailure(host, port);
+        if (failed == null) return null;
+        if (Net.recordedTiming) Conditions.sleep(Math.min(failed.timeMs, timeout > 0 ? timeout : 30_000));
+        replayed.incrementAndGet();
+        if (Boolean.getBoolean("apksim.networkTrace")) Net.log("network replay: " + failed.error + " " + failed.url);
+        return Recording.connectReply(failed);
+      }
       // The placeholder a failed lookup was given (the inspector, while a rule answers): nothing is there to connect to, and
       // a connect to 198.18/15 would wait out the whole timeout. The failure is the lookup's, at once.
       if (NetResolver.lookupFailed(host, address)) {
         return Net.errorReply(new java.net.UnknownHostException("Unable to resolve host \"" + host + "\": No address associated with hostname"));
       }
       long t0 = System.nanoTime();
+      long startWall = System.currentTimeMillis();
       try {
         if (closed) throw new java.net.SocketException("connection closed");
         Socket s = connectAny();
@@ -584,6 +593,8 @@ final class NetEngine {
         connectMs = (System.nanoTime() - t0) / 1_000_000;
         return null;
       } catch (IOException e) {
+        // Kept by a recording, unless it is this side closing (the app gave up on the connection first).
+        if (!closed) Net.connectFailed(host, port, e.toString(), startWall, (System.nanoTime() - t0) / 1_000_000);
         return Net.errorReply(e);
       }
     }
@@ -1357,11 +1368,12 @@ final class NetEngine {
           msg = "network replay: the recorded response for " + req.method + " " + req.url
               + " was too big to store (over 32 MB), so it cannot be replayed";
         } else {
-          String closest = Net.recording.closest(req.method, req.url, req.headers, req.bodySha);
+          Recording.Closest closest = Net.recording.closest(req.method, req.url, req.headers, req.bodySha);
           msg = "network replay: no recorded response for " + req.method + " " + req.url
-              + (closest == null ? "" : "\n         closest: " + closest);
+              + (closest == null ? "" : "\n         closest: " + closest.text() + closest.hint());
+          return unmatched(req, startWall, msg, closest, null);
         }
-        return unmatched(req, startWall, msg);
+        return unmatched(req, startWall, msg, null, "the recorded answer was too big to store");
       }
       replayed.incrementAndGet();
       writeRecorded(req, e);
@@ -1370,7 +1382,8 @@ final class NetEngine {
     }
 
     /** The 599 a request nothing can answer gets: logged, listed by `network unmatched`, and (policy fail) failing a test. */
-    boolean unmatched(Request req, long startWall, String msg) throws IOException {
+    boolean unmatched(Request req, long startWall, String msg, Recording.Closest closest, String why) throws IOException {
+      Net.recording.missed(req.method, req.url, closest, why);
       missed.incrementAndGet();
       Net.log(msg);
       Net.unmatched.add(msg.replace("\n         ", "; "));
@@ -1412,9 +1425,10 @@ final class NetEngine {
             live = fetchFromServer(req, startWall);
           } catch (IOException | RuntimeException x) {
             String why = x.getMessage() == null ? x.getClass().getSimpleName() : x.getClass().getSimpleName() + ": " + x.getMessage();
-            String closest = Net.recording.closest(req.method, req.url, req.headers, req.bodySha);
+            Recording.Closest closest = Net.recording.closest(req.method, req.url, req.headers, req.bodySha);
             return unmatched(req, startWall, "network replay: no recorded response for " + req.method + " " + req.url
-                + ", and fetching it failed: " + why.replaceAll("[\\r\\n]", " ") + (closest == null ? "" : "\n         closest: " + closest));
+                + ", and fetching it failed: " + why.replaceAll("[\\r\\n]", " ") + (closest == null ? "" : "\n         closest: " + closest.text()),
+                closest, "fetching it failed: " + why.replaceAll("[\\r\\n]", " "));
           }
           Conditions.sleep(Net.conditions.rtt());
           String lost = lostCredential(live.url, live.status);

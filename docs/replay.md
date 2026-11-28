@@ -11,10 +11,11 @@ apksim replay --headless session.apkrec; echo $?              # 0 matched, 3 div
 apksim replay --control auto session.apkrec                   # stays up afterwards: `replay` reports, then it is yours
 apksim replay --apk app-new.apk session.apkrec                # another build of the app (same signer)
 apksim replay --live-network --compare end session.apkrec
+apksim replay --loose session.apkrec                          # query values made at run time still get their answers
 ```
 
 Options of its own, anywhere before the bundle: `--apk APK`, `--live-network` (the network goes out as usual instead
-of answering from `network.har`), `--out DIR` (the report; default `work/replays/<bundle>-<time>/`, or
+of answering from `network.har`), `--loose` ("A session with a sign-in" below), `--out DIR` (the report; default `work/replays/<bundle>-<time>/`, or
 `~/.apksim/replays` for an installed release), `--compare all|end|none` and `--threshold N`. Every other option is an
 ordinary launch option and is passed on after the replay's own, so it wins: `--headless`, `--control auto`,
 `--network-trust CERT` (a server the app reached with a certificate apksim was told to trust while recording),
@@ -66,10 +67,98 @@ prints):
 
 The network: the bundle's HAR is replayed by the existing engine (docs/network.md), at the recorded timing, and
 without the `X-Apksim-Replay: recorded` header replay mode otherwise adds (`--network-replay-mark off`, new), so the app
-gets the answers it got. A request the recording has no answer for gets the engine's 599 and is listed in the report's
-notes; it does not fail the replay by itself (an analytics call with a timestamp in its body never matches). After the
-journal the network stays in replay mode; `--live-network` leaves it live from the start. A bundle recorded without
-the `net` channel replays with the live network.
+gets the answers it got. A request the recording has no answer for gets the engine's 599 and is listed in the report
+(`requests`, below) and its notes; it does not fail the replay by itself (an analytics call with a timestamp in its body
+never matches). A connect that failed while recording fails the same way again ([network.md](network.md) "Failed
+connects"). After the journal the network stays in replay mode; `--live-network` leaves it live from the start. A bundle
+recorded without the `net` channel replays with the live network.
+
+## What happened to each request
+
+`report.json` has `requests` when the network was answered from the bundle, and stderr's last line counts them:
+
+```
+[apksim] replay: matched at all 14 points; 96 events, 2 commands; 41 of 43 recorded requests asked again, 0 unmatched; report .../report.json
+```
+
+```json
+"requests": {
+  "recorded": 43, "asked": 41, "unmatched": 1, "total": 58,
+  "entries": [
+    {"entry": 0, "method": "POST", "url": "https://api.example.test/v1/signin", "status": 200,
+     "redactedInput": true, "asked": 1, "first": 1, "matched": ["exact"]},
+    {"entry": 1, "method": "GET", "url": "https://api.example.test/v1/profile?device=3f0c&lang=en", "status": 200, "asked": 0},
+    {"entry": 2, "method": "CONNECT", "url": "metrics.example.test:8443",
+     "error": "connect failed: java.net.ConnectException: Connection refused", "asked": 3, "first": 4, "matched": ["connect-failed"]}
+  ],
+  "unmatchedRequests": [
+    {"seq": 2, "method": "GET", "url": "https://api.example.test/v1/profile?device=91aa&lang=en",
+     "closest": {"entry": 1, "method": "GET", "url": "https://api.example.test/v1/profile?device=3f0c&lang=en"},
+     "differs": ["query differs: device=3f0c&lang=en recorded (only the value of device)"], "ignoreQuery": ["device"]}
+  ]
+}
+```
+
+- `entries`: every entry of `network.har`, in its order (`entry` is its index there), with how often the replay asked
+  for it (`asked`; the last of several entries with one key repeats, as in any replay), the order number of the first
+  request it answered (`first`) and how its requests matched: `exact`, `redacted-input` or `loose-query: NAMES` (both
+  below), `connect-failed` for a connect that failed again. `replayable: false` marks what a replay never answers with (a
+  request that failed, a stream still open at the save, a WebSocket upgrade).
+- `unmatchedRequests`: the requests that got the 599, in order (`seq` numbers every request the replay made, answered
+  or not, so the two lists interleave), each with the closest entry and what differs, as the stderr line has it;
+  `ignoreQuery` when only those query parameters' values differ, `bodyOnly` when only the body does. The first 500.
+- `recorded` counts the entries a replay can ask for again (answers and failed connects), `asked` those it did,
+  `unmatched` and `total` the requests.
+
+A request that failed for another reason than its recording (a socket doing TLS from its start) is in the notes only.
+
+## A session with a sign-in
+
+A recording of an app that signs in at every cold start replays cleanly when it was made by this version or later;
+three things used to need options worked out by hand.
+
+**The password.** The journal leaves characters typed into a password field out ([flight-recorder.md](flight-recorder.md)
+"Privacy") and a replay types `x` for each, so the sign-in request's body is not the recorded one. The recorder now
+takes the same text out of the requests that carried it: while it leaves characters out it keeps them in memory, and at
+a save every request begun after they were typed whose body or URL holds them (as written, form- or percent-encoded, or
+JSON-escaped; 4 characters or more) is written with as many `x` in their place and marked `_apksimRedactedInput`. The
+recorded body is then the one the replay sends, and matches exactly; the bundle no longer holds the password in its
+HAR either. A marked entry also answers a request with its method and URL whose body differs (`matched:
+["redacted-input"]`): the body is the part the replay cannot type, for instance when Delete was used in a way the
+recorder's count missed. Why not match every sign-in on method and URL alone: `--network-match method,url` does that
+for every request of the replay, so two POSTs to one URL with different bodies get each other's answers; the mark
+loosens only the requests that carried left-out input.
+
+What it does not cover: a body that carries the text in another form (hashed, encrypted, base64 inside JSON), a bundle
+from an older apksim, and left-out text shorter than 4 characters. Such a request is unmatched with "body differs",
+and the replay says so once:
+
+```
+[apksim] replay note: 1 unmatched request differs from a recorded one only in the body, and the recording left 13 typed
+or pasted characters out (typed here as x): if the body carries them (a sign-in), --network-match method,url matches it
+without its body
+```
+
+**Values made at run time.** An id the app makes after the checkpoint (a device or installation id, a nonce) is another
+one in the replay's process, so requests with it in the query match nothing. The unmatched line and the report name the
+parameter when the closest entry has the same parameter names and only values differ:
+
+```
+[apksim] network replay: no recorded response for GET https://api.example.test/v1/profile?device=91aa&lang=en
+         closest: GET https://api.example.test/v1/profile?device=3f0c&lang=en (query differs: device=3f0c&lang=en recorded (only the value of device))
+         --network-ignore-query device matches it (a value made at run time; `apksim replay --loose` for all such)
+```
+
+`--network-ignore-query device` leaves that parameter out of every match. `apksim replay --loose` (the launch option
+`--network-loose`) does it without naming them: a request no entry matches is answered by the entry with the same
+method, path, parameter names, body (and headers, when matched) whose query values differ in the fewest parameters, an
+entry not yet served first. The report marks each such answer (`matched: ["loose-query: device"]`), so a loose replay
+still says which answers were not the request's own. It is off by default: a search for "a" answered with the results
+for "b" is a wrong answer, and only the reader knows which parameters are noise. Values made at run time in a body or a
+path are not covered (`--network-match method,url` for the first).
+
+**Servers that were not there.** See [network.md](network.md) "Failed connects": the connect fails in the replay as it
+failed in the recording, instead of the app retrying against 599s.
 
 ## Divergence
 
@@ -95,7 +184,9 @@ count. `points/NN-recorded.jpg` and `points/NN-replayed.jpg` are the two frames 
 [apksim] replay: diverged at point 6 of 6 (end, +9106 ms); 7 events, 1 commands; report .../report.json
 ```
 
-What makes a replay drift: anything on screen that is real time (a measured duration, a clock with seconds), flings
+What makes a replay drift: anything on screen that is real time (a measured duration, a clock with seconds), a focused
+text field's caret caught in the other phase of its blink (44 pixels of a 442x960 frame for a Material text field, over
+the default threshold; `scripts/replay-check.py` replays its typed sign-in with `--threshold 300`), flings
 (how far a list flies after a flick varies from run to run even live: one `swipe 400 1400 400 400` on the test app's
 home list ended at Item 67, 65 and 58 in three launches, and a replay that sent the same events within 2 ms of the
 recording's ended elsewhere again), thread timing (a worker's result before or after a frame), state that `onSaveInstanceState` does not keep (a checkpoint keeps
@@ -132,8 +223,17 @@ image (amd64 under Rosetta, a container each): 45-51 s. Warm (the planned launch
 `scripts/network-fixture.py`, stops the fixture, and replays: with `--control` (matched at every point, the app on
 Trips with the renamed trip afterwards and still answering), without (exit 0), as a changed build (exit 3, the first
 divergence at the end and none before it, the difference map written), with `--changed APK` against another build if
-given, and a crash bundle (exit 10, the report naming the command). `--image` runs every launch in the Linux image
-(CI: `scripts/ci-smoke.sh`).
+given, and a crash bundle (exit 10, the report naming the command). Then a session with a typed sign-in on
+`apksim://network?signin=1` (a user and a password typed into fields and sent in a POST's body, a GET with an id made at
+run time in its query, a connect to a mapped host nothing listens on): the bundle holds the password nowhere, its
+sign-in entry has the placeholder and the mark, the failed connect is an entry; replayed as it is, the sign-in and the
+connect come out as recorded and the GET is unmatched with `--network-ignore-query device` named (exit 3); with
+`--loose` and with that option every point matches and every recorded request is asked again; and a copy whose sign-in
+entry is unmarked with another body is unmatched with `--network-match method,url` named. Each replay's `requests` and
+summary line are checked. `--image` runs every launch in the Linux image (CI: `scripts/ci-smoke.sh`).
+
+`scripts/check-replay-match.sh` (`ReplayMatchCheck`, CI's quick checks) checks the matching itself on a plain JVM: the
+forms left-out text is found in, the marked entry, loose query values, failed connects and the report's counts.
 
 ## Bisect: which build first diverges
 

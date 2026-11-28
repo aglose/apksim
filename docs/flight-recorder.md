@@ -158,15 +158,22 @@ A bundle is meant to be sent to someone else, so by default it leaves out:
 
 - characters and printable keys typed while a password field has the focus (a View with a password input type or
   `PasswordTransformationMethod`, or a focused, editable Compose node with password semantics), looked at for every
-  character. These are recorded as `{"redacted": true}`, and the manifest counts them;
+  character. These are recorded as `{"redacted": true}`, and the manifest counts them (`counts.redactedInput`);
 - pasted text (Cmd+V, `paste`), wherever it goes: `{"pasted": true, "redacted": true}` per character;
+- that same text in the requests that carried it (a sign-in's body holds the password its field was typed into): the
+  recorder keeps each stretch of left-out characters in memory (Delete takes the last one back; a touch, another key or
+  other text ends the stretch), and a save writes every request begun after it was typed whose body or URL holds it, as
+  written, form- or percent-encoded or JSON-escaped, with as many `x` in its place, which is what a replay types. The
+  entry is marked `_apksimRedactedInput` and `counts.harRedactedInput` counts them. Only text of 4 characters or more
+  is looked for (shorter turns up by chance), only in requests, and not in a body over 32 MB;
 - clipboard text (`clipboard set TEXT` is kept as its length);
 - `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` headers (`--network-redact` adds more names);
 - database values, unless `db+values` is on: bound arguments, ContentValues, query results, and literals written into
   the SQL itself.
 
-Still in a bundle: response bodies, the app's data folder (`checkpoint/data.zip`), the screen, and anything the app
-logs. Treat a bundle from a signed-in session like the device itself.
+Still in a bundle: response bodies, the app's data folder (`checkpoint/data.zip`), the screen, anything the app
+logs, and typed text a request carries in another form (hashed, encrypted, a token made from it), or sent by a request
+that began before the save's window or was typed with keys whose characters the key map does not give. Treat a bundle from a signed-in session like the device itself.
 
 ## Limits
 

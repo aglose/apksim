@@ -179,6 +179,8 @@ final class FlightRecorder {
         Rec.NET.clear(now);
         Net.clearCaptured();  // the in-memory capture; a --network record file keeps its own
         redacted = 0;
+        leftOut.clear();
+        typing = null;
         List<Checkpoint> gone;
         synchronized (checkpoints) {
           gone = retire(new ArrayList<>(checkpoints));
@@ -300,6 +302,63 @@ final class FlightRecorder {
   private static int pointersDown;
   private static int redacted;
 
+  /**
+   * Text left out of the journal as it was typed or pasted, kept in memory only so that a save can take it out of the
+   * requests that carried it (Recording.Typed: a sign-in's body holds the password the journal does not). One run per
+   * stretch of left-out characters into one field; Delete takes its last character back. Main thread.
+   */
+  private static final class LeftOut {
+    final long fromWall = System.currentTimeMillis();
+    long lastWall = fromWall;
+    final boolean pasted;
+    final StringBuilder text = new StringBuilder();
+    /** A key whose character is not known: the run is not looked for. */
+    boolean unknown;
+
+    LeftOut(boolean pasted) {
+      this.pasted = pasted;
+    }
+  }
+
+  private static final List<LeftOut> leftOut = new ArrayList<>();
+  private static LeftOut typing;
+  private static final int LEFT_OUT_RUNS = 64;
+
+  private static void leftOut(boolean pasted, int ch) {
+    if (typing == null || typing.pasted != pasted) {
+      typing = new LeftOut(pasted);
+      leftOut.add(typing);
+      if (leftOut.size() > LEFT_OUT_RUNS) leftOut.remove(0);
+    }
+    typing.lastWall = System.currentTimeMillis();
+    if (ch <= 0) typing.unknown = true;
+    else typing.text.appendCodePoint(ch);
+  }
+
+  /** The character a printable key types (with Shift when `meta` has it), or 0 when the key map cannot say. */
+  private static int keyChar(int code, int meta) {
+    try {
+      return android.view.KeyCharacterMap.load(android.view.KeyCharacterMap.VIRTUAL_KEYBOARD).get(code, meta);
+    } catch (RuntimeException e) {
+      return 0;
+    }
+  }
+
+  /** The runs a save looks for in its requests: [0] when each began, [1] its text. Runs out of the window are dropped. */
+  private static Object[] leftOutNow() {
+    long keep = Rec.keepFromWallMs();
+    leftOut.removeIf(r -> r != typing && r.lastWall < keep);
+    List<LeftOut> use = new ArrayList<>();
+    for (LeftOut r : leftOut) if (!r.unknown && r.text.length() >= 4) use.add(r);
+    long[] from = new long[use.size()];
+    String[] text = new String[use.size()];
+    for (int i = 0; i < from.length; i++) {
+      from[i] = use.get(i).fromWall;
+      text[i] = use.get(i).text.toString();
+    }
+    return new Object[] {from, text};
+  }
+
   /** An input event about to be dispatched to the app (main thread). `uptime`: the app's SystemClock.uptimeMillis. */
   static void input(SimWindow.Event e, long uptime) {
     int t = e.type();
@@ -327,11 +386,19 @@ final class FlightRecorder {
       m.put("pasted", true);
       m.put("redacted", true);
       redacted++;
+      leftOut(true, (int) e.value());
     } else if (typed && passwordFocused()) {
       // What goes into a password field stays on this Mac; a replay types a placeholder there.
       m.put("redacted", true);
       redacted++;
+      leftOut(false, t == SimWindow.CHAR ? (int) e.value() : keyChar((int) e.value(), (int) e.x()));
     } else {
+      // Delete takes the last left-out character back; anything else that begins (a touch, a key, other text) ends the run.
+      if (t == SimWindow.KEY && (int) e.value() == android.view.KeyEvent.KEYCODE_DEL) {
+        if (typing != null && typing.text.length() > 0) typing.text.setLength(typing.text.offsetByCodePoints(typing.text.length(), -1));
+      } else if (t == SimWindow.DOWN || t == SimWindow.TOUCH2_DOWN || t == SimWindow.KEY || t == SimWindow.CHAR || t == SimWindow.BACK) {
+        typing = null;
+      }
       m.put("x", e.x());
       m.put("y", e.y());
       m.put("v", e.value());
@@ -1165,7 +1232,7 @@ final class FlightRecorder {
       m.put("crash", crash);
       Net.drain(2000);
       try {
-        write(out, m, List.of(), List.of(), Net.captured(Rec.NET::contains), Rec.DB.since(Long.MIN_VALUE), List.of(), 0, to, null, pkg);
+        write(out, m, List.of(), List.of(), Net.captured(Rec.NET::contains), Rec.DB.since(Long.MIN_VALUE), List.of(), 0, to, null, pkg, null);
       } catch (IOException | RuntimeException x) {
         Files.deleteIfExists(out);
         throw x;
@@ -1306,7 +1373,9 @@ final class FlightRecorder {
       for (AdbLog.Line l : AdbLog.since(0, 0).lines()) if (l.wallMs() >= start && LOGCAT.contains(l.wallMs())) lines.add(l);
     }
     if (crash != null) Net.drain(2000);  // answers the app already has, being recorded, belong in the crash's HAR
-    java.util.function.Supplier<byte[]> har = Net.captured(w -> w >= start && Rec.NET.contains(w));
+    Object[] left = leftOutNow();
+    int[] scrubbed = {0};
+    java.util.function.Supplier<byte[]> har = Net.captured(w -> w >= start && Rec.NET.contains(w), (long[]) left[0], (String[]) left[1], scrubbed);
     List<Ring.Item<Map<String, Object>>> db = Rec.DB.since(start);
     List<Ring.Item<byte[]>> frames = new ArrayList<>();
     Ring.Item<byte[]> first = SCREEN.atOrBefore(from);
@@ -1320,7 +1389,7 @@ final class FlightRecorder {
       long t0 = System.nanoTime();
       boolean ok = false;
       try {
-        write(target, manifest, events, lines, har, db, frames, from, to, used, pkg);
+        write(target, manifest, events, lines, har, db, frames, from, to, used, pkg, scrubbed);
         ok = true;
         long size = Files.size(target);
         lastSave = target + ": " + (size >> 10) + " KB in " + (System.nanoTime() - t0) / 1_000_000 + " ms";
@@ -1448,7 +1517,7 @@ final class FlightRecorder {
 
   private static void write(Path target, Map<String, Object> manifest, List<Ring.Item<Map<String, Object>>> events,
       List<AdbLog.Line> lines, java.util.function.Supplier<byte[]> har, List<Ring.Item<Map<String, Object>>> db, List<Ring.Item<byte[]>> frames,
-      long from, long to, Checkpoint cp, String pkg) throws IOException {
+      long from, long to, Checkpoint cp, String pkg, int[] scrubbed) throws IOException {
     Files.createDirectories(target.toAbsolutePath().getParent());
     // Each save its own part file, moved into place once complete.
     // A random tag as well as the PID: containers sharing an output folder can all be PID 1.
@@ -1457,6 +1526,9 @@ final class FlightRecorder {
     try (OutputStream fo = Files.newOutputStream(tmp); ZipOutputStream z = new ZipOutputStream(fo)) {
       Map<String, Object> counts = new LinkedHashMap<>();
       counts.put("input", events.size());
+      int leftOutEvents = 0;
+      for (Ring.Item<Map<String, Object>> e : events) if (Boolean.TRUE.equals(e.value().get("redacted"))) leftOutEvents++;
+      if (leftOutEvents > 0) counts.put("redactedInput", leftOutEvents);
       counts.put("logcat", lines.size());
       counts.put("db", db.size());
       counts.put("screenFrames", frames.size());
@@ -1478,7 +1550,11 @@ final class FlightRecorder {
       StringBuilder log = new StringBuilder();
       for (AdbLog.Line l : lines) log.append(l.text()).append('\n');
       put(z, "logcat.txt", log.toString().getBytes(StandardCharsets.UTF_8));
-      if (har != null) put(z, "network.har", har.get());
+      if (har != null) {
+        put(z, "network.har", har.get());
+        // Requests that carried left-out input (a typed password) and now hold a replay's placeholder for it.
+        if (scrubbed != null && scrubbed[0] > 0) counts.put("harRedactedInput", scrubbed[0]);
+      }
       StringBuilder d = new StringBuilder();
       for (Ring.Item<Map<String, Object>> e : db) d.append(JsonLine.write(e.value())).append('\n');
       if (!db.isEmpty()) put(z, "db.jsonl", d.toString().getBytes(StandardCharsets.UTF_8));

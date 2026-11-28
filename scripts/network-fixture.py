@@ -9,7 +9,9 @@ certificate for api.apksim.test, which `apksim --network record` reaches with
 POST /v1/greeting {"name": N} -> {"greeting": "Hello, N!", ...} (gzip when asked); GET /v1/plain -> a plain greeting;
 POST /v1/board {"from": F, "text": T} adds a message to a board every client shares, GET /v1/board -> {"messages":
 [{"from", "text"}...]} (the test app's apksim://board, two instances of one backend in scripts/scene.py's scenes);
-anything else 404. Every request must carry an Authorization header (401 without), so a recording has one to redact.
+POST /v1/signin {"user": U, "password": P} -> 200 "Welcome, U" when P is "correct horse", else 403; GET
+/v1/profile?device=ID&lang=L -> a profile greeting (400 without a device): the test app's apksim://network?signin=1,
+for replays of a session with a typed sign-in (scripts/replay-check.py). Anything else 404. Every request must carry an Authorization header (401 without), so a recording has one to redact.
 """
 import gzip
 import http.server
@@ -19,6 +21,7 @@ import ssl
 import subprocess
 import sys
 import threading
+import urllib.parse
 
 DIR = sys.argv[1]
 CERT_ONLY = sys.argv[2:3] == ["--cert-only"]
@@ -66,6 +69,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if self.path == "/v1/greeting":
             self.send(200, {"greeting": f"Hello, {data.get('name', 'you')}!", "served": "fixture"}, compress=True)
+        elif self.path == "/v1/signin":
+            if data.get("password") == "correct horse":
+                self.send(200, {"greeting": f"Welcome, {data.get('user', '?')}", "served": "fixture"})
+            else:
+                self.send(403, {"greeting": "wrong password", "served": "fixture"})
         elif self.path == "/v1/board":
             with BOARD_LOCK:
                 BOARD.append({"from": str(data.get("from", "?")), "text": str(data.get("text", ""))})
@@ -78,8 +86,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.authorized():
             return
+        path, _, query = self.path.partition("?")
         if self.path == "/v1/plain":
             self.send(200, {"greeting": "Plain hello", "served": "fixture"})
+        elif path == "/v1/profile":
+            q = urllib.parse.parse_qs(query)
+            if q.get("device"):
+                self.send(200, {"greeting": f"Profile ({q.get('lang', ['?'])[0]})", "served": "fixture"})
+            else:
+                self.send(400, {"greeting": "no device", "served": "fixture"})
         elif self.path == "/v1/board":
             with BOARD_LOCK:
                 messages = list(BOARD)

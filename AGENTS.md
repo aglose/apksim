@@ -526,7 +526,15 @@ Read README.md for results and limits; this file covers how to work on the code.
     app's data up first (`--backup-dir`, `--no-backup`); `--dry-run` prints the plan and touches nothing. Only run
     against apksim's own adb device so far, not a phone or emulator. Serve and beam give the instance `--rec-crash-id RID` (and serve `--rec-crash-dir`): a crash's bundle is then written as `RID.apkrec` in the session's recordings folder (a beam instance: its out folder's `rec/`, `BeamSandbox.recDir`), `Session.claimCrashBundle` makes it one of the session's recordings once the instance has gone, and the tab's end message carries `"rec":"RID"` (issue 516; `serve-check.py --crash-app ID --crash-rec`, by hand: not in CI; the beam side not run).
   - `ReplayPlan`, `Replay`: `apksim replay BUNDLE` (docs/replay.md): the checkpoint's slot, device and stack, `input.jsonl` fed to
-    the Host loop at its offsets, the HAR answering, frames compared; exit 0/3 (diverged)/10; `scripts/replay-check.py`.
+    the Host loop at its offsets, the HAR answering, frames compared; exit 0/3 (diverged)/10; `scripts/replay-check.py`. `report.json`'s `requests`
+    (`Net.replayReport`, `Recording.report`) says what happened to each request: every HAR entry with how often it was
+    asked for and how it matched (`exact`, `redacted-input`, `loose-query: NAMES`, `connect-failed`), the unmatched ones
+    in order with the closest entry and what differs, and stderr's last line counts them ("N of M recorded requests
+    asked again, K unmatched"). A session with a typed sign-in replays as recorded (docs/replay.md "A session with a
+    sign-in"): the recorder keeps left-out characters in memory (`FlightRecorder.LeftOut`) and a save writes the
+    requests that carried them with as many `x` (`Recording.scrub`, `_apksimRedactedInput`, which also matches without
+    its body); an unmatched request that differs only in query values names `--network-ignore-query NAME`, and
+    `apksim replay --loose` (`--network-loose`) answers it from the closest such entry, marked in the report.
     `scripts/bisect-rec.py BUNDLE BUILD...`: the first build whose replay diverges, an HTML report (`bisect-rec-check.py`).
     `apksim replay --journey` writes journey.json (taps resolved to nodes: `Journey`), run by `scripts/journey.py` (JUnit XML; `journey-start-check.py`: its start and steps' timing, against a stand-in apksim; `check-journey.sh`: `JourneyCheck`, which texts it may expect and how taps and presses become steps, on a stand-in screen).
   - `serve/TraceView`, `resources/dev/apksim/serve/trace-viewer.html`: `apksim rec view [FILE]`, the static trace viewer for
@@ -1278,6 +1286,9 @@ plays through); Trips has a "Trip note" field with
 imePadding; the app follows dark mode and handles `apksim://composeapp/<tab>` deep links. `apksim://network` opens
 `NetworkActivity` (HTTPS fetches with OkHttp and HttpURLConnection, ConnectivityManager's state; see "Network";
 `apksim://network?url=URL` adds "Get" and "Get URL" for any address and shows the protocol OkHttp got;
+`apksim://network?signin=1` adds a User and a Password field, "Sign in" (a POST with both in its JSON body, then a GET
+with an id made at run time in its query) and "Ping down" (a connect to down.apksim.test, which a check maps to a port
+nothing listens on): replay-check.py's session with a typed sign-in;
 `apksim://grpc`, `apksim://websocket` and `apksim://media` are the protocol and media screens, see "Test APKs").
 `apksim://bitmaps` opens `ViewBitmapsActivity` (Views only: a stretched BitmapDrawable background, FIT_XY and
 CENTER_CROP ImageViews, `drawBitmap(Bitmap, Matrix, Paint)`, a mutable bitmap redrawn every frame; `?animate=0` holds
@@ -1483,6 +1494,12 @@ its certificate). Any option turns it on; without one, the hooks cost one static
   logged once per host, counted in the status line, `log._apksimNotKept` and crawl.json's `network.not_kept`). Before,
   a replayed login left the app without its cookie and the server's 401 to every later fetch was frozen.
   `scripts/check-net-fetch.sh` (`FetchCheck`, CI quick checks).
+- A connect that fails before any request (a mapped host nothing listens on, a host the sandbox refuses) is an entry:
+  `CONNECT host:port` with `_apksimError: "connect failed: EXCEPTION"` (`Net.connectFailed`, from the engine's
+  `connectUpstream` and the tap's `finish`); replaying, a connect to a host and port with such entries and no answer
+  fails with that exception again (`Recording.connectFailure`) instead of a 599 the app retries (docs/network.md
+  "Failed connects"). `scripts/check-replay-match.sh` (`ReplayMatchCheck`, CI quick checks) checks it with the
+  matching above.
 - Not covered: Ktor CIO and other NIO `SocketChannel` clients, `new Socket(host, port)`, Cronet's native stack
   (docs/network.md says what it would need), replay of WebSockets and of HTTP/2-only clients such as gRPC (recorded,
   messages included; the replay engine speaks HTTP/1.1). Checks: `scripts/check-net-tap.sh` (`TapCheck`, CI's quick
