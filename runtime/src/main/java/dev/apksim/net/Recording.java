@@ -74,6 +74,11 @@ final class Recording {
     String serverIp;
     /** WebSocket messages after a 101, appended as they pass, or null. */
     List<WsMessage> ws;
+    /**
+     * The answer's redacted headers with the values the server gave (a login's Set-Cookie), or null: only for what
+     * `--network-unmatched fetch:FILE` fetched, kept in FILE.secrets and never in the HAR. A replay sends them to the app.
+     */
+    List<String[]> secretResp;
 
     /** Whether replay can answer with this entry: a whole answer from a server, not an upgrade or a tunnel. */
     boolean replayable() {
@@ -332,6 +337,91 @@ final class Recording {
   /** What replay fetched (--network-unmatched fetch:FILE): the engine's exchanges alone, nothing of the tap's. */
   volatile boolean tapless;
 
+  /**
+   * Fetched answers left out of this file (--network-unmatched fetch:FILE): a 401 or 403 the server gave after the
+   * recording's own answer could not hand the app its credential, or handed it one the server no longer takes. The
+   * first NOT_KEPT_LISTED are listed in the file's `_apksimNotKept`, all are counted.
+   */
+  private final List<Map<String, Object>> notKept = new ArrayList<>();
+  private int notKeptCount;
+  static final int NOT_KEPT_LISTED = 100;
+
+  synchronized void notKept(String method, String url, int status, String reason) {
+    notKeptCount++;
+    if (notKept.size() >= NOT_KEPT_LISTED) return;
+    Map<String, Object> m = new LinkedHashMap<>();
+    m.put("method", method);
+    m.put("url", url);
+    m.put("status", status);
+    m.put("reason", reason);
+    notKept.add(m);
+  }
+
+  /** FILE.secrets beside a recording: see {@link Entry#secretResp}. */
+  static Path secretsPath(Path har) {
+    return har.resolveSibling(har.getFileName() + ".secrets");
+  }
+
+  /** What names an entry in FILE.secrets: fields a HAR shows as they are, so a script merging recordings can carry them over. */
+  private static String secretKey(String method, String url, String started) {
+    return method + " " + url + " " + started;
+  }
+
+  /**
+   * Writes FILE.secrets, readable by its owner alone, when an entry has redacted answer headers to keep. Left alone when
+   * none has: a file from an earlier launch is not this launch's to remove.
+   */
+  private void saveSecrets(List<Entry> all) throws IOException {
+    List<Object> list = new ArrayList<>();
+    for (Entry e : all) {
+      if (e.secretResp == null || e.secretResp.isEmpty()) continue;
+      Map<String, Object> m = new LinkedHashMap<>();
+      m.put("method", e.method);
+      m.put("url", e.url);
+      m.put("startedDateTime", e.started);
+      m.put("responseHeaders", headers(e.secretResp));
+      list.add(m);
+    }
+    if (list.isEmpty()) return;
+    Map<String, Object> root = new LinkedHashMap<>();
+    root.put("comment", "apksim: the values of the headers redacted in " + path.getFileName()
+        + ", so a replay can sign the app in again. Private: do not share or commit this file.");
+    root.put("entries", list);
+    Path file = secretsPath(path);
+    Path tmp = file.resolveSibling(file.getFileName() + ".apksim-tmp");
+    Files.deleteIfExists(tmp);
+    try {
+      Files.createFile(tmp, java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
+          java.nio.file.attribute.PosixFilePermissions.fromString("rw-------")));
+    } catch (UnsupportedOperationException noPosix) {
+      Files.createFile(tmp);
+    }
+    Files.writeString(tmp, Json.write(root));
+    Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+  }
+
+  /** Gives the loaded entries the header values FILE.secrets has for them. A file that cannot be read is as none. */
+  @SuppressWarnings("unchecked")
+  private static void loadSecrets(Path har, List<Entry> loaded) {
+    Path file = secretsPath(har);
+    if (!Files.isRegularFile(file)) return;
+    try {
+      Map<String, Object> root = (Map<String, Object>) Json.parse(Files.readString(file));
+      Map<String, List<String[]>> by = new HashMap<>();
+      for (Object o : (List<Object>) root.get("entries")) {
+        Map<String, Object> m = (Map<String, Object>) o;
+        by.put(secretKey(String.valueOf(m.get("method")), String.valueOf(m.get("url")), String.valueOf(m.get("startedDateTime"))),
+            readHeaders(m.get("responseHeaders")));
+      }
+      for (Entry e : loaded) {
+        List<String[]> hs = by.get(secretKey(e.method, e.url, e.started));
+        if (hs != null && !hs.isEmpty()) e.secretResp = hs;
+      }
+    } catch (IOException | RuntimeException bad) {
+      Net.log("network replay: cannot read " + file + " (" + bad + "): answers are replayed without their redacted headers");
+    }
+  }
+
   void save() throws IOException {
     // Asked of the tap's thread before this recording is locked: that thread adds entries under the same lock.
     List<Entry> more = tapless ? List.of() : Tap.unfinished();
@@ -342,6 +432,8 @@ final class Recording {
       all.addAll(more);
       all.sort(java.util.Comparator.comparingLong(e -> e.wallMs));
       json = Json.write(harRoot(all, certificates, connections));
+      // Before the HAR: a reader that finds an entry finds its secrets.
+      if (tapless) saveSecrets(all);
     }
     // A fixed name beside the file: the launcher's sandbox allows writing exactly these two paths (one recording
     // process per file).
@@ -360,6 +452,12 @@ final class Recording {
     if (!certificates.isEmpty()) log.put("_apksimCertificates", certificates);
     if (connections != null && !connections.isEmpty()) log.put("_apksimConnections", connections);
     log.put("_apksimRedacted", new ArrayList<>(new java.util.TreeSet<>(match.redact)));
+    if (notKeptCount > 0) {
+      Map<String, Object> nk = new LinkedHashMap<>();
+      nk.put("count", notKeptCount);
+      nk.put("requests", new ArrayList<>(notKept));
+      log.put("_apksimNotKept", nk);
+    }
     Map<String, Object> root = new LinkedHashMap<>();
     root.put("log", log);
     return root;
@@ -558,6 +656,7 @@ final class Recording {
       for (String[] h : e.reqHeaders) if (REDACTED.equals(h[1])) r.recordedRedactions.add(h[0].toLowerCase(Locale.ROOT));
       loaded.add(e);
     }
+    loadSecrets(path, loaded);
     for (Entry e : loaded) r.add(e);  // indexed once every redacted name is known
     return r;
   }

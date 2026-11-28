@@ -205,6 +205,15 @@ reached the end of their path and found another screen there, and the service be
   written) and runs at its seed's `clock`, so a pull request's walk shows the base's data. Requests the engine cannot
   answer from a recording (a connection that is not HTTP, WebSocket, a client that offers only HTTP/2) are not frozen.
   `network.har` holds what the signed-in account was sent: it stays in OUT.
+  A server that signs the app in with a session cookie: recordings redact `Set-Cookie`, so the cookie of each fetched
+  sign-in is kept in `OUT/network.har.secrets` (mode 600; merged and copied to each launch with the recording, and from
+  a seed), and a launch whose sign-in is answered from the recording gets the server's cookie with it, so what it then
+  fetches is signed in. That file is a live session: never share or commit it (`network.har` alone still replays, signed
+  out). A 401 or 403 a launch fetched after a sign-in replayed without its cookie (a `network.har` copied without its
+  `.secrets`), or a 401 the server gave the recorded cookie (the session ended), is not frozen: the app sees it, the
+  recording does not keep it, the walk's last lines say so, and `crawl.json`'s `network` has `not_kept` (how many) and
+  `not_kept_requests` (the first 20, with the reason). Screens walked then may show a signed-out or error state: walk
+  again from an empty recording. docs/network.md "Fetching what a recording lacks" has the rules.
 - `--deterministic`: only routes that replay to the same screen are walked. A screen whose path, replayed three times,
   leads elsewhere is a `flaky` finding saying it was not walked, and nothing under it is walked; a control whose label
   is not there at a replay is a `FAILED` edge, not a tap at the label's old place; a control is never tried on what a

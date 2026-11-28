@@ -457,7 +457,8 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --network-ignore-header) EXTRA+=("-Dapksim.networkIgnoreHeader=$2"); shift 2 ;;
     --network-unmatched)
       # fetch:OUT (with --network replay): what the recording lacks is fetched and kept in OUT, which the sandbox lets the
-      # app write as it does a recording (OUT and OUT.apksim-tmp, nothing else beside them).
+      # app write as it does a recording (OUT and OUT.apksim-tmp, and OUT.secrets, the redacted headers' values, with its
+      # temporary file; nothing else beside them).
       if [[ "$2" == fetch:* ]]; then
         NET_OUT="${2#fetch:}"
         [[ -n "$NET_OUT" ]] || { echo "--network-unmatched fetch: needs a file (fetch:OUT.har)" >&2; exit 2; }
@@ -752,7 +753,7 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && ( -n "${APKSIM_BEAM_SANDBOX:-}"
 (allow file-write* (subpath \"$RECORD_DIR\"))}${REPLAY_OUT:+
 (allow file-write* (subpath \"$REPLAY_OUT\"))}${NET_RECORD_FILE:+
 (allow file-write* (literal \"$NET_RECORD_FILE\") (literal \"$NET_RECORD_FILE.apksim-tmp\"))}${NET_FETCH_FILE:+
-(allow file-write* (literal \"$NET_FETCH_FILE\") (literal \"$NET_FETCH_FILE.apksim-tmp\"))}${TEST_OUTPUTS:+
+(allow file-write* (literal \"$NET_FETCH_FILE\") (literal \"$NET_FETCH_FILE.apksim-tmp\") (literal \"$NET_FETCH_FILE.secrets\") (literal \"$NET_FETCH_FILE.secrets.apksim-tmp\"))}${TEST_OUTPUTS:+
 (allow file-write* (subpath \"$TEST_OUTPUTS\"))}
 (deny file-read* (subpath \"$HOME/.ssh\") (subpath \"$HOME/.aws\") (subpath \"$HOME/.gnupg\") (subpath \"$HOME/.config\")
   (subpath \"$HOME/Library/Keychains\") (subpath \"$HOME/Library/Cookies\") (subpath \"$HOME/Documents\") (subpath \"$HOME/Desktop\")

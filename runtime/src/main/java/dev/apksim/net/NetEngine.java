@@ -51,6 +51,52 @@ final class NetEngine {
       relayed = new AtomicInteger(), fetched = new AtomicInteger();
   /** One lock per request key being fetched (--network-unmatched fetch:FILE): the same request is sent once, the rest wait for its answer. */
   private final java.util.Map<String, Object> fetchLocks = new ConcurrentHashMap<>();
+  /** Fetched answers not kept (--network-unmatched fetch:FILE): see {@link #lostCredential}. */
+  final AtomicInteger notKept = new AtomicInteger();
+  /**
+   * Hosts whose replayed answer had a redacted header (a login's Set-Cookie) this launch: without its value (no
+   * FILE.secrets), so the app never got the credential, or with it, so the app holds one from when it was recorded.
+   */
+  private final Set<String> credentialDropped = ConcurrentHashMap.newKeySet(), credentialReplayed = ConcurrentHashMap.newKeySet();
+  private final Set<String> notKeptLogged = ConcurrentHashMap.newKeySet();
+
+  private static String hostOf(String url) {
+    try {
+      String h = URI.create(url).getHost();
+      return h == null ? "" : h.toLowerCase(Locale.ROOT);
+    } catch (IllegalArgumentException e) {
+      return "";
+    }
+  }
+
+  /** Whether a cookie one host set could be meant for the other: the same host, or names sharing their last two labels. */
+  static boolean sameSite(String a, String b) {
+    if (a.isEmpty() || b.isEmpty()) return false;
+    if (a.equals(b)) return true;
+    if (a.indexOf(':') >= 0 || b.indexOf(':') >= 0 || a.matches("[0-9.]+") || b.matches("[0-9.]+")) return false;  // addresses
+    String[] x = a.split("\\."), y = b.split("\\.");
+    if (x.length < 2 || y.length < 2) return false;
+    return x[x.length - 1].equals(y[y.length - 1]) && x[x.length - 2].equals(y[y.length - 2]);
+  }
+
+  /**
+   * Why a 401 or 403 the server gave a fetch says nothing about the request, or null when it may: this launch's app was
+   * signed in by the recording, not the server, so it asked without the credential (a 401 or 403), or with the one from
+   * when the recording was made (a 401: the server has ended that session). Kept, it would be every later launch's answer.
+   */
+  String lostCredential(String url, int status) {
+    if (status != 401 && status != 403) return null;
+    String h = hostOf(url);
+    for (String d : credentialDropped) {
+      if (sameSite(d, h)) return "the recording's answer from " + d + " had a redacted header (Set-Cookie) whose value no .secrets file beside the recording holds, so the app asked without that credential";
+    }
+    if (status == 401) {
+      for (String d : credentialReplayed) {
+        if (sameSite(d, h)) return "the app holds the credential the recording's answer from " + d + " gave it, which the server refused (an ended session?)";
+      }
+    }
+    return null;
+  }
   private SSLSocketFactory upstreamTls;
 
   void start() throws IOException {
@@ -1371,10 +1417,28 @@ final class NetEngine {
                 + ", and fetching it failed: " + why.replaceAll("[\\r\\n]", " ") + (closest == null ? "" : "\n         closest: " + closest));
           }
           Conditions.sleep(Net.conditions.rtt());
+          String lost = lostCredential(live.url, live.status);
+          if (lost != null) {
+            // The app gets the server's answer; FILE does not, so no later launch is answered with it.
+            notKept.incrementAndGet();
+            writeRecorded(req, live, "fetched");
+            out.notKept(live.method, live.url, live.status, lost);
+            if (notKeptLogged.add(hostOf(live.url) + " " + live.status)) {
+              Net.log("network fetch: " + live.status + " for " + live.method + " " + live.url + " is not kept: " + lost
+                  + " (further ones from this host are counted, not logged)");
+            }
+            inspectReplay(req, startWall, live.status, redacted(live.respHeaders), live.respBody);
+            Net.changed();
+            return true;
+          }
           fetched.incrementAndGet();
-          // The app gets the server's headers as they came; FILE (and a repeat) gets them redacted, as a recording keeps them.
+          // The app gets the server's headers as they came; FILE (and a repeat) gets them redacted, as a recording keeps
+          // them, with their values beside it in FILE.secrets for the app of a later launch.
           writeRecorded(req, live, "fetched");
+          List<String[]> secret = new ArrayList<>();
+          for (String[] x : live.respHeaders) if (Net.redact.contains(x[0].toLowerCase(Locale.ROOT))) secret.add(x);
           live.respHeaders = redacted(live.respHeaders);
+          if (!secret.isEmpty()) live.secretResp = secret;
           out.add(live);
           if (Boolean.getBoolean("apksim.networkTrace")) Net.log("network fetch: " + live.status + " " + live.method + " " + live.url);
           inspectReplay(req, startWall, live.status, live.respHeaders, live.respBody);
@@ -1603,14 +1667,24 @@ final class NetEngine {
       }
       StringBuilder h = new StringBuilder("HTTP/1.1 ").append(e.status).append(' ')
           .append(e.statusText.isEmpty() ? Net.statusText(e.status) : e.statusText).append("\r\n");
+      boolean redactedOne = false;
       for (String[] x : e.respHeaders) {
         String n = x[0].toLowerCase(Locale.ROOT);
+        redactedOne |= x[1].equals(Recording.REDACTED);
         // Content-Encoding is redone only for a body stored decoded (gzip); any other is sent as it was recorded.
         if (n.equals("content-length") || n.equals("transfer-encoding") || n.equals("connection")
             || (n.equals("content-encoding") && e.gzip) || n.equals("keep-alive") || x[1].equals(Recording.REDACTED)) {
           continue;
         }
         h.append(x[0]).append(": ").append(x[1]).append("\r\n");
+      }
+      // A redacted header (a login's Set-Cookie) goes to the app with the value FILE.secrets kept for it; without one it
+      // is left out, and a fetch the server then refuses is not kept (lostCredential).
+      if (redactedOne && e.secretResp != null) {
+        for (String[] x : e.secretResp) h.append(x[0]).append(": ").append(x[1]).append("\r\n");
+        if (Net.fetched != null && mark.equals("recorded")) credentialReplayed.add(hostOf(e.url));
+      } else if (redactedOne && Net.fetched != null && mark.equals("recorded")) {
+        credentialDropped.add(hostOf(e.url));
       }
       if (gzip) h.append("Content-Encoding: gzip\r\n");
       boolean none = e.status == 204 || e.status == 304 || (e.status >= 100 && e.status < 200);

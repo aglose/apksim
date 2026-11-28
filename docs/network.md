@@ -70,8 +70,8 @@ the app is back on its own connections.
 Any of these turns the network layer on; without them nothing changes (one static check per hooked call). Replay
 and conditions launches are handed to a warm standby; a recording launches cold, since its sandbox must allow writing
 the recording: that file and `FILE.apksim-tmp` beside it (written, then renamed over it), nothing else in its folder. A
-replay with `--network-unmatched fetch:OUT` launches cold for the same reason (its sandbox allows OUT and
-`OUT.apksim-tmp`), unless OUT is inside the state folder, which a standby may write. `-Dapksim.networkTrace=true` (`--jvm`) logs every exchange.
+replay with `--network-unmatched fetch:OUT` launches cold for the same reason (its sandbox allows OUT,
+`OUT.apksim-tmp`, and `OUT.secrets` with its own temporary file), unless OUT is inside the state folder, which a standby may write. `-Dapksim.networkTrace=true` (`--jvm`) logs every exchange.
 
 ### Fetching what a recording lacks
 
@@ -90,6 +90,31 @@ wait for one fetch: the server sees each request once. Fetched requests are not 
 HTTP/1.1, a server that refuses, does not answer or times out, a body over 32 MB either way, a `101` upgrade. This is for
 walks (`crawl.py`) that need every launch to see the same answers while new screens keep asking for new things: merge OUT
 into the next launch's IN. The policy needs `--network replay`; without it the launch stops with an error.
+
+**Servers that sign the app in.** A recording redacts `Set-Cookie`, and a replayed answer leaves a redacted header out,
+so an app whose sign-in is answered from IN would hold no session cookie, and everything fetched after it would be the
+server's 401, kept for good. Two things prevent that:
+
+- `OUT.secrets`, beside OUT: the values of the redacted headers of each fetched answer (a sign-in's `Set-Cookie`; any
+  response header `--network-redact` names), keyed by the entry's method, URL and `startedDateTime`. It is written
+  before OUT, readable by its owner alone (mode 600), and only when a fetched answer had such a header. OUT itself is
+  redacted as before and can be shared; the `.secrets` file holds a live session and must not be. A replay of `IN` reads
+  `IN.secrets` when it is there and sends those headers to the app with the replayed answer, so the app is signed in as
+  the server signed it in, and what it then asks for is fetched with that cookie. To carry a recording on, move or merge
+  the two files together (`crawl.py --freeze-network` does); without the `.secrets` file a replay behaves as before, a
+  redacted `Set-Cookie` setting nothing. `--network record` writes no such file.
+- A fetched 401 or 403 that says nothing about the request is not kept. When this launch replayed an answer with a
+  redacted header and had no value for it, a 401 or 403 fetched from that site (the same host, or one sharing its last
+  two labels) reaches the app with `X-Apksim-Replay: fetched` but is left out of OUT, so no later launch is answered
+  with it and a repeat asks the server again. The same holds for a 401 (not a 403) when the value did come from
+  `.secrets`: the server has ended the recorded session. The first per host and status is logged (`network fetch: 401
+  for GET ... is not kept: ...`), the status line counts them (`M fetched, N fetched and not kept (401/403 after a
+  replayed sign-in)`), and OUT lists them in `log._apksimNotKept` (`count`, and the first 100 `requests` with method,
+  URL, status and reason). Any other 401 or 403 (no sign-in replayed, another site) is the server's answer and is kept.
+
+A token a sign-in returns in its body is not redacted, so the app gets the recorded one and sends it; a server that no
+longer accepts it answers 401, which is kept (the engine cannot tell where an `Authorization` value came from): record
+again, or keep such sessions alive for the length of the walk.
 
 ## Control command
 
@@ -190,7 +215,8 @@ listed again as headers), and header names in lower case as they were sent. Each
   less; a bigger one is stored and replayed as sent.
 
 Replayed responses carry `X-Apksim-Replay: recorded` and a fresh `Content-Length`; hop-by-hop headers and headers
-recorded as `REDACTED` are left out (a redacted `Set-Cookie` sets nothing).
+recorded as `REDACTED` are left out (a redacted `Set-Cookie` sets nothing), unless the recording has a `.secrets`
+file beside it with their values ("Fetching what a recording lacks").
 
 Redacted header values are written as `REDACTED`, and redacted request headers never take part in matching: the
 file lists the names it redacted (`log._apksimRedacted`), and those count when replaying whatever that launch's

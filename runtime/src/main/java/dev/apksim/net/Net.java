@@ -608,7 +608,8 @@ public final class Net {
   private static String counts() {
     NetEngine e = engine;
     if (mode == Mode.REPLAY) {
-      return e == null ? "" : e.replayed.get() + " replayed, " + (fetched != null ? e.fetched.get() + " fetched, " : "") + e.missed.get() + " unmatched";
+      return e == null ? "" : e.replayed.get() + " replayed, " + (fetched != null ? e.fetched.get() + " fetched, " + (e.notKept.get() > 0 ? e.notKept.get() + " fetched and not kept (401/403 after a replayed sign-in), " : "") : "")
+          + e.missed.get() + " unmatched";
     }
     if (recording != null) return (tapped.get() + (e == null ? 0 : e.recorded.get())) + " recorded";
     return e == null ? "" : e.relayed.get() + " connections relayed";

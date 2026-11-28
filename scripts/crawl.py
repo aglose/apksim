@@ -1356,7 +1356,13 @@ class NetFreeze:
     comes from a server shows the same data at each replay. A launch replays the recording as it is when it starts
     (copied, so a merge cannot change it under the launch) and fetches what it lacks from the server
     (`--network-unmatched fetch:FILE`); what it fetched is merged into the recording when it ends, the first answer to a
-    request kept (method, URL, body: the engine's default match). A seeded walk starts from its seed's recording."""
+    request kept (method, URL, body: the engine's default match). A seeded walk starts from its seed's recording.
+
+    Beside the recording, network.har.secrets (mode 600) holds the values of the answers' redacted headers (a sign-in's
+    Set-Cookie), which apksim writes beside what a launch fetched: merged and copied with the recording, so a launch
+    whose sign-in is replayed gets the server's cookie and its fetches are signed in. The recording itself never holds
+    them. A 401/403 a launch fetched and left out because its sign-in was replayed without that cookie (or the server
+    refused the replayed one) is counted here (not_kept) for crawl.json."""
 
     def __init__(self, out, seed_dir=None):
         # Keep per-launch fetch files under apksim's STATE/tmp so --freeze-network stays warm with --standby
@@ -1379,9 +1385,53 @@ class NetFreeze:
         src = os.path.join(seed_dir, "network.har") if seed_dir else None
         if src and os.path.abspath(src) != os.path.abspath(self.master) and os.path.isfile(src):
             shutil.copyfile(src, self.master)
+            self.copy_secrets(src, self.master)
         if not os.path.isfile(self.master):
             self.write(self.empty())
         self.fetched = 0  # entries merged in by this walk
+        self.not_kept = 0  # 401/403 answers launches fetched and left out (a sign-in replayed without its cookie)
+        self.not_kept_requests = []  # the first few, for crawl.json
+        self.not_kept_seen = set()
+
+    SECRETS = ".secrets"
+
+    @staticmethod
+    def secret_key(method, url, started):
+        return (method, url, started)
+
+    @classmethod
+    def read_secrets(cls, har_path):
+        """{(method, url, startedDateTime): item} of HAR's .secrets file; empty when there is none or it is cut short."""
+        try:
+            with open(har_path + cls.SECRETS) as f:
+                doc = json.load(f)
+            return {cls.secret_key(i.get("method"), i.get("url"), i.get("startedDateTime")): i for i in doc["entries"]}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return {}
+
+    @classmethod
+    def write_secrets(cls, har_path, items):
+        path = har_path + cls.SECRETS
+        tmp = path + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump({"comment": "apksim: the values of the headers redacted in " + os.path.basename(har_path)
+                       + ", so a replay can sign the app in again. Private: do not share or commit this file.",
+                       "entries": list(items)}, f)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+
+    @classmethod
+    def copy_secrets(cls, src_har, dst_har):
+        """dst's .secrets made a private copy of src's, or removed when src has none."""
+        items = cls.read_secrets(src_har)
+        if items:
+            cls.write_secrets(dst_har, items.values())
+        else:
+            try:
+                os.remove(dst_har + cls.SECRETS)
+            except OSError:
+                pass
 
     @staticmethod
     def empty():
@@ -1413,6 +1463,7 @@ class NetFreeze:
         replay = os.path.join(self.dir, f"replay-{tag}.har")
         with self.lock:
             shutil.copyfile(self.master, replay)
+            self.copy_secrets(self.master, replay)
         return ["--network", "replay", replay, "--network-unmatched", "fetch:" + os.path.join(self.dir, f"fetched-{tag}.har")]
 
     def merge(self, tag):
@@ -1420,23 +1471,41 @@ class NetFreeze:
         got = self.read(path)
         if got is None:
             return
+        secrets = self.read_secrets(path)
         with self.lock:
             doc = self.read(self.master) or self.empty()
             have = {self.key(e) for e in doc["log"]["entries"]}
             added = 0
+            new_secrets = []
             for e in got["log"]["entries"]:
                 k = self.key(e)
                 if k not in have:
                     have.add(k)
                     doc["log"]["entries"].append(e)
                     added += 1
+                    req = e.get("request") or {}
+                    item = secrets.get(self.secret_key(req.get("method"), req.get("url"), e.get("startedDateTime")))
+                    if item:
+                        new_secrets.append(item)
             if added:
+                if new_secrets:  # before the recording: a launch that copies the entry finds its secrets
+                    kept = self.read_secrets(self.master)
+                    self.write_secrets(self.master, list(kept.values()) + new_secrets)
                 self.write(doc)
                 self.fetched += added
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+            left_out = got["log"].get("_apksimNotKept")
+            if isinstance(left_out, dict):
+                self.not_kept += int(left_out.get("count") or 0)
+                for r in left_out.get("requests") or []:
+                    k = (r.get("method"), r.get("url"), r.get("status"))
+                    if k not in self.not_kept_seen and len(self.not_kept_requests) < 20:
+                        self.not_kept_seen.add(k)
+                        self.not_kept_requests.append(r)
+        for p in (path, path + self.SECRETS):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
 
     def merge_all(self):
         for n in sorted(os.listdir(self.dir)):
@@ -4028,7 +4097,9 @@ def walk_settings():
         NET.merge_all()  # what launches fetched so far (a running one writes its file again when it ends: merged at close)
         doc = NetFreeze.read(NET.master)
         d["network"] = {"recording": "network.har", "entries": len(doc["log"]["entries"]) if doc else 0,
-                        "fetched": NET.fetched}
+                        "fetched": NET.fetched, "not_kept": NET.not_kept}
+        if NET.not_kept:
+            d["network"]["not_kept_requests"] = list(NET.not_kept_requests)
     return d
 
 
@@ -4200,8 +4271,9 @@ def main():
     if args.freeze_network:
         if seed is None:
             shutil.rmtree(os.path.join(out, "network"), ignore_errors=True)
-            if os.path.exists(os.path.join(out, "network.har")):
-                os.remove(os.path.join(out, "network.har"))
+            for n in ("network.har", "network.har" + NetFreeze.SECRETS):
+                if os.path.exists(os.path.join(out, n)):
+                    os.remove(os.path.join(out, n))
         NET = NetFreeze(out, src_dir if seed is not None else None)
     t0 = time.time()
     snap_override = seed.get("snapshot") if (seed is not None and args.diff_seed and "snapshot" in seed) else None
@@ -4324,6 +4396,14 @@ def main():
         new.close()
         if base:
             base.close()
+    if NET is not None:
+        doc["network"] = walk_settings()["network"]  # with what the last launches fetched, written as they ended
+        if NET.not_kept:
+            first = NET.not_kept_requests[0] if NET.not_kept_requests else {}
+            log(f"network: {NET.not_kept} fetched 401/403 answer(s) were not kept in network.har: the app's sign-in was "
+                f"answered from the recording and the server refused what followed (first: {first.get('status')} "
+                f"{first.get('method')} {first.get('url')}: {first.get('reason')}). Screens walked then may show a "
+                "signed-out or error state; see crawl.json network.not_kept_requests")
     html_report(out, doc)
     with open(os.path.join(out, "crawl.json"), "w") as f:
         json.dump(doc, f, indent=1)
