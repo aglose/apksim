@@ -48,8 +48,8 @@ area, read its file; to find a class, option, command or issue number, `grep -rn
 ## Reference notes (`docs/internals/`)
 Quoted names are the section titles other docs and code comments cite as `AGENTS.md "..."`. An older doc or
 comment that sends you to AGENTS.md for something not in this file means these notes: grep them.
-- `launch.md`: the launcher's JVM flags and why, `Main`, startup threads, `FrameworkFlattener`, `HeapTrim`, the AOT
-  cache, "Warm launches" (standbys), rules for launch and memory benchmarks.
+- `launch.md`: the launcher's JVM flags and why, `apksim use`/`inspect`, `Main`, startup threads,
+  `FrameworkFlattener`, `HeapTrim`, the AOT cache, "Warm launches" (standbys), rules for launch and memory benchmarks.
 - `host.md`: `Host`'s frame loop, vsync and clock, input dispatch, window placement, the activity stack
   (`Host.arrange`), `recreate`, `Crashes`, fatal signals, `Exits`, `settle`/`--snapshot`, animation shadows.
 - `control-commands.md`: every `--control` command and the class behind it: input, `shot`, `nodes`, `settle`,
