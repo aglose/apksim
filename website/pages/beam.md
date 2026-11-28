@@ -185,5 +185,7 @@ A beamed APK comes from a website, so Beam runs every instance inside a dedicate
 | `apksim beam trust list` / `revoke` | Inspect or revoke sites allowed to launch apps on your Mac |
 | `apksim beam config [KEY VALUE...]` | Configure `max`, `keep-days`, `save-sessions`, `inspect-network`, `forward-allow`, `allow-loopback`, `allow-adb`, and `rec` |
 | `apksim beam sweep` | Clean up expired cached builds and unused caches immediately |
+| `apksim use [X.Y.Z\|latest\|default]` | Switch to another release, older or newer, without reinstalling (`default` goes back) |
+| `apksim inspect [optional\|on\|off]` | Set the network inspector and restart the agent |
 
 See [apksim serve](serve.md) for hosting builds and [Pull Request Previews](pr-preview.md) for automated PR links.

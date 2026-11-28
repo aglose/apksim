@@ -33,7 +33,7 @@ cask "apksim" do
         "~/Library/LaunchAgents/dev.apksim.beam.plist",
         "~/Library/LaunchAgents/dev.apksim.beam.sweep.plist",
       ],
-      trash:     "~/.apksim"
+      trash:     ["~/.apksim", "~/.apksim-versions"]
 
   caveats <<~EOS
     The first launch builds a startup cache in ~/.apksim in the background (1-2 minutes, once per version),

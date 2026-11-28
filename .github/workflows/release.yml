@@ -63,7 +63,7 @@ jobs:
           if [ "${{ github.event_name }}" = pull_request ]; then
             files=$(git diff --no-renames --name-only "$BASE...$HEAD_SHA")
             img='^(\.github/workflows/release\.yml|docker/|scripts/docker-build\.sh$|\.github/actions/linux-build/)'
-            pkg='^(\.github/workflows/release\.yml|scripts/(package-release|setup|train|jdk)\.sh|apksim|install\.sh|scripts/(ctl|drive|instrument|affected|coverage|snapshot|crawl|crawl-select|pr-evidence|device-profile|replay-adb|mcp|subsystem-audit)\.py)$|^packaging/'
+            pkg='^(\.github/workflows/release\.yml|scripts/(package-release|setup|train|jdk|use)\.sh|apksim|install\.sh|scripts/(ctl|drive|instrument|affected|coverage|snapshot|crawl|crawl-select|pr-evidence|device-profile|replay-adb|mcp|subsystem-audit)\.py)$|^packaging/'
             printf '%s\n' "$files" | grep -qE "$img" || image=false
             printf '%s\n' "$files" | grep -qE "$pkg" || package=false
           fi
@@ -120,6 +120,8 @@ jobs:
           python3 "$D/scripts/pr-evidence.py" baseline "$APKSIM_HOME/testapp-$VERSION.apk" --out "$RUNNER_TEMP/evidence-map" \
             --depth 1 --max-seconds 180 --no-captures -- --no-network 2>&1 | tee evidence.log
           grep -qE ', [1-9][0-9]* with recorded dependencies' evidence.log
+      - name: Pinned releases (apksim use, with the Mac sandbox)
+        run: scripts/check-use.sh
       - name: Checksums
         run: |
           cd dist

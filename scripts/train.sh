@@ -5,6 +5,8 @@
 # background on its first launch, see the launcher).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# This install's own cache: a pin set while it trains must not hand its stages to another release (apksim use).
+export APKSIM_NO_PIN=1
 HEADLESS=()
 if [[ "${1:-}" == --headless ]]; then HEADLESS=(--headless); shift; fi
 # --background: started by the launcher on a launch (see there), which may happen at every launch while offline.
