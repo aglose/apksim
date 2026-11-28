@@ -35,7 +35,10 @@ Usage: crawl-check.py [--apk APK] [--out DIR] [--quick] [--docker IMAGE] [-j N] 
 14. A walk from `apksim://login` (a username and password form) without `--autofill` finds the form alone and warns
    that its start screen has a password field; with `--autofill` and the test app's sign-in saved (in the state
    folder, or mounted into the image), each launch signs in first and the walk finds the account screen behind it, with
-   no relaunch; crawl.json records the zone (UTC). Skipped on the Mac when a sign-in is already saved for the test app.
+   no relaunch; crawl.json records the zone (UTC). With a wrong password saved the walk stops (exit 2) with nothing
+   captured and the password in none of its files. --autofill with anything that records the network (--freeze-network,
+   --network record, --rec net) is refused. The walks are skipped on the Mac when a sign-in is already saved for the
+   test app.
 15. `apksim://unstable?mode=tick` (content that changes between reads) and `?mode=fail` (a request that fails as it
    opens) are `unstable` in a seed walk, home is not, and the same build walked against that seed with `--diff-seed`
    reports none of them changed, new or gone (exit 0). No screen of walk 1 is unstable.
@@ -562,7 +565,24 @@ def main():
     # before the walk reads the screen, so it finds the signed-in screen and the account screen behind it, with no
     # relaunch for the sign-in's write, and the warning does not fire. crawl.json records the zone (UTC).
     signin = "Username=tester\nPassword=apksim-test\nsubmit=Sign in\n"
+    wrong = "not-the-password-5c1d"  # a made-up value, looked for in what the refused walk wrote
     secs_s = 0
+    for extra in (["--freeze-network"], ["--", "--network", "record", os.path.join(args.out, "refused.har")],
+                  ["--", "--rec", "input,net"], ["--base-option", "--rec all"]):
+        p = subprocess.run([sys.executable, CRAWL, args.apk, "--out", os.path.join(args.out, "refused"), "--autofill", *extra],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
+        check(p.returncode == 2 and "--autofill cannot be used with" in p.stdout,
+              f"--autofill with {' '.join(extra)[:40]} is refused", f"exit {p.returncode}: {p.stdout[-200:]!r}")
+    frozen = os.path.join(args.out, "frozen-seed")
+    os.makedirs(frozen, exist_ok=True)
+    with open(os.path.join(frozen, "crawl.json"), "w") as f:
+        json.dump({"screens": [], "network": {"recording": "network.har"}}, f)
+    p = subprocess.run([sys.executable, CRAWL, args.apk, "--out", os.path.join(args.out, "refused"), "--autofill", "--seed", frozen,
+                        "--only-file", os.devnull], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
+    check(p.returncode == 2 and "--autofill cannot be used with --seed of a --freeze-network walk" in p.stdout,
+          "--autofill with --seed of a frozen walk is refused", f"exit {p.returncode}: {p.stdout[-200:]!r}")
+    # A SIGTERM or hangup meanwhile still removes the sign-in this check saved.
+    handlers = {s: signal.signal(s, lambda n, _f: sys.exit(128 + n)) for s in (signal.SIGTERM, signal.SIGHUP)}
     if DOCKER:
         saved = os.path.join(args.out, "autofill.properties")
         with open(saved, "w") as f:
@@ -591,8 +611,24 @@ def main():
             doc_o, secs_o, p_o = crawl(args.apk, out_d, *login, mounts=mounts)
             out_i = os.path.join(args.out, "signed-in")
             doc_i, secs_s, p_i = crawl(args.apk, out_i, *login, "--autofill", mounts=mounts)
+            with open(saved, "w") as f:
+                f.write(f"Username=tester\nPassword={wrong}\nsubmit=Sign in\n")
+            out_w = os.path.join(args.out, "signin-refused")
+            shutil.rmtree(out_w, ignore_errors=True)
+            doc_w, _secs, p_w = crawl(args.apk, out_w, *login, "--autofill", expect=(2,), mounts=mounts)
         finally:
             restore()
+        files = [os.path.join(d, n) for d, _dirs, names in os.walk(out_w) for n in names]
+        leaked = []
+        for path in files:
+            with open(path, "rb") as f:
+                if wrong.encode() in f.read():
+                    leaked.append(os.path.relpath(path, out_w))
+        pictures = [os.path.relpath(p, out_w) for p in files if p.endswith(".png")]
+        check("the sign-in did not succeed" in p_w.stdout and doc_w.get("stopped") and not doc_w["screens"] and not pictures
+              and not leaked,
+              "a refused sign-in stops the walk: no screen read or captured, the password in none of its files",
+              f"screens {len(doc_w['screens'])}, pictures {pictures}, leaked {leaked}, {p_w.stdout[-300:]!r}")
         acts_o = sorted({s["activity"].rsplit(".", 1)[-1] for s in doc_o["screens"]})
         acts_i = sorted({s["activity"].rsplit(".", 1)[-1] for s in doc_i["screens"]})
         texts_i = " ".join(t for s in doc_i["screens"] for t in s.get("texts", []))
@@ -609,6 +645,9 @@ def main():
               f"{doc_o.get('timezone')!r}, {doc_i.get('timezone')!r}")
         bad = [f["detail"][:80] for d in (doc_o, doc_i) for f in d["findings"] if f["kind"] in ("replay", "capture", "flaky", "crash")]
         check(not bad, "the sign-in walks replay and capture every screen", str(bad))
+
+    for s, h in handlers.items():
+        signal.signal(s, h)
 
     # 15: unstable screens (docs/crawl.md "Unstable screens"). apksim://unstable?mode=tick counts every 100 ms (two reads
     # never agree), mode=fail fails a request as it opens; home is still. A seed walk records each as `unstable` with its

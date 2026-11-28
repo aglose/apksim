@@ -45,6 +45,12 @@ SETTLE = "settle 1500 100"
 # --autofill: how long a launch may take to fill the saved sign-in and press its button once its form shows (Autofill
 # waits for the form to sit still 1.5 s, checks the values stuck, then presses).
 AUTOFILL_WAIT_S = 20
+# --autofill: how long after a launch (after a restart) a password form may take to show before the sign-in is disarmed,
+# how long the screen after it must show no password field to count as signed in, and how long one that never settles.
+AUTOFILL_FORM_S = 3.0
+AUTOFILL_FORM_RESTART_S = 0.5
+AUTOFILL_CLEAR_S = 1.0
+AUTOFILL_UNSETTLED_S = 5.0
 SETTLE_FAST = "settle 1500 80 1000 tree 80"
 # A replay step or screen that is not there yet (data from the network, a list that fills in late): wait this long, then
 # settle for longer, before trying again (Instance.wait_longer).
@@ -505,6 +511,8 @@ class Instance(snapshot.Worker):
     last_settled = True
     last_tree_stable = False
     parked = None
+    signin_checked = False  # --autofill: this start's sign-in has been seen through
+    no_signin = False       # --autofill: this start must not sign in (the sweep's offline case)
 
     def __init__(self, i, ctx):
         super().__init__(i, [dict(DEFAULT_COMBO)], ctx)
@@ -549,6 +557,7 @@ class Instance(snapshot.Worker):
         self.fresh_at_root = not has_override
         self.last_settled = True
         self.parked = None
+        self.signin_checked = False
         self.start()
 
     def ensure(self):
@@ -997,7 +1006,7 @@ class Instance(snapshot.Worker):
         self.configure(DEFAULT_COMBO)
         if self.fresh_at_root and not path.get("start") and not (self.ctx.get("record_deps") and need_deps):
             self.fresh_at_root = False
-            self.await_signin()
+            self.await_signin(path.get("start"), launched=True)
             if explore_fast and path["steps"] and self.ctx.get("root_id") and not need_deps:
                 act, recs = self.read_ui()
                 if act == "none" or structure(act, recs)[0] != self.ctx["root_id"]:
@@ -1012,7 +1021,10 @@ class Instance(snapshot.Worker):
             self.fresh_at_root = False
             self.say(f"clock {CLOCK}")
             self.expect_ok("restart" + (f" {path['start']}" if path.get("start") else ""))
-            self.await_signin()
+            self.signin_checked = False
+            if self.ctx.get("autofill") and not self.no_signin:
+                self.say("autofill on")  # an app that signs in per start shows its form again
+            self.await_signin(path.get("start"))
             if explore_fast and path["steps"] and not path.get("start") and self.ctx.get("root_id") and not need_deps:
                 act, recs = self.read_ui()
                 if act == "none" or structure(act, recs)[0] != self.ctx["root_id"]:
@@ -1066,41 +1078,90 @@ class Instance(snapshot.Worker):
         self.say("pick cancel")
         return last_obs
 
-    def await_signin(self):
-        """--autofill: when the screen shows a password field while the app's saved sign-in (Autofill, the `autofill`
-        command) looks for its form, waits until it has filled the form and pressed its button (AUTOFILL_WAIT_S at most),
-        then for the screen to settle, so a replay starts signed in and the start's data is read after the sign-in wrote
-        it. A screen with no password field is read as it is: the app is signed in already, or has no form to fill.
-        A form the sign-in left unfilled once is not waited for again (ctx autofill_stuck): it would cost every replay."""
-        if not self.ctx.get("autofill") or self.ctx.get("autofill_stuck"):
+    def await_signin(self, start=None, launched=False):
+        """--autofill: sees this start's sign-in through before the walk reads or captures anything. A password form on
+        screen is waited for until the saved sign-in has filled it and pressed its button; then the walk goes on only once
+        a screen without a password field is up, and otherwise stops (signin_failed): a refused password would be sent
+        again at every start, and the filled form explored. With nothing typed, the sign-in is disarmed (`autofill off`),
+        so it cannot fill a form the walk reaches later. A start whose form it left unfilled once is not waited for again
+        (ctx autofill_stuck): it would cost every replay."""
+        if not self.ctx.get("autofill") or self.signin_checked:
             return
-        state = self.say("autofill")
+        self.signin_checked = True
+        skip = self.no_signin or start in self.ctx["autofill_stuck"]
+        state = self.say("autofill off" if skip else "autofill")
         if state.startswith(("unknown", "error")):
-            self.ctx["autofill"] = False  # an apksim older than the command: launches still sign in, unseen
-            log("--autofill: this apksim has no `autofill` command; the walk does not wait for the sign-in")
-            return
+            self.signin_failed("this apksim has no `autofill` command, so the sign-in cannot be followed", state)
         if state.startswith(("none", "off")):
             self.ctx["autofill"] = False  # nothing saved for the app: nothing to wait for (signin_warning says so)
             self.ctx["autofill_states"].setdefault(state, 1)
             return
-        if state not in ("waiting", "filling"):
-            return  # done, gave up or idle: this start's sign-in has ended (counted when it was waited for)
+        form_seen = False
         if state == "waiting":
-            self.settle(SETTLE)
-            _act, recs = self.read_ui()
-            if not any("p" in r.flags for r in recs):
-                return
+            state = self.await_form(AUTOFILL_FORM_S if launched else AUTOFILL_FORM_RESTART_S)
+            form_seen = state == "waiting"
         deadline = time.time() + AUTOFILL_WAIT_S
         while state in ("waiting", "filling") and time.time() < deadline:
             time.sleep(0.25)
             state = self.say("autofill")
-        if state == "waiting" or state.startswith("idle"):
-            # The form sat on screen and was never filled (its labels do not match the saved names, most likely).
-            self.ctx["autofill_stuck"] = True
-            state = (f"not filled: the password form was on screen and the saved sign-in did not fill it (do the form's "
-                     "labels match the saved names?); the walk no longer waits for it")
-        self.note_signin(state)
+        if state == "waiting":
+            state = self.say("autofill off")
+        if state in ("waiting", "filling"):
+            self.signin_failed("the form was filled and the sign-in never finished", state)
+        if state.startswith(("disarmed", "idle")):  # nothing was typed
+            if form_seen:
+                # The form sat on screen and was never filled (its labels do not match the saved names, most likely).
+                self.ctx["autofill_stuck"].add(start)
+                self.note_signin("not filled: the password form was on screen and the saved sign-in did not fill it (do "
+                                 "the form's labels match the saved names?); the walk no longer waits for it")
+            return
+        self.note_signin(state)  # something was typed: `done: ...` or `gave up: ...`
+        self.await_signed_in(state)
+
+    def password_shown(self):
+        """A password field in any shown window, those under a dialog too (`nodes tree all`): a refused sign-in's dialog
+        covers its form, which accessibility then does not report."""
+        return any("p" in r.flags for r in parse_tree(self.say("nodes tree all")))
+
+    def await_form(self, seconds):
+        """The sign-in's state once a password field is on screen (`waiting`) or it has moved on by itself; with neither
+        within [seconds], what `autofill off` answers."""
         self.settle(SETTLE)
+        deadline = time.time() + seconds
+        while True:
+            if self.password_shown():
+                return "waiting"
+            state = self.say("autofill")
+            if state != "waiting":
+                return state
+            if time.time() >= deadline:
+                return self.say("autofill off")
+            time.sleep(0.25)
+
+    def await_signed_in(self, state):
+        """After the saved sign-in typed into a form: until a screen with no password field has been up for
+        AUTOFILL_CLEAR_S and is still (AUTOFILL_UNSETTLED_S if it never is). Else the walk stops."""
+        deadline = time.time() + AUTOFILL_WAIT_S
+        clear_since = None
+        while True:
+            settled = self.settle(SETTLE)
+            act, _recs = self.read_ui()
+            now = time.time()
+            if act != "none" and not self.password_shown():
+                clear_since = clear_since or now
+                if now - clear_since >= (AUTOFILL_CLEAR_S if settled else AUTOFILL_UNSETTLED_S):
+                    return
+            else:
+                clear_since = None
+            if now >= deadline:
+                self.signin_failed(f"no screen without a password field within {AUTOFILL_WAIT_S} s: a wrong password, a "
+                                   "second step or a server error?", state)
+            time.sleep(0.25)
+
+    def signin_failed(self, why, state):
+        """Stops the walk: nothing of this screen is read into the result or captured, and no further start signs in."""
+        end_walk(f"--autofill: the sign-in did not succeed ({why}; the sign-in said {state!r}). The walk is stopped, so "
+                 "the saved sign-in is not submitted again; check it by hand before walking with --autofill", 2)
 
     def note_signin(self, state):
         with self.ctx["lock"]:
@@ -1716,7 +1777,7 @@ class Explorer:
                     "relaunches": [0], "relaunch_files": {}, "first_values": {}, "nav_values": {}, "startup_writes": {}, "unsettled": set(),
                     "record_deps": bool(args.record_deps), "lock": threading.Lock(),
                     "autofill": bool(getattr(args, "autofill", False)) and "--no-autofill" not in self.options,
-                    "autofill_states": {},
+                    "autofill_states": {}, "autofill_stuck": set(),
                     "spawn": (SPAWN, STOPPING), "skip_re": self.skip_re}
         self.inline_shots = {}   # newly discovered sid -> (rel_path, settled) captured inline on first observation
         self.instances = []
@@ -1754,7 +1815,25 @@ class Explorer:
             except Exception as e:  # noqa: BLE001  (any launch failure ends the run with the reason)
                 errors.append(str(e))
 
-        threads = [threading.Thread(target=up, args=(inst,)) for inst in self.instances]
+        def up_disarmed(inst):
+            up(inst)
+            if self.ctx.get("autofill") and not errors:
+                try:
+                    inst.say("autofill off")  # armed again by its first restart: no form is filled unwatched
+                except Exception as e:  # noqa: BLE001
+                    errors.append(str(e))
+
+        rest = self.instances
+        if self.ctx.get("autofill"):
+            # One instance signs in first: a sign-in that is refused stops the walk after one try, not one per instance.
+            up(self.instances[0])
+            if not errors:
+                try:
+                    self.instances[0].await_signin(launched=True)
+                except Exception as e:  # noqa: BLE001
+                    errors.append(str(e))
+            rest = [] if errors else self.instances[1:]
+        threads = [threading.Thread(target=up_disarmed, args=(inst,)) for inst in rest]
         for t in threads:
             t.start()
         for t in threads:
@@ -1891,7 +1970,7 @@ class Explorer:
         elif not self.ctx.get("autofill"):
             how = "--autofill could not be followed (see above)"
         elif not states:
-            how = "--autofill: the sign-in never looked at this screen"
+            how = "--autofill: no password form showed in time for the sign-in to fill"
         else:
             how = "--autofill did not sign in: " + "; ".join(states)
         line = f"warning: the start screen ({where}) has a password field: the walk stays signed out. {how}"
@@ -3287,7 +3366,11 @@ class Sweep:
         inst.net_changed = True
         inst.say("network offline")
         inst.cmds.append("network offline")
-        inst.reach(screen["path"], relaunch=False)  # the path with no network, from a fresh start
+        inst.no_signin = True  # --autofill: a sign-in sent offline would only fail
+        try:
+            inst.reach(screen["path"], relaunch=False)  # the path with no network, from a fresh start
+        finally:
+            inst.no_signin = False
         up = self.spinner(inst)
         if up is None:
             self.omit("offline", screen)
@@ -4178,6 +4261,26 @@ D.screens.forEach(s=>{const c=E('div',{class:'card',id:'card-'+s.id,'data-id':s.
 
 # ------------------------------------------------------------------------------------------------------ main
 
+def recording_option(opts):
+    """The apksim option among [opts] that writes the app's requests, bodies included, to a file; else None."""
+    for i, o in enumerate(opts):
+        v = opts[i + 1] if i + 1 < len(opts) else ""
+        if o == "--network" and v == "record":
+            return "--network record"
+        if o == "--network-unmatched" and v.startswith("fetch:"):
+            return "--network-unmatched fetch:"
+        if o == "--rec" and {"net", "all"} & set(re.split(r"[,\s]+", v)):
+            return f"--rec {v}"
+        if o == "--jvm" and v.startswith(("-Dapksim.network=record", "-Dapksim.networkUnmatched=fetch", "-Dapksim.rec=")):
+            return f"--jvm {v.split('=')[0]}"
+    return None
+
+
+# A recording keeps request bodies as they were sent (only headers are redacted), a sign-in's password among them.
+AUTOFILL_NO_RECORDING = ("--autofill cannot be used with {}: a network recording keeps request bodies, so the saved "
+                         "password would be written in the clear into the walk's files")
+
+
 def parse(argv):
     if "--" in argv:
         i = argv.index("--")
@@ -4265,6 +4368,14 @@ def parse(argv):
         args.apksim += ["--setting", s]
     for s in args.sdcard_file:
         args.apksim += ["--sdcard-file", s]
+    if args.autofill:
+        try:
+            base_opts = shlex.split(args.base_option)
+        except ValueError as e:
+            fail(f"--base-option: {e}")
+        recording = "--freeze-network" if args.freeze_network else recording_option(args.apksim) or recording_option(base_opts)
+        if recording:
+            fail(AUTOFILL_NO_RECORDING.format(recording))
     if args.keep_data:
         if args.base or args.base_option:
             fail("--keep-data cannot be used with --base: two walks cannot start from one prepared data slot")
@@ -4322,6 +4433,8 @@ def load_seed(args, out, combos):
             seed = json.load(f)
     except (OSError, ValueError) as e:
         fail(f"--seed: cannot read {os.path.join(seed_dir, 'crawl.json')}: {e}")
+    if getattr(args, "autofill", False) and (seed.get("network") or os.path.exists(os.path.join(seed_dir, "network.har"))):
+        fail(AUTOFILL_NO_RECORDING.format("--seed of a --freeze-network walk"))
     known = {s["id"] for s in seed.get("screens", [])}
     unknown = [o for o in args.only_ids if o not in known]
     if unknown:
@@ -4391,6 +4504,9 @@ def kill_instances(walks):
                     pass
 
 
+END_ONCE = threading.Lock()
+
+
 def on_stop(signum, frame):
     """SIGTERM or SIGINT (Greenroom's Stop): the walk so far is written as a walk cut short, the instances end, exit 143.
     Fast, as a caller gives a few seconds before it kills the process tree: what is known is written as it is (the
@@ -4399,15 +4515,31 @@ def on_stop(signum, frame):
     findings), and the kill is made again last, for one a pool thread had in Popen meanwhile."""
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    sig = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
+    end_walk(f"stopped ({sig})", 143)
+
+
+def end_walk(why, code):
+    """The walk cut short, for [why], from the signal handler or from any thread: written as far as it is known, the
+    instances killed, the process ended with [code]. Returns only to a signal that arrives while this is under way."""
+    if not END_ONCE.acquire(blocking=False):
+        if code == 143 and threading.current_thread() is threading.main_thread():
+            return
+        while True:  # another thread is ending the walk: this one does nothing more
+            time.sleep(60)
     STOPPING.set()
+    if code != 143:
+        log(why)
     walk = STOP["walk"]
     if walk is None:
-        os._exit(143)
+        os._exit(code)
     walks = [walk] + ([STOP["base"]] if STOP["base"] else [])
     try:
         if walk.t_explore == 0:
             walk.t_explore = time.time() - STOP["t0"]
         walk.cut_by.add("stopped")
+        if code != 143:
+            walk.signin_warnings.append(why)
         doc = None
         for _ in range(5):  # the pool's threads may still be appending
             try:
@@ -4419,8 +4551,8 @@ def on_stop(signum, frame):
         if doc is None:
             log("stopped: the walk could not be read while its threads ran: crawl.json not written")
         else:
-            sig = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
-            doc["incomplete"].append(f"stopped ({sig}) after {time.time() - STOP['t0']:.0f} s"
+            doc["incomplete"].append((why if code == 143 else "stopped (the sign-in failed)")
+                                     + f" after {time.time() - STOP['t0']:.0f} s"
                                      + (" during the base build's walk (this is the new build's)" if STOP["base"] else "")
                                      + f": {len(doc['unexplored'])} screen(s) not explored")
             doc["stopped"] = True
@@ -4451,7 +4583,10 @@ def on_stop(signum, frame):
                     w.kept.remove()
                 shutil.rmtree(w.stage, ignore_errors=True)
         finally:
-            os._exit(143)
+            try:
+                sys.stdout.flush()
+            finally:
+                os._exit(code)
 
 
 def main():

@@ -89,19 +89,39 @@ Three ways to walk what a signed-in user sees, from least to most set-up:
   submit=Sign in
   ```
 
-  Write it yourself (`chmod 600`; from a password manager's CLI, say): apksim never shows its values, only the field
-  names, `nodes` and crawl.json leave a password field's text out, and captures show it masked as the app draws it. Without `--autofill` the crawler passes
-  `--no-autofill`, so a walk never signs in with a saved sign-in by accident. With it, whenever a start or a replay's
-  `restart` shows a password field while the sign-in looks for its form, the walk waits (up to 20 s) until it has
-  filled the form and pressed the button, then for the screen to settle, before it reads anything; so the root is the
-  signed-in screen, and what the sign-in writes is part of the data the app had at its start (no relaunch for it). A
-  `restart` looks for the form again, as a launch does, for 10 s: a form reached later in the walk (a re-authentication
-  screen) is left alone. A form left unfilled once is not waited for again, so a mismatch costs 20 s once, not per
-  replay. crawl.json's `signin.states` counts how each sign-in ended
-  (`done: filled Username, Password; pressed Sign in`, `gave up: ...`, or `not filled: ...` when the form stayed
-  unfilled: its labels do not match the saved names). Every instance (`-j N`) and relaunch signs in again against the real
-  server, so a walk of 200 screens may sign in dozens of times: fine for a test account, not for one that locks after
-  repeated sign-ins. The test app's `apksim://login` (`LoginActivity`: `tester` / `apksim-test`) is the check
+  Write it yourself (`chmod 600`; from a password manager's CLI, say). apksim logs only the field names, and a password
+  field's text is left out of `nodes` and crawl.json and drawn masked by the app. Everything else the app shows after
+  signing in is in the walk's files as it is (crawl.json, captures, report): a username, a server's address, an
+  account's data. Treat OUT as private.
+
+  Without `--autofill` the crawler passes `--no-autofill`, so a walk never signs in with a saved sign-in by accident.
+  With it, each start and each replay's `restart` sees the sign-in through before anything is read or captured:
+  - A password field on screen: the walk waits (up to 20 s) until the form is filled and its button pressed, then until
+    a screen with no password field is up. So the root is the signed-in screen, and what the sign-in writes is part of
+    the data the app had at its start (no relaunch for it).
+  - No password field soon after the start (3 s after a launch, half a second after a settled `restart`): the app is
+    taken for signed in and the sign-in is disarmed
+    (`autofill off`), so a form reached later in the walk (a re-authentication screen) is never filled. After a
+    `restart` it is armed again (`autofill on`).
+  - A form that was filled and did not go away (a wrong password, a server error, a form with no `submit` named):
+    **the walk stops**, exit 2, with what it had found so far in crawl.json (`stopped`, `signin.warnings`) and nothing
+    read or captured of that screen, so the password is not sent again at every replay. With `-j N` one instance signs
+    in before the others start.
+  - A form left unfilled (its labels do not match the saved names) is explored as it is, signed out, and not waited for
+    again at that start, so a mismatch costs 20 s once.
+
+  Only a password field tells the walk that the sign-in failed. A second step with no password field (a one-time code)
+  looks signed in, and each launch would send the password again: do not use `--autofill` for such an account. Nor can
+  an app that keeps a password field on its signed-in start screen be walked this way.
+
+  A network recording keeps request bodies as they were sent, the password among them, so `--autofill` is refused with
+  `--freeze-network` (and `--seed` of such a walk), `--network record`, `--network-unmatched fetch:` and `--rec` with
+  `net`.
+
+  crawl.json's `signin.states` counts how the sign-ins ended (`done: filled Username, Password; pressed Sign in`,
+  `gave up: ...`, `not filled: ...`). Every instance (`-j N`) and relaunch signs in again against the real server, so a
+  walk of 200 screens may sign in dozens of times: fine for a test account, not for one that locks after repeated
+  sign-ins. The test app's `apksim://login` (`LoginActivity`: `tester` / `apksim-test`) is the check
   (`crawl-check.py`, 14).
 - `--keep-data`: for an app whose session lives in its data. Sign in once in a launch of your own that takes the slot
   the walk will copy (`apksim --data-slots NAME ... APK`, then `crawl.py --keep-data APK ... -- --data-slots NAME`), quit
