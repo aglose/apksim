@@ -36,7 +36,7 @@ scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] 
   `--setting global|secure|system:KEY=V`, `--sdcard-file PATH=text:TEXT` and any apksim option after `--`
   (`--feature`, `--locale`, `--network replay FILE`...) go to every launch; a deep link past the sign-in screen is a
   `--start`. A start screen with a password field prints `warning: the start screen (...) has a password field: the
-  walk stays signed out` with what to do, and crawl.json's `signin.warnings` keeps it. The crawler never types a
+  walk stays signed out` with what to do, and crawl.json's `signin.warnings` keeps it. Without `--autofill` the crawler never types a
   password: text fields are left alone unless `--fill TEXT` is given, which types it into the fields of each screen
   before its controls are tried.
 - `--keep-data` starts from a prepared data slot (the one a launch with the same `--data-slots NAME` after `--` takes,
