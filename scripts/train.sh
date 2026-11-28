@@ -62,6 +62,12 @@ trap 'rm -f "$CONF" "$NEW" "$REL" "$DL"; [[ "$(cat "$STATE/train.pid" 2>/dev/nul
 # An installed release does not ship the test app (22 MB of its download): the first training fetches it from the
 # release, checked against the hash the release carries (work/testapp.sha256), and keeps it in STATE.
 # APKSIM_DOWNLOAD_URL points at a mirror or a local folder (file://), as for install.sh.
+# A kept one is checked too, each time: training runs it outside the sandbox, so one an app replaced is fetched again.
+if [[ -n "$RELEASE_APK" && -f "$RELEASE_APK" ]] \
+    && [[ "$(shasum -a 256 "$RELEASE_APK" | cut -d' ' -f1)" != "$(tr -d ' \n' < "$ROOT/work/testapp.sha256")" ]]; then
+  echo "train.sh: $RELEASE_APK does not match the release's test app; fetching it again" >&2
+  rm -f "$RELEASE_APK"
+fi
 if [[ -n "$RELEASE_APK" && ! -f "$RELEASE_APK" ]]; then
   URL="${APKSIM_DOWNLOAD_URL:-https://github.com/aglose/apksim/releases/download/v$VERSION}/apksim-testapp-$VERSION.apk"
   WANT="$(tr -d ' \n' < "$ROOT/work/testapp.sha256")"
