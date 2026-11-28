@@ -32,6 +32,9 @@ check "hands off to the pin" "$(run --version)" "stub 8.0.0: --version"
 check "shows the pin" "$(run use)" "apksim 8.0.0 (pinned"
 check "inspect goes to the pin" "$(run inspect)" "stub 8.0.0: beam config inspect-network optional"
 check "beam install stays with the install" "$(run beam install)" "status"
+for own in --crash-summary --spawn-standby --standby; do
+  check "$own stays with the install" "$(run $own /dev/null | grep -c stub || true)" "0"
+done
 check "APKSIM_NO_PIN stays with the install" "$(APKSIM_NO_PIN=1 run --version)" "1.0.0"
 check "a missing release fails" "$(run use 7.7.7)" "could not download 7.7.7"
 check "and keeps the pin" "$(run use)" "apksim 8.0.0 (pinned"

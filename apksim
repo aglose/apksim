@@ -38,13 +38,15 @@ case "${1:-}" in
 esac
 # A pinned release (`apksim use X.Y.Z`) runs in place of this one. Only for a Homebrew or install.sh install: a copy of
 # apksim bundled in another app keeps its own version. `beam install|uninstall` stay here, so launchd's jobs name this
-# launcher, which survives a change of pin. The pin and the releases are run unsandboxed, so they are kept where no
+# launcher, which survives a change of pin, as do the calls a running instance of this install makes to itself
+# (--spawn-standby, --standby, --crash-summary). The pin and the releases are run unsandboxed, so they are kept where no
 # app's sandbox may write: never in STATE, which every instance may. APKSIM_NO_PIN=1 runs this install (use.sh,
 # install.sh).
 VERSIONS="${HOME:-}/.apksim-versions"
 if [[ -z "${APKSIM_NO_PIN:-}" && -f "$VERSIONS/use" \
       && ( "$ROOT" == */Caskroom/apksim/* || "$ROOT" == "${HOME:-}/.local/share/apksim/"* ) \
-      && ! ( "${1:-}" == beam && ( "${2:-}" == install || "${2:-}" == uninstall ) ) ]]; then
+      && ! ( "${1:-}" == beam && ( "${2:-}" == install || "${2:-}" == uninstall ) ) \
+      && "${1:-}" != --spawn-standby && "${1:-}" != --standby && "${1:-}" != --crash-summary ]]; then
   PIN=""; { read -r PIN < "$VERSIONS/use"; } 2>/dev/null || true
   if [[ "$PIN" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && -x "$VERSIONS/$PIN/apksim" ]]; then exec "$VERSIONS/$PIN/apksim" "$@"; fi
   echo "[apksim] the pinned release ${PIN:-?} is missing: running the installed one (apksim use default clears the pin)" >&2

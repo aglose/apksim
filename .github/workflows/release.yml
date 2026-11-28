@@ -120,6 +120,8 @@ jobs:
           python3 "$D/scripts/pr-evidence.py" baseline "$APKSIM_HOME/testapp-$VERSION.apk" --out "$RUNNER_TEMP/evidence-map" \
             --depth 1 --max-seconds 180 --no-captures -- --no-network 2>&1 | tee evidence.log
           grep -qE ', [1-9][0-9]* with recorded dependencies' evidence.log
+      - name: Pinned releases (apksim use, with the Mac sandbox)
+        run: scripts/check-use.sh
       - name: Checksums
         run: |
           cd dist
