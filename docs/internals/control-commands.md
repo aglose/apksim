@@ -57,7 +57,8 @@ also returns), `open URL` (deep link into the app), `clipboard [set TEXT]`, `rec
 window only; a `.mp4` name gets MP4, else QuickTime; the last picture is held to the stop time, so the file lasts as long as the recording), `reveal`, `pinch CX CY FROM TO [ms]` (two fingers), `rotate left|right|portrait|landscape`,
 `zoom actual|fit|in|out` (window size only), `permission [allow|deny|grant NAME|revoke NAME|reset]`,
 `notifications [open N|last|clear]`, `location LAT LNG|run|bike|drive|gpx FILE|none`,
-`network [online|offline|3g|lossy|latency MS|bandwidth KBPS|unmatched [clear]|save|reconnect]` (see "Network"),
+`network [online|offline|3g|lossy|latency MS|bandwidth KBPS|unmatched [clear]|failures [clear]|save|reconnect]` (see "Network";
+`failures`: the app's failed requests since launch, counted with or without a `--network` option, `NetFailures`),
 `network wifi [on|off|toggle|signal DBM|signal level N]` and `network cellular [on|off|toggle]` (`Radios`: Wi-Fi and
 mobile data as a phone's two switches, and Wi-Fi's signal; `--wifi on|off`, `--cellular on|off`, `--wifi-signal
 DBM|level:N` at launch; Wi-Fi off with mobile data on makes a metered TYPE_MOBILE/TRANSPORT_CELLULAR network the default,

@@ -12,7 +12,7 @@ App data, like simctl's listapps / get_app_container / erase (no instance needed
   ctl.py erase PKG                 deletes a package's data, as uninstalling would (refused while in use), with what
                                    each slot keeps of the device beside it (SLOT.device: /sdcard, Settings values)
 
-Instances need --control PORT or --control auto. Commands are those of the control channel (see docs/internals/control-commands.md).
+Instances need --control PORT or --control auto. Commands are those of the control channel (see AGENTS.md).
 """
 import fcntl, glob, os, shutil, socket, subprocess, sys, time
 
