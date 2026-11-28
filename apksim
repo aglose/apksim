@@ -84,6 +84,7 @@ start_training() {
     [[ -f "$STATE/train.failed" ]] || \
       echo "[apksim] building the startup cache in the background (once, 1-2 minutes, downloading the 22 MB test app" \
         "it trains on); launches are faster after that" >&2
+    [[ -L "$STATE/train.log" ]] && rm -f "$STATE/train.log"  # a link an app planted would be written through
     "$CLIENT" detach "$STATE/train.log" "$ROOT/scripts/train.sh" --headless --background
   fi
 }
@@ -745,9 +746,15 @@ LIBS="${TMP%/}/apksim-$(printf '%s' "$ROOT" | { shasum 2>/dev/null || sha1sum; }
 # Two launches starting together (a first launch and the training it starts) can both find no link. Never `ln -f`:
 # its unlink would take away a link the other launch is already reading. The slower one fails "File exists" once the
 # other's link is there, which is what it wanted. Only a dangling link (work/lib gone and back) is removed first.
+# A link to anywhere else (planted by an app before its sandbox refused it) is replaced; inside a sandbox, which may not
+# touch it, the folder is used as it is when its path has no space.
 [[ -L "$LIBS" && ! -e "$LIBS" ]] && rm -f "$LIBS"
+if [[ -e "$LIBS" && "$(readlink "$LIBS")" != "$ROOT/work/lib" ]]; then
+  if [[ -n "${APKSIM_SANDBOXED:-}" ]]; then LIBS="$ROOT/work/lib"; else rm -f "$LIBS"; fi
+fi
 if [[ ! -e "$LIBS" ]] && ! ln -sn "$ROOT/work/lib" "$LIBS" 2>/dev/null && [[ ! -e "$LIBS" ]]; then
-  echo "[apksim] cannot link $LIBS to $ROOT/work/lib" >&2; exit 1
+  if [[ -n "${APKSIM_SANDBOXED:-}" && "$ROOT" != *" "* ]]; then LIBS="$ROOT/work/lib"
+  else echo "[apksim] cannot link $LIBS to $ROOT/work/lib" >&2; exit 1; fi
 fi
 if [[ "${APKSIM_FLAT_FRAMEWORK:-1}" != 0 && -f "$ROOT/work/runtime/android-all-flat.jar" ]]; then
   CP="$ROOT/work/apksim.jar:$ROOT/work/runtime/android-all-flat.jar:$(ls "$LIBS"/ | sed "s#^#$LIBS/#" | grep "\.jar$" | grep -v nativeruntime-dist | grep -v android-all-instrumented- | tr '\n' ':')"
@@ -777,7 +784,8 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && ( -n "${APKSIM_BEAM_SANDBOX:-}"
   # own folder (a Homebrew install is outside the home folder, and its launcher, scripts and JDK run unsandboxed), the
   # places other programs run from (Homebrew's prefix, /usr/local, /Applications), the link to apksim's libraries in
   # the temp folder (training's launches load the jars it names), and in STATE the startup cache and the test app that
-  # training (unsandboxed) builds it from. Real paths: the sandbox matches resolved ones. A checkout's work/ is STATE, so
+  # training builds it from, and training's logs and pid file (unsandboxed writers, which a planted link would lead
+  # elsewhere). Every install's library link, not only this one's. Real paths: the sandbox matches resolved ones. A checkout's work/ is STATE, so
   # its build outputs are named too. Later rules win: an option's own folder (--bundles...) is allowed after the
   # prefixes, never over the rest.
   RH="$(cd "$HOME" && pwd -P)"; RR="$(cd "$ROOT" && pwd -P)"
@@ -787,6 +795,9 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && ( -n "${APKSIM_BEAM_SANDBOX:-}"
     [[ -d "$P" && "$P" != "$RR" && "$P" != *[\"\\]* ]] && KEEP_OUT="$KEEP_OUT (subpath \"$(cd "$P" && pwd -P)\")"
   done
   RSQ="$(mkdir -p "$STATE" && cd "$STATE" && pwd -P | sed 's/[][\\.*^$()+?{}|]/\\&/g')"
+  RRQ="$(printf '%s' "$RR" | sed 's/[][\\.*^$()+?{}|]/\\&/g')"
+  RTQ="$(printf '%s' "$RT" | sed 's/[][\\.*^$()+?{}|]/\\&/g')"
+  X12="$(printf '[0-9a-f]%.0s' 1 2 3 4 5 6 7 8 9 10 11 12)"
   PROFILE="(version 1)(allow default)
 (deny file-write* (subpath \"$HOME\") (subpath \"$RH\") (subpath \"$RR\")${KEEP_OUT})
 (allow file-write* (subpath \"$STATE\"))${BUNDLES:+
@@ -797,9 +808,9 @@ if [[ "$OS" == Darwin && -z "${NO_SANDBOX:-}" && ( -n "${APKSIM_BEAM_SANDBOX:-}"
 (allow file-write* (literal \"$NET_RECORD_FILE\") (literal \"$NET_RECORD_FILE.apksim-tmp\"))}${NET_FETCH_FILE:+
 (allow file-write* (literal \"$NET_FETCH_FILE\") (literal \"$NET_FETCH_FILE.apksim-tmp\") (literal \"$NET_FETCH_FILE.secrets\") (literal \"$NET_FETCH_FILE.secrets.apksim-tmp\"))}${TEST_OUTPUTS:+
 (allow file-write* (subpath \"$TEST_OUTPUTS\"))}
-(deny file-write* (literal \"$RT/${LIBS##*/}\") (regex #\"^$RSQ/(app\\.aot|testapp[-.])\")
-  (subpath \"$RR/work/apksim.jar\") (subpath \"$RR/work/lib\") (subpath \"$RR/work/runtime\") (subpath \"$RR/work/jre\")
-  (subpath \"$RR/work/jdk-24\") (subpath \"$RR/apksim\") (subpath \"$RR/scripts\"))
+(deny file-write* (regex #\"^$RTQ/apksim-$X12\$\") (regex #\"^$RSQ/(app\\.aot|testapp[-.]|train[-.])\")
+  (regex #\"^$RRQ/work/(apksim\\.jar|lib|runtime|jre|jdk|linux-arm64|site-venv|release|testapp)\")
+  (subpath \"$RR/apksim\") (subpath \"$RR/scripts\"))
 (deny file-read* (subpath \"$HOME/.ssh\") (subpath \"$HOME/.aws\") (subpath \"$HOME/.gnupg\") (subpath \"$HOME/.config\")
   (subpath \"$HOME/Library/Keychains\") (subpath \"$HOME/Library/Cookies\") (subpath \"$HOME/Documents\") (subpath \"$HOME/Desktop\")
   (subpath \"$HOME/Library/Application Support/Google\") (subpath \"$HOME/Library/Application Support/Firefox\"))"

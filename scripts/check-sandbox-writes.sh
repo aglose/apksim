@@ -48,6 +48,9 @@ out="$(inside "$INST" \
   testapp ": > \"$STATE/testapp-9.9.9.apk\"" \
   download ": > \"$STATE/testapp.download.1\"" \
   liblink "rm \"$LINK\" && ln -s \"$T\" \"$LINK\"" \
+  otherlink "ln -s \"$T\" \"$(dirname "$LINK")/apksim-0123456789ab\"" \
+  trainlog "ln -s \"$HOME/x\" \"$STATE/train.log\"" \
+  trainpid ": > \"$STATE/train.pid\"" \
   home ": > \"$HOME/probe\"")"
 check "an install: the state folder is written" "$out" "state: wrote"
 check "an install: the temp folder is written" "$out" "temp: wrote"
@@ -58,6 +61,9 @@ check "an install: the startup cache is not" "$out" "cache: refused"
 check "an install: the test app is not" "$out" "testapp: refused"
 check "an install: a test app download is not" "$out" "download: refused"
 check "an install: the link to its libraries is not replaced" "$out" "liblink: refused"
+check "an install: another install's library link is not planted" "$out" "otherlink: refused"
+check "an install: training's log is not linked elsewhere" "$out" "trainlog: refused"
+check "an install: training's pid file is not" "$out" "trainpid: refused"
 check "an install: the home folder is not" "$out" "home: refused"
 
 # The real places other programs run from: only refusals are tried, and anything that got through is removed.
@@ -76,10 +82,15 @@ out="$(inside "$CO" \
   jar ": > \"$CO/work/apksim.jar\"" \
   lib ": > \"$CO/work/lib/x.jar\"" \
   runtime ": > \"$CO/work/runtime/x.dylib\"" \
+  jdkpath ": > \"$CO/work/jdk.path\"" \
+  release ": > \"$CO/work/release\"" \
   source ": > \"$CO/apksim\"")"
 check "a checkout: work/ is written" "$out" "cache: wrote"
 check "a checkout: work/apksim.jar is not" "$out" "jar: refused"
 check "a checkout: work/lib is not" "$out" "lib: refused"
 check "a checkout: work/runtime is not" "$out" "runtime: refused"
+check "a checkout: work/jdk.path is not" "$out" "jdkpath: refused"
+check "a checkout: work/release is not" "$out" "release: refused"
 check "a checkout: its launcher is not" "$out" "source: refused"
+rm -f "$(dirname "$LINK")/apksim-0123456789ab"
 exit "$fails"

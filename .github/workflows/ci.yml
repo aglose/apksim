@@ -629,6 +629,8 @@ jobs:
       - name: Keep the Mac awake
         if: runner.environment == 'self-hosted'
         run: nohup caffeinate -dims -t 3600 >/dev/null 2>&1 &
+      - name: Sandbox writes (nothing that runs outside the sandbox is writable from it)
+        run: scripts/check-sandbox-writes.sh
       - name: Fetch the anchor release
         env:
           ANCHOR_INPUT: ${{ inputs.startup_anchor }}
