@@ -1695,11 +1695,14 @@ with the audio clock, and seek. Drops with sound on (0-7%) came from the stream:
 segment joins (logcat: "Unexpected audio track timestamp discontinuity") and Media3 moves its clock to match.
 Apps that sign in on every cold start can be signed in by apksim itself (`Autofill.java`): it reads
 `work/autofill/<package>.properties` (mode 600, written by the owner), finds fields by their label/placeholder in
-the accessibility tree, fills them, checks they stuck, presses `submit`, and logs field names only; a `restart` makes it
-look for the form again for 10 s (`idle: ...` after that), and the `autofill` command answers where it is (`waiting`, `filling`, `done: filled A, B;
-pressed X`, `gave up: ...`, or none saved / `--no-autofill`). `crawl.py --autofill` waits on it before reading a screen
-with a password field (docs/crawl.md "Signed-in walks"; the test app's `apksim://login`, `tester` / `apksim-test`,
-`LoginActivity`, checked by `crawl-check.py`); without it the crawler passes `--no-autofill`. Never read,
+the accessibility tree, fills them, checks they stuck, presses `submit`, and logs field names only; the `autofill` command answers
+where it is (`waiting`, `filling`, `done: filled A, B; pressed X`, `gave up: ...`, `disarmed`, `idle: ...`, or none
+saved / `--no-autofill`), `autofill off` stops it looking if nothing is typed yet, and `autofill on` has it look again
+for 10 s (nothing else re-arms it: a `restart` alone does not). `crawl.py --autofill` sees each start's sign-in through
+before reading a screen, disarms it, stops the walk (exit 2) when a filled form's password field stays, and refuses
+anything that records the network, as recordings keep request bodies (docs/crawl.md "Signed-in walks"; the test app's
+`apksim://login`, `tester` / `apksim-test`, `LoginActivity`, checked by `crawl-check.py`); without it the crawler passes
+`--no-autofill`. Never read,
 print or edit the owner's file, and never type the owner's password: if it is missing, ask the owner.
 
 ## Per-instance costs (frame rate, video, audio, animations)
