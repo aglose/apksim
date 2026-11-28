@@ -33,6 +33,14 @@ public final class NetFailures {
     }
   }
 
+  /** At each launch (AppInfo.load) and test (SimRunner.resetState), as Gaps: "since launch" means this app's. */
+  public static void reset() {
+    synchronized (LAST) {
+      COUNT.set(0);
+      LAST.clear();
+    }
+  }
+
   public static long count() {
     return COUNT.get();
   }

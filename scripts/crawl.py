@@ -987,7 +987,11 @@ class Instance(snapshot.Worker):
         self.fresh_start() if relaunch else self.ensure()
         self.failures_base = None
         if count_failures:
-            launched = getattr(self, "generation", 0) != gen  # a launch made for this reach: every failure since is its
+            # Every failure since the launch is this reach's when the launch was made for it, or when the instance is
+            # still on the screen its launch opened and this reach reads that screen without a `restart` (below): the
+            # app's start and the screen's own load came before anything could be read.
+            no_restart = self.fresh_at_root and not path.get("start") and not (self.ctx.get("record_deps") and need_deps)
+            launched = getattr(self, "generation", 0) != gen or no_restart
             got = None if launched else self.net_failures()
             self.failures_base = 0 if launched else (got[0] if got is not None else None)
         self.configure(DEFAULT_COMBO)
@@ -1134,6 +1138,7 @@ class Instance(snapshot.Worker):
         if got["id"] != screen["id"] and not lenient and relaunch:
             self.wait_longer()
             got = self.observe(expected_id=screen["id"])
+            got["at"] = time.monotonic()
         if got["id"] != screen["id"]:
             if not (lenient and got["activity"] == screen["activity"]):
                 raise ReplayFailed(f"replay reached {got['id']}, not {screen['id']}")
@@ -2112,7 +2117,8 @@ class Explorer:
         wp = self.waypoints.get(screen["id"])
         for attempt in range(2):
             try:
-                last_obs = inst.reach(screen["path"], waypoints=wp, explore_fast=self.explore_fast, count_failures=True)
+                last_obs = inst.reach(screen["path"], waypoints=wp, explore_fast=self.explore_fast,
+                                      count_failures=not self.args.no_stability_check)
                 obs = last_obs if (last_obs is not None and last_obs["id"] == screen["id"]) else inst.observe(expected_id=screen["id"])
                 obs["at"] = time.monotonic()
                 s_state = inst.data_state() if inst.from_launch_data() else None
@@ -2123,6 +2129,7 @@ class Explorer:
                 if attempt:
                     try:
                         obs = inst.observe(expected_id=screen["id"])
+                        obs["at"] = time.monotonic()
                         s_state = inst.data_state() if inst.from_launch_data() else None
                         inst.parked = (obs["id"], obs, s_state)
                         return {"obs": obs, "note": note}
@@ -2337,7 +2344,7 @@ class Explorer:
             for attempt in range(3):
                 try:
                     here = inst.reach_screen(screen, patient=attempt == 2, waypoints=wp, explore_fast=self.explore_fast,
-                                             need_deps=bool(args.record_deps), count_failures=True)
+                                             need_deps=bool(args.record_deps), count_failures=not args.no_stability_check)
                     break
                 except ReplayFailed as e:
                     flaky = str(e)
@@ -3729,7 +3736,8 @@ class SeedCompare:
             elif look not in (p.get("why") or ""):
                 p["why"] = (p["why"] + "; " + look) if p.get("why") else look
         unstable_pair(p, ns, bs, "seed")
-        ev = {k: p[k] for k in ("id", "base", "status", "was", "why", "ui_diff", "unstable") if p.get(k) is not None or k in ("why",)}
+        ev = {k: p[k] for k in ("id", "base", "status", "was", "unstable_in", "why", "ui_diff", "unstable")
+              if p.get(k) is not None or k in ("why",)}
         if d:
             ev["diffs"] = d
         self.new.event("compare", **ev)
@@ -3742,7 +3750,7 @@ class SeedCompare:
             unstable_pair(p, self.new.screens.get(p["id"]) if p["id"] else None, self.seed_by_id.get(p["base"]), "seed")
             if p["status"] == "new" or p.get("was") == "new":
                 self.new.event("compare", id=p["id"], base=None, status=p["status"], why=p["why"],
-                               **({"was": p["was"]} if p.get("was") else {}))
+                               **({"was": p["was"], "unstable_in": p["unstable_in"]} if p.get("was") else {}))
         doc = self.doc
         doc["compare"] = self.pairs
         doc["unstable"] = unstable_list(self.pairs)
@@ -3759,21 +3767,24 @@ def unstable_pair(p, ns, bs, base_label):
     The status it would have had is kept in `was`. A carried screen's own `unstable` is the seed's, already counted."""
     if p["status"] not in ("changed", "new", "gone"):
         return False
-    why = []
+    why, sides = [], []
     if bs and bs.get("unstable"):
         why.append(f"in the {base_label}: {bs['unstable']}")
+        sides.append("base")
     if ns and ns.get("origin", "walked") == "walked" and ns.get("unstable"):
         why.append(f"in this walk: {ns['unstable']}")
+        sides.append("walk")
     if not why:
         return False
-    p["was"], p["status"] = p["status"], "unstable"
+    p["was"], p["status"], p["unstable_in"] = p["status"], "unstable", sides
     p["why"] = "unstable " + "; ".join(why) + f" (otherwise {p['was']}" + (f": {p['why']})" if p.get("why") else ")")
     return True
 
 
 def unstable_list(pairs):
     """crawl.json's `unstable`: the pairs left out of the comparison, with the status each would have had."""
-    return [{"id": p["id"], "base": p["base"], "was": p["was"], "why": p["why"]} for p in pairs if p["status"] == "unstable"]
+    return [{"id": p["id"], "base": p["base"], "was": p["was"], "in": p["unstable_in"], "why": p["why"]}
+            for p in pairs if p["status"] == "unstable"]
 
 
 def lost_carried(new, seed):
@@ -4134,8 +4145,8 @@ if(D.compare){cp.append(E('h2',{},'Against the base build'));
  if(unst.length){cp.append(E('p',{class:'muted'},'Unstable: content that changed between two reads, or requests that failed while it was reached, in the seed or in this walk. Not compared:'));cp.append(mkTable(unst))}
  if(same.length<=10){if(same.length)cp.append(mkTable(same))}
  else{const det=E('details',{},E('summary',{class:'muted'},same.length+' unchanged screen(s)'),mkTable(same));cp.append(det)}
- changed.filter(p=>p.id&&(D.diffs[p.id]||p.ui_diff)).forEach(p=>{
-  cp.append(E('h3',{},S[p.id]?E('a',{onclick:'select("'+p.id+'")'},p.id):p.id,' ',E('span',{class:'badge '+(p.status==='new'?'ok':'warn')},p.status)));
+ changed.concat(unst).filter(p=>p.id&&(D.diffs[p.id]||p.ui_diff)).forEach(p=>{
+  cp.append(E('h3',{},S[p.id]?E('a',{onclick:'select("'+p.id+'")'},p.id):p.id,' ',E('span',{class:'badge '+(p.status==='new'?'ok':p.status==='unstable'?'muted':'warn')},p.status+(p.was?' (otherwise '+p.was+')':''))));
   if(p.ui_diff){const lines=[];
    if(p.ui_diff.title)lines.push('title: '+JSON.stringify(p.ui_diff.title.from)+' -> '+JSON.stringify(p.ui_diff.title.to));
    [['texts','text'],['controls','control']].forEach(([k,lbl])=>{const u=p.ui_diff[k]||{};
@@ -4182,6 +4193,9 @@ def parse(argv):
     p.add_argument("--max-screens", type=int)
     p.add_argument("--max-seconds", type=float)
     p.add_argument("--max-depth", type=int)
+    p.add_argument("--fail-on-unstable", action="store_true",
+                   help="with --diff-seed or --base: a pair left out as unstable only because of this walk (its screen "
+                        "was stable in the seed or base build) fails the exit status, as a change would")
     p.add_argument("--no-stability-check", action="store_true",
                    help="do not read each screen again --stable-ms after arriving, nor count the app's failed requests: no "
                         "screen is `unstable` (docs/crawl.md \"Unstable screens\")")
@@ -4612,8 +4626,18 @@ def main():
         junit(args.junit or os.path.join(out, "junit.xml"), sweep)
     crashes = [f for f in doc["findings"] if f["kind"] in ("crash", "compare") or (f["kind"] == "sweep" and not f["allowed"])]
     differs = [p for p in doc.get("compare", []) if p["status"] not in ("same", "unknown", "unstable")]
-    for p in differs + [p for p in doc.get("compare", []) if p["status"] == "unstable"]:
+    shaky = [p for p in doc.get("compare", []) if p["status"] == "unstable"]
+    for p in differs + shaky:
         log(f"{p['status']:>8}  {p['id'] or p['base']}  {p.get('why') or ''}")
+    walk_only = [p for p in shaky if p.get("unstable_in") == ["walk"]]
+    if walk_only:
+        # Stable in the seed, unstable now: the change under test may be what makes its requests fail.
+        log(f"{len(walk_only)} pair(s) left out as unstable only because of this walk, stable in the "
+            f"{'seed' if getattr(args, 'diff_seed', False) else 'base build'}: the change may be what broke them "
+            + ("(counted as differences: --fail-on-unstable)" if args.fail_on_unstable else "(--fail-on-unstable fails the run on them)")
+            + ": " + ", ".join(p["id"] or p["base"] for p in walk_only))
+        if args.fail_on_unstable:
+            differs += walk_only
     walked = [s for s in doc["screens"] if s.get("origin", "walked") == "walked"]
     unstable = [s["id"] for s in walked if s.get("unstable")]
     if unstable:

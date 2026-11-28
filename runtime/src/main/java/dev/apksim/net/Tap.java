@@ -55,6 +55,9 @@ final class Tap {
   /** Whether connections are being captured. */
   static volatile boolean on;
 
+  /** The error of an exchange whose socket the app closed under it (a cancelled request): not a failure (NetFailures). */
+  static final String CLOSED_BY_APP = "closed by the app";
+
   /** Bodies bigger than this are counted and hashed but not kept (as the engine's). */
   static final int MAX_BODY = 32 << 20;
   /** A request or response head, or an HTTP/2 control frame, bigger than this cannot be one: the connection is given up. */
@@ -569,7 +572,7 @@ final class Tap {
     boolean never = !c.live;  // a connect that failed
     if (c.decoder != null) {
       try {
-        c.decoder.end(eof, c.error != null ? c.error : c.note != null ? c.note : eof ? null : "closed by the app", nanos);
+        c.decoder.end(eof, c.error != null ? c.error : c.note != null ? c.note : eof ? null : CLOSED_BY_APP, nanos);
       } catch (RuntimeException e) {
         Net.log("network tap: " + c + ": " + e);
       }

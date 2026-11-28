@@ -533,6 +533,21 @@ public final class TapCheck {
     Map<String, Object> silence = find("/silence");
     check(silence != null && String.valueOf(silence.get("_apksimError")).contains("SocketTimeoutException") && ((Number) resp(silence).get("status")).intValue() == 0,
         "a request that never got an answer is kept, with the timeout that ended it (" + (silence == null ? null : silence.get("_apksimError")) + ")");
+    // A request the app gives up on by closing its socket (a cancelled call) is not a failed request.
+    int slow = serve(null, (s4, in4, out4) -> {
+      head(in4);
+      Thread.sleep(3000);
+    });
+    Socket u = connect("localhost", slow, null);
+    Net.outputStream(u).write(ascii("GET /cancelled HTTP/1.1\r\nHost: fail.test\r\n\r\n"));
+    Thread.sleep(300);
+    long beforeCancel = NetFailures.count();
+    u.close();
+    Thread.sleep(2500);
+    Net.drain(2000);
+    Map<String, Object> cancelled = find("/cancelled");
+    check(cancelled != null && NetFailures.count() == beforeCancel,
+        "a request whose socket the app closed is kept (" + (cancelled == null ? null : cancelled.get("_apksimError")) + ") and not counted as failed");
     // Issue 440: TLS the app's factory refuses (an untrusted certificate) leaves a row, with the reason.
     int selfSigned = serve(new String[] {"http/1.1"}, (s3, in3, out3) -> Thread.sleep(500));
     Socket raw = new Socket();

@@ -190,22 +190,30 @@ line; "UNSTABLE" on its card) when either holds:
   `--network` option (`network failures`, `NetFailures`): connects refused, unreachable or timed out, host names that
   did not resolve, requests a replay (`--freeze-network`) had no answer for, and, while the tap reads the app's
   connections, exchanges that ended with no answer (not a stream the app cancelled itself) or a 5xx. The count is read just before the replay's `restart` (or
-  taken as 0 for a launch made for it) and again after the second read: "2 requests of the app failed while it was
+  taken as 0 for a launch made for it, or for an instance still on the screen its launch opened, which is read with no
+`restart`) and again after the second read: "2 requests of the app failed while it was
   reached (last: api.example.com:443 connect failed: ...)". Not counted: a lookup the JDK answers from its cache of
   failed ones (10 s), a 4xx, the JDK's own HttpURLConnection while no `--network` option is on, and native code's
   sockets. A failure that has nothing to do with the screen (an analytics call) makes it unstable as well: the walk
   cannot tell, and says at its end how many of its screens are unstable, with a hint when more than half are (an app
   that cannot reach its servers from here).
 
+A launch's own failures before it (a standby's) are not counted: the count starts at each launch (and each test). One
+request can count more than once when it fails over (a second address, a retried pooled connection), and one that
+fails over to an answer still counts.
+
 It is decided where the screen is explored, so a screen found and never explored (a budget) has none, and a `flaky` one
 is not checked (it is already known not to replay). A screen walked again in a `--seed` walk gets this walk's answer;
 a carried one keeps the seed's. `--no-stability-check` turns both checks off (no extra read, no `network failures`).
 
 With `--diff-seed` (and `--base`), a pair that would be `changed`, `new` or `gone` where its screen is unstable in the
-seed (or the base build) or in this walk is `unstable` instead: its `was` is the status it would have had, its `why`
-says on which side and why, then what it would have said (`ui_diff` and `diffs` stay as computed). Those pairs are also
-listed in `crawl.json`'s `unstable` (`id`, `base`, `was`, `why`), shown apart in `report.html`, printed at the end, and
-do not fail the exit status. A pair that compares `same` stays `same`, unstable or not. A walk of an unchanged build
+seed (or the base build) or in this walk is `unstable` instead: its `was` is the status it would have had,
+`unstable_in` the sides (`base`, `walk`), its `why` says on which side and why, then what it would have said (`ui_diff`
+and `diffs` stay as computed, and the report shows them). Those pairs are also listed in `crawl.json`'s `unstable`
+(`id`, `base`, `was`, `in`, `why`), shown apart in `report.html`, printed at the end, and do not fail the exit status.
+A pair that was stable in the seed and is unstable only in this walk may be the change's own doing (a broken request,
+a screen that now flickers): the end of the run names those apart, and `--fail-on-unstable` counts them as differences
+that fail the exit status. A pair that compares `same` stays `same`, unstable or not. A walk of an unchanged build
 against its own seed therefore reports no changed, new or gone screen for such screens. `crawl-select.py` lists the
 baseline's unstable screens in its `--json` (`unstable`: id to reason) and notes the selected ones. A real change on a
 screen that is unstable in either walk is listed as `unstable`, not `changed`: look at that list too, and walk the

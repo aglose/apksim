@@ -413,8 +413,9 @@ public final class Net {
       tapped.incrementAndGet();
       changed();
     }
-    // Not what the app ended itself (an HTTP/2 stream it reset: an image loader's cancelled request, a GOAWAY it sent).
-    if (e.error != null ? !e.error.startsWith("the app ") : e.status >= 500) NetFailures.note(e.method + " " + e.url + ": " + (e.error != null ? e.error : String.valueOf(e.status)));
+    // Not what the app ended itself (a socket it closed under a request, an HTTP/2 stream it reset: an image loader's
+    // cancelled request, a GOAWAY it sent).
+    if (e.error != null ? !e.error.startsWith("the app ") && !e.error.startsWith(Tap.CLOSED_BY_APP) : e.status >= 500) NetFailures.note(e.method + " " + e.url + ": " + (e.error != null ? e.error : String.valueOf(e.status)));
     if (Boolean.getBoolean("apksim.networkTrace")) log("network tap: " + (e.error != null ? "failed (" + e.error + ")" : e.status) + " " + e.method + " " + e.url);
     Inspector.exchange(e, 0, 0);
   }
@@ -838,7 +839,8 @@ public final class Net {
         raw.connect(a, timeout);
       } catch (IOException e) {
         Tap.connectFailed(host, isa.getPort(), e);
-        NetFailures.note(host + ":" + isa.getPort() + " connect failed: " + e);
+        // An unresolved address's failed lookup was counted as it was made (NetResolver): one request, one failure.
+        if (!(isa.isUnresolved() && e instanceof UnknownHostException)) NetFailures.note(host + ":" + isa.getPort() + " connect failed: " + e);
         throw e;
       }
       if (Tap.on) Tap.connected(s, host, isa.getPort(), (System.nanoTime() - t0) / 1_000_000);

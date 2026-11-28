@@ -18,7 +18,8 @@ import java.net.Socket
  */
 class UnstableActivity : Activity() {
   private val main = Handler(Looper.getMainLooper())
-  private var ticks = 0
+  // From a different number in every process, so two walks never read the same text (crawl-check step 15).
+  private var ticks = (System.nanoTime() / 1_000_000 % 9000).toInt()
   private lateinit var tick: Runnable
 
   override fun onCreate(savedInstanceState: Bundle?) {

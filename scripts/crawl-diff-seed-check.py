@@ -120,6 +120,7 @@ sc2.finish(None)
 st = {p["id"] or p["base"]: p for p in doc2["compare"]}
 assert st["L"]["status"] == "unstable" and st["L"]["was"] == "changed" and "in the seed" in st["L"]["why"], st["L"]
 assert st["T"]["status"] == "unstable" and st["T"]["was"] == "changed" and "in this walk" in st["T"]["why"], st["T"]
+assert st["L"]["unstable_in"] == ["base"] and st["T"]["unstable_in"] == ["walk"] and st["N"]["unstable_in"] == ["walk"], st
 assert st["E"]["status"] == "unstable" and st["E"]["was"] == "gone" and st["E"]["id"] is None, st["E"]
 assert st["N"]["status"] == "unstable" and st["N"]["was"] == "new", st["N"]
 assert st["S"]["status"] == "same" and st["H"]["status"] == "same", (st["S"], st["H"])
