@@ -16,7 +16,8 @@ https://apksim.web.app/latest/bug-to-pr/
   `--network-host NAME=127.0.0.1:PORT` (the tap never reads loopback). `verify` warns "the recording holds no
   requests" otherwise: ask for a new recording, do not go on.
 - **Signed-in apps.** You must never type the user's password, and the crawler types none unless given `--autofill`
-  (the sign-in the user saved; never with a network recording). Otherwise ask the user to sign in
+  (the sign-in the user saved; never with a network recording). Only if the user says to use it, add
+  `--autofill` to `baseline`: every launch then signs in. Otherwise ask the user to sign in
   once in a prepared slot (`apksim --data-slots map BASE.apk`), then add `--keep-data -- --data-slots map` to
   `baseline` (the `diff` step reuses it).
 - **Depth.** `--depth N` explores screens fewer than N actions from the start. A screen exactly N away has no recorded

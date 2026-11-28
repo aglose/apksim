@@ -165,7 +165,7 @@ A beamed APK comes from a website, so Beam runs every instance inside a dedicate
 
 - **Per-site trust:** review or revoke site permissions anytime with `apksim beam trust list` and `apksim beam trust revoke ORIGIN`.
 - **Local backend forwarding:** allow a beamed app to hit your local dev API with `apksim beam config forward-allow http://127.0.0.1:8080/api` (or approve a one-time native prompt from a trusted site).
-- **Network inspector & adb:** both are off by default; enable on demand with `apksim inspect` (sets `inspect-network optional` and restarts the agent) or `apksim beam config allow-adb on`.
+- **Network inspector & adb:** both are off by default; enable on demand with `apksim inspect` (sets `inspect-network optional` and stops the agent and its sessions, for launchd to start again) or `apksim beam config allow-adb on`.
 - **Retention settings:** tune `keep-days`, `save-sessions`, and `keep-saved-days` in `apksim beam config`.
 </div>
 </div>
@@ -186,6 +186,6 @@ A beamed APK comes from a website, so Beam runs every instance inside a dedicate
 | `apksim beam config [KEY VALUE...]` | Configure `max`, `keep-days`, `save-sessions`, `inspect-network`, `forward-allow`, `allow-loopback`, `allow-adb`, and `rec` |
 | `apksim beam sweep` | Clean up expired cached builds and unused caches immediately |
 | `apksim use [X.Y.Z\|latest\|default]` | Switch to another release, older or newer, without reinstalling (`default` goes back) |
-| `apksim inspect [optional\|on\|off]` | Set the network inspector and restart the agent |
+| `apksim inspect [optional\|on\|off]` | Set the network inspector and stop the agent and its sessions (launchd starts it again; one started by hand, start again) |
 
 See [apksim serve](serve.md) for hosting builds and [Pull Request Previews](pr-preview.md) for automated PR links.

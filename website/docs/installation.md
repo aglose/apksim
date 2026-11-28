@@ -14,7 +14,8 @@ brew install apksim
 
 To match a web app that pins a version, `apksim use X.Y.Z` switches to that release (0.37.0 or later, older or newer
 than the installed one) without reinstalling, `apksim use default` goes back, and `apksim use` shows which is in use.
-The pin stays through upgrades; downloaded releases are kept in `~/.apksim-versions`.
+The pin stays through upgrades; downloaded releases are kept in `~/.apksim-versions`. Switching stops the beam agent,
+its sessions and the standbys. It works with Homebrew and default-folder install-script installs.
 
 ## Install script
 
@@ -30,7 +31,8 @@ A release is self-contained: its own JDK 24 runtime, libraries and native code, 
 builds a startup cache in the background (1-2 minutes, once per version), downloading the 22 MB test app it trains on.
 Launches are faster once it's built, and `apksim --train` builds it right away (`apksim --train APP.apk` trains on
 any APK, offline). An installed apksim keeps everything it writes in `~/.apksim`, or in
-`$APKSIM_HOME` if set: the startup cache, translated classes, app data and screenshots. `apksim --version` prints
+`$APKSIM_HOME` if set: the startup cache, translated classes, app data and screenshots (`apksim use`'s releases are
+in `~/.apksim-versions`). `apksim --version` prints
 the installed version.
 
 To build apksim from a source checkout instead, see [Building from source](building-and-contributing.md).
