@@ -703,6 +703,11 @@ if part crawl; then
 # every path replayed and captured, a second walk giving the same graph, and a changed screen reported against a base launch.
 python3 "$ROOT/scripts/crawl-check.py" --docker "$IMAGE" --apk "$APK" --out "$OUT/crawl" --quick | tee "$OUT/crawl-check.log"
 
+# From a recorded bug to pull request evidence (scripts/pr-evidence.py, docs/bug-to-pr.md), inside the image: a bug recorded
+# through --network-host, replayed on a base and a "fixed" launch, the one screen the change reaches walked against a map
+# of the base, and the Markdown with its pictures.
+python3 "$ROOT/scripts/pr-evidence-check.py" "$APK" "$OUT/pr-evidence" --image "$IMAGE" | tee "$OUT/pr-evidence-check.log"
+
 # A skin drawn around the screen (docs/skins.md "Drawing"): the cutout and rounded corners the app is told, shot --skin's
 # pixels, a rotation turning both, skin off and an unknown skin refused (the window's clicks are Mac only: --window there).
 python3 "$ROOT/scripts/skin-window-check.py" "$APK" --docker "$IMAGE" --out "$OUT/skin" --port 7498 | tee "$OUT/skin-check.log"

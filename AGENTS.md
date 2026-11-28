@@ -793,6 +793,19 @@ Read README.md for results and limits; this file covers how to work on the code.
   sessions on a running `apksim serve --keep-max N`),
   `crawl.py` (explores an APK's screens breadth-first over the control channel: graph, replayable paths, a capture per
   screen per matrix combination, crashes, `--base` comparison of two builds, `--seed`/`--only` walks, `--record-deps` per-screen classes, sources and resources; each replay from the data the app had at its launch: an instance whose app wrote since is launched again on an emptied slot, `relaunches` in crawl.json, `--keep-app-state` for the old way; `--keep-data` with `-j N`, each instance on a clone of the prepared slot; `--autofill` signs each launch in with the app's saved sign-in and a start screen with a password field otherwise warns that the walk stays signed out (`signin` in crawl.json, which also records `timezone`: UTC); SIGTERM/SIGINT write what is known, `stopped`, exit 143; every crawl.json names `unexplored`, `partly_explored` and `cut_by`, and `--seed RUN --only-file IDS` goes on from there; docs/crawl.md; `crawl-select.py` picks the screens a PR's changed files can affect from a seed's per-screen deps (`crawl-select-check.py`; `crawl-diff-seed-check.py`: gone screens and `edge_changes` on a synthetic graph) and `--diff-seed SEED` walks only those, reusing the seed's other screens and writing a semantic `ui_diff` (docs/crawl.md; `--json` says why per screen (`screens`), `ignored`, `unplaced` (changed sources no screen ran), `full` (file and rule) and `diff_controls`; a constants-only file selects the screens of the files that mention its constants, a screen never explored is selected by any non-ignored change, so a baseline with one never answers `none`; a changed handler is only a `diff_controls: all` suggestion, and runtime `.txt`/`.md` content selects nothing); `crawl-check.py` checks it; a screen whose path no longer replays (live data) is `flaky` and its controls are still tried where the path leads now, docs/crawl.md "Screens whose replay is not exact", `crawl-replay-check.py` on a stand-in app; `--freeze-network` (one shared `OUT/network.har` via `--network-unmatched fetch:FILE`, clock pinned to start, `crawl-freeze-check.py`) and `--deterministic` (stop walking past routes that do not replay); screen ids ignore label length changes (`crawl-ids-check.py`); plain walks (no `--base`/`--sweep`) run on the GPU with `--max-fps 30 --audio off --anim-scale 0`, `-Dapksim.lazyRaster=true`, `-Dapksim.fastTransitions=true`, combined `ui-tree`, in-process `wait-tree`, `fast-drag`, `Settle.check` tree-quiet fast-exit, shared standby pool (`APKSIM_STANDBY_POOL=2`, 400 ms stagger), capped crawl JVM memory (`APKSIM_CRAWL_MEM=1`, `-Xms128m -Xmx512m`), async worker retirement on per-generation slots, WAL-incremental SQLite hashing, navigation-constant learning, screen-variant / sibling-template deduplication (`--no-dedup-variants`, `variant_aliases`, multi-window overlay guard, `--diff-seed` carried-destination protection), action-level work stealing, in-place / warm-`restart` reuse, and inline capture of the default combination: a ~169-screen app with `-j 6` and light captures, 8,762 s → 966 s, issue 623),
+  `pr-evidence.py` (docs/bug-to-pr.md: a recorded bug to pull request evidence, shipped in releases and the image beside
+  `crawl.py`: `baseline` (crawl.py `--record-deps` to `--depth`, crawl.py's `--max-depth`, going on from screens a budget
+  left unexplored, counting the screens with no deps and why), `verify` (the recording replayed on a base and a new
+  build side by side with `-Dapksim.networkTrace=true`: a pasteable verdict with the first divergence's label, pixels
+  and region, read from the point's diff.png by crawl.py's `diff_regions`, and requests recorded against asked; exit 0
+  for base matched and new diverged, or both matched with `--expect same`), `diff` (`crawl-select.py --explored-only`
+  by default, `--cautious` for its own default, then the `--seed --only-file --diff-seed` walk with the baseline's saved
+  options), `comment` (Markdown, pictures copied under stable names, `--image-base URL`) and `run` for all four;
+  `--base-option`/`--new-option` give one build its own launch options; `pr-evidence-check.py APP [OUT] [--image IMAGE]`
+  checks it on the test app, the "fix" a `--feature android.hardware.bluetooth_le=false` launch whose line the Bluetooth
+  screen shows, in `ci-smoke.sh`'s crawl part inside the image; a replay applies the flags a recording was made with
+  over its own, so the recording is made without that flag; `docs/skills/apksim-bug-to-pr/SKILL.md` is a Claude Code
+  skill a user's repository copies),
   `serve-check.py` (a running `apksim serve` driven as a browser tab, see
   "apksim serve"), `slot-check.sh` (a data slot's /sdcard and Settings across launches, `SlotDevice`), `relaunch.sh`,
   `both.py`/`vshift.py` (emulator comparison),
@@ -835,7 +848,7 @@ Read README.md for results and limits; this file covers how to work on the code.
   `hooks/` (`pre-push`: no direct pushes to main; `pre-commit`/`pre-push` run `check-private`, see "Git and pull
   requests").
 - `docs/`: `architecture.svg` (the README's system design diagram, a hand-edited SVG with light and dark colours:
-  update its boxes when what they describe changes), `ios-simulator-parity.md` (feature gaps and status), `flight-recorder.md` (`--rec`, checkpoints, `.apkrec` bundles, the replay plan), `serve.md` (APKs in a browser tab), `beam.md` (a tab's app run on the visitor's own Mac), `skins.md` (device skins: format and `apksim skin`), `linux-docker.md`, `crawl.md` (the crawler and screen map: what a screen is, budgets, safety, `--base`), `ci-testbed.md` (a large app's
+  update its boxes when what they describe changes), `ios-simulator-parity.md` (feature gaps and status), `flight-recorder.md` (`--rec`, checkpoints, `.apkrec` bundles, the replay plan), `serve.md` (APKs in a browser tab), `beam.md` (a tab's app run on the visitor's own Mac), `skins.md` (device skins: format and `apksim skin`), `linux-docker.md`, `crawl.md` (the crawler and screen map: what a screen is, budgets, safety, `--base`), `bug-to-pr.md` (a recording of a bug to a pull request that shows it fixed and what else it touched: `scripts/pr-evidence.py`, with a "before you start" list; `skills/apksim-bug-to-pr/` is the skill for users' repositories), `ci-testbed.md` (a large app's
   device tests here: results, CI cost, commands), `parallel.md` (many instances and test processes at once: shards,
   suites side by side, fleets, what limits them), `affected-tests.md` (running only the tests a change reaches, and
   shards balanced by measured time), `network.md` (record, replay and network conditions: the spec, where it hooks
@@ -1284,7 +1297,9 @@ CENTER_CROP ImageViews, `drawBitmap(Bitmap, Matrix, Paint)`, a mutable bitmap re
 still for pixel comparisons, `?video=1` adds the clip scaled up in a large TextureView), the GpuBitmaps check on
 `--device tablet`.
 `apksim://bluetooth` opens `BluetoothActivity`: "bluetooth: on, scanner yes", the ACTION_STATE_CHANGED broadcasts
-received ("broadcasts: TURNING_OFF OFF") and the Bluetooth features (`scripts/adb-check.py` switches it with `svc`).
+received ("broadcasts: TURNING_OFF OFF") and the Bluetooth features (`scripts/adb-check.py` switches it with `svc`); its
+text is white on the blue, so a changed line differs by more than a replay's per-channel delta of 64 (the theme's dark
+text did not: a replay "matched" with the line changed, found by `scripts/pr-evidence-check.py`).
 `apksim://timer` opens `TimerActivity`: a 60 s CountDownTimer, SystemClock's drift from the wall clock, counts of
 onUserInteraction, touches and keys, a "Sleep worker" (SystemClock.sleep on a thread) and "Sleep on main" (an uptime
 deadline waited for with SystemClock.sleep); `scripts/timer-check.py

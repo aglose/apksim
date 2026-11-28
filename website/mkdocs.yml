@@ -145,6 +145,7 @@ nav:
       - 'Replay': replay.md
       - 'Trace Viewer': trace-viewer.md
       - 'Crawler': crawl.md
+      - 'Bug to Pull Request': bug-to-pr.md
   - 'Reference':
       - 'Configuration': configuration-reference.md
       - 'Performance': performance.md

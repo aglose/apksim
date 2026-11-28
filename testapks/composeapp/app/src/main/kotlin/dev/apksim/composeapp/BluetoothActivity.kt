@@ -33,10 +33,13 @@ class BluetoothActivity : Activity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    state = TextView(this).apply { textSize = 20f }
-    broadcasts = TextView(this).apply { textSize = 20f }
+    // White on the blue: a changed line must differ by more than a replay's per-channel delta (docs/replay.md
+    // "Divergence"), which the theme's dark text on this background did not (scripts/pr-evidence-check.py).
+    state = TextView(this).apply { textSize = 20f; setTextColor(Color.WHITE) }
+    broadcasts = TextView(this).apply { textSize = 20f; setTextColor(Color.WHITE) }
     val features = TextView(this).apply {
       textSize = 20f
+      setTextColor(Color.WHITE)
       text = "features: bluetooth ${yes(PackageManager.FEATURE_BLUETOOTH)}, ble ${yes(PackageManager.FEATURE_BLUETOOTH_LE)}"
     }
     setContentView(LinearLayout(this).apply {
