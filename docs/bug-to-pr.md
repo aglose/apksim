@@ -25,9 +25,11 @@ Five things decide whether the result means anything. Check them first.
    app pointed at `http://127.0.0.1:8080` records an empty `network.har` and a replay goes out to the live server.
    Point the app at a host name and map it when recording: `--network-host api.example.test=127.0.0.1:8080` (with
    `--network-trust cert.pem` for its certificate). `verify` warns when a recording holds no requests.
-2. **An app behind a sign-in is walked signed in only from a prepared data slot.** The crawler passes `--no-autofill`
-   and never types a password. Sign in once in a slot of its own (`apksim --data-slots map app-base.apk`, sign in,
-   quit), then give the walks `--keep-data` and `-- --data-slots map`: every instance runs on a copy of that slot. An
+2. **An app behind a sign-in is walked signed in only when you say how.** By default the crawler passes
+   `--no-autofill` and never types a password; a start screen with a password field makes it warn that the walk stays
+   signed out. Either give the walks `--autofill` (each launch signs in with the sign-in saved for the app, see
+   [the crawler's doc](crawl.md)), or sign in once in a slot of its own (`apksim --data-slots map app-base.apk`, sign
+   in, quit) and give the walks `--keep-data` and `-- --data-slots map`: every instance runs on a copy of that slot. An
    app that locks its saved session behind a biometric prompt needs that sign-in saved too; `--keep-data` answers the
    prompt. A baseline that finds one or two screens is the sign-in screen: `baseline` says so.
 3. **`--no-network` is a sandbox rule, not a recording.** After `--`, it leaves the app only `localhost`: nothing a
