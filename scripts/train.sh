@@ -144,11 +144,12 @@ if [[ "$TS" != "$STATE" ]]; then
   # files STATE lacks (both are named by what they hold), each by rename: a running instance maps the table, and a
   # file copied over in place is truncated under it. Not through a link an app put in place of a folder.
   if [[ ! -L "$STATE/cache" ]]; then
-    (cd "$TS/cache" 2>/dev/null && find classes framework -type f 2>/dev/null) | while IFS= read -r f; do
+    # (Either folder may be missing: a launch that translated nothing has no classes/. Not an error under pipefail.)
+    { (cd "$TS/cache" 2>/dev/null && find classes framework -type f 2>/dev/null) || true; } | while IFS= read -r f; do
       d="$STATE/cache/$f"
       [[ -e "$d" || -L "$d" || -L "$(dirname "$d")" ]] && continue
       mkdir -p "$(dirname "$d")" && cp "$TS/cache/$f" "$d.train.$$" && mv -f "$d.train.$$" "$d" || rm -f "$d.train.$$"
-    done
+    done || true
   fi
 fi
 mv -f "$NEW" "$STATE/app.aot"
