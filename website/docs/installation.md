@@ -12,6 +12,10 @@ brew install apksim
 
 `brew upgrade apksim` updates it, and `brew uninstall --zap apksim` removes it along with its data.
 
+To match a web app that pins a version, `apksim use X.Y.Z` switches to that release (0.37.0 or later, older or newer
+than the installed one) without reinstalling, `apksim use default` goes back, and `apksim use` shows which is in use.
+The pin stays through upgrades; downloaded releases are kept in `~/.apksim-versions`.
+
 ## Install script
 
 ```bash

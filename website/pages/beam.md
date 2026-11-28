@@ -165,7 +165,7 @@ A beamed APK comes from a website, so Beam runs every instance inside a dedicate
 
 - **Per-site trust:** review or revoke site permissions anytime with `apksim beam trust list` and `apksim beam trust revoke ORIGIN`.
 - **Local backend forwarding:** allow a beamed app to hit your local dev API with `apksim beam config forward-allow http://127.0.0.1:8080/api` (or approve a one-time native prompt from a trusted site).
-- **Network inspector & adb:** both are off by default; enable on demand with `apksim beam config inspect-network optional` or `allow-adb on`.
+- **Network inspector & adb:** both are off by default; enable on demand with `apksim inspect` (sets `inspect-network optional` and restarts the agent) or `apksim beam config allow-adb on`.
 - **Retention settings:** tune `keep-days`, `save-sessions`, and `keep-saved-days` in `apksim beam config`.
 </div>
 </div>
