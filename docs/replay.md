@@ -128,7 +128,9 @@ HAR either. A marked entry also answers a request with its method and URL whose 
 ["redacted-input"]`): the body is the part the replay cannot type, for instance when Delete was used in a way the
 recorder's count missed. Why not match every sign-in on method and URL alone: `--network-match method,url` does that
 for every request of the replay, so two POSTs to one URL with different bodies get each other's answers; the mark
-loosens only the requests that carried left-out input.
+loosens only the method and URL of requests that carried left-out input. For those it loosens every request: once no
+entry matches exactly, any request with that method and URL gets the marked entry's answer, whatever its body (a second
+sign-in with another password is answered as the recorded one was). This does not need `--loose`.
 
 What it does not cover: a body that carries the text in another form (hashed, encrypted, base64 inside JSON), a bundle
 from an older apksim, and left-out text shorter than 4 characters. Such a request is unmatched with "body differs",

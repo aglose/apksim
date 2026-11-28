@@ -161,11 +161,11 @@ A bundle is meant to be sent to someone else, so by default it leaves out:
   character. These are recorded as `{"redacted": true}`, and the manifest counts them (`counts.redactedInput`);
 - pasted text (Cmd+V, `paste`), wherever it goes: `{"pasted": true, "redacted": true}` per character;
 - that same text in the requests that carried it (a sign-in's body holds the password its field was typed into): the
-  recorder keeps each stretch of left-out characters in memory (Delete takes the last one back; a touch, another key or
-  other text ends the stretch), and a save writes every request begun after it was typed whose body or URL holds it
+  recorder keeps each stretch of left-out characters in memory (the last 64; Delete takes the last one back; a touch,
+  another key, a key with Ctrl or Meta held, or other text ends the stretch), and a save writes every request begun after it was typed whose body or URL holds it
   with as many `x` in its place, which is what a replay types. Each character is found as itself, percent-encoded
   (`+` for a space) or as a JSON escape (`\uXXXX` too), in any mix, and not inside a longer word ("pass" in
-  "passport"). The entry is marked `_apksimRedactedInput` and `counts.harRedactedInput` counts them. Only with the
+  "passport"; a word does begin right after `%XX`, `\uXXXX`, `\n`, `\r`, `\t`, `\b` or `\f`). The entry is marked `_apksimRedactedInput` and `counts.harRedactedInput` counts them. Only with the
   `input` channel on (without it nothing knows what was typed), only text of 4 characters or more (shorter turns up by
   chance), only in a request's URL and body (not its headers, a compressed body, WebSocket messages or answers), and
   not in a body over 32 MB. A run edited after a tap (Delete once the field was touched again) is not the field's text
@@ -177,7 +177,11 @@ A bundle is meant to be sent to someone else, so by default it leaves out:
 
 Still in a bundle: response bodies, the app's data folder (`checkpoint/data.zip`), the screen, anything the app
 logs, and typed text a request carries in another form (hashed, encrypted, a token made from it), or sent by a request
-that began before the save's window or was typed with keys whose characters the key map does not give. Treat a bundle from a signed-in session like the device itself.
+that began before the save's window or was typed with keys whose characters the key map does not give. A password
+that did not come through input dispatch is not left out of anything: one apksim's autofill (or an accessibility
+`setText`) put in a field is in the requests that carried it. And a checkpoint is the app's own state, taken as it is:
+`checkpoint/state.bin` (the saved instance state, which can hold a password field's text) and the data folder
+(whatever the app stored) are not searched. Treat a bundle from a signed-in session like the device itself.
 
 ## Limits
 

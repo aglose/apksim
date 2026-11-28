@@ -614,9 +614,11 @@ final class Recording {
     java.io.ByteArrayOutputStream out = null;
     int copied = 0;
     for (int at = 0; at < data.length; at++) {
-      if (wordStart && at > 0 && alnum(data[at - 1])) continue;
-      int end = scrubMatch(data, at, cps, raw, 0);
-      if (end < 0 || wordEnd && end < data.length && alnum(data[end])) continue;
+      // Only where the first character can begin: as itself, percent-encoded, a JSON escape or a form's +.
+      if (data[at] != raw[0][0] && data[at] != '%' && data[at] != '\\' && !(data[at] == '+' && cps[0] == ' ')) continue;
+      if (wordStart && at > 0 && alnum(data[at - 1]) && !afterEscape(data, at)) continue;
+      int end = scrubMatch(data, at, cps, raw, wordEnd);
+      if (end < 0) continue;
       if (out == null) out = new java.io.ByteArrayOutputStream(data.length);
       out.write(data, copied, at - copied);
       for (int i = 0; i < secret.length(); i++) out.write('x');
@@ -632,21 +634,49 @@ final class Recording {
     return b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z';
   }
 
-  /** Where the text from character `i` on ends when it stands at `at` in some mix of its written forms; -1 if it does not. */
-  private static int scrubMatch(byte[] d, int at, int[] cps, byte[][] raw, int i) {
-    if (i == cps.length) return at;
-    int cp = cps[i];
-    byte[] r = raw[i];
+  /**
+   * Whether the letters or digits just before `at` end an escape, so that a word begins there: %XX, a JSON u escape,
+   * or a backslash with one of n r t b f.
+   */
+  private static boolean afterEscape(byte[] d, int at) {
+    if (at >= 3 && d[at - 3] == '%' && hex(d[at - 2]) >= 0 && hex(d[at - 1]) >= 0) return true;
+    if (at >= 6 && d[at - 6] == '\\' && d[at - 5] == 'u' && hex(d[at - 4]) >= 0 && hex(d[at - 3]) >= 0 && hex(d[at - 2]) >= 0
+        && hex(d[at - 1]) >= 0) {
+      return true;
+    }
+    return at >= 2 && d[at - 2] == '\\' && "nrtbf".indexOf(d[at - 1]) >= 0;
+  }
+
+  /**
+   * Where the text ends when it stands at `at` in some mix of its written forms; -1 if it does not (with `wordEnd`, a
+   * letter or digit after it does not count). A loop over the characters, keeping every place the text so far can end:
+   * a pasted text can be too long to recurse over. The furthest end wins.
+   */
+  private static int scrubMatch(byte[] d, int at, int[] cps, byte[][] raw, boolean wordEnd) {
+    int[] ends = {at}, next = new int[8];
+    int n = 1;
+    for (int i = 0; i < cps.length; i++) {
+      int m = 0;
+      for (int j = 0; j < n; j++) {
+        if (m + 4 > next.length) next = java.util.Arrays.copyOf(next, next.length * 2);
+        m = scrubStep(d, ends[j], cps[i], raw[i], next, m);
+      }
+      if (m == 0) return -1;
+      java.util.Arrays.sort(next, 0, m);
+      if (ends.length < m) ends = new int[next.length];
+      n = 0;
+      for (int j = 0; j < m; j++) if (n == 0 || ends[n - 1] != next[j]) ends[n++] = next[j];
+    }
+    for (int j = n - 1; j >= 0; j--) if (!wordEnd || ends[j] >= d.length || !alnum(d[ends[j]])) return ends[j];
+    return -1;
+  }
+
+  /** Adds to `to` (from `m`) where one character standing at `at` can end, in each of its written forms. */
+  private static int scrubStep(byte[] d, int at, int cp, byte[] r, int[] to, int m) {
     // As itself.
-    if (startsWith(d, at, r)) {
-      int end = scrubMatch(d, at + r.length, cps, raw, i + 1);
-      if (end >= 0) return end;
-    }
+    if (startsWith(d, at, r)) to[m++] = at + r.length;
     // Percent-encoded, byte by byte, and a form's + for a space.
-    if (cp == ' ' && at < d.length && d[at] == '+') {
-      int end = scrubMatch(d, at + 1, cps, raw, i + 1);
-      if (end >= 0) return end;
-    }
+    if (cp == ' ' && at < d.length && d[at] == '+') to[m++] = at + 1;
     int p = at;
     boolean percent = true;
     for (byte x : r) {
@@ -656,16 +686,10 @@ final class Recording {
       }
       p += 3;
     }
-    if (percent) {
-      int end = scrubMatch(d, p, cps, raw, i + 1);
-      if (end >= 0) return end;
-    }
+    if (percent) to[m++] = p;
     // A JSON escape: the two-character ones, and a u escape for each UTF-16 unit.
     if (at + 1 < d.length && d[at] == '\\') {
-      if ((cp == '"' || cp == '\\' || cp == '/') && d[at + 1] == cp) {
-        int end = scrubMatch(d, at + 2, cps, raw, i + 1);
-        if (end >= 0) return end;
-      }
+      if ((cp == '"' || cp == '\\' || cp == '/') && d[at + 1] == cp) to[m++] = at + 2;
       p = at;
       boolean unicode = true;
       for (char u : Character.toChars(cp)) {
@@ -681,12 +705,9 @@ final class Recording {
         }
         p += 6;
       }
-      if (unicode) {
-        int end = scrubMatch(d, p, cps, raw, i + 1);
-        if (end >= 0) return end;
-      }
+      if (unicode) to[m++] = p;
     }
-    return -1;
+    return m;
   }
 
   private static boolean startsWith(byte[] d, int at, byte[] w) {

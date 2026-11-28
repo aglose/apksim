@@ -15,7 +15,8 @@ with the fixture server stopped, so every answer must come from the bundle's HAR
      with --changed APK, also that build (`--apk`, same signer) must diverge;
   4. records a crash (apksim://crash?kind=post, which saves a crash bundle by itself) and replays it: exit 10, and
      the report says the app crashed;
-  5. records a session with a typed sign-in (apksim://network?signin=1: a user and a password typed into fields, a
+  5. first records a password typed, a checkpoint, the sign-in sent and a 5 s window saved once the typing is older
+     than it (the password must not be in the HAR); then records a session with a typed sign-in (apksim://network?signin=1: a user and a password typed into fields, a
      POST with both in its body, a GET with an id made at run time in its query, and a connect to a mapped host
      nothing listens on). The bundle must not hold the password anywhere, its sign-in request must hold the
      placeholder a replay types and be marked, and the failed connect must be an entry. Replayed as it is: the sign-in
@@ -333,11 +334,68 @@ def record_signin(fport):
     return bundle, len(har)
 
 
+def late_checkpoint(fport):
+    """A checkpoint between typing a password and sending it, saved once the typing is older than the window."""
+    print("== a password typed before the saved window, sent inside it")
+    pre = ""
+    if a.image:
+        pre = ("python3 /work/network-fixture.py /work/fixture 8443 > /work/fixture3.log 2>&1 & "
+               "until grep -q ready /work/fixture3.log 2>/dev/null; do sleep 0.2; done; ")
+        fport = 8443
+    p, port = launch("replaycheck-rec3", ["--headless", "--fresh", "--rec", "all", "--rec-checkpoint", "0",
+                                          "--feature", "dev.apksim.testapp.no_timings",
+                                          "--network-host", f"api.apksim.test=127.0.0.1:{fport}",
+                                          "--network-trust", wpath(os.path.join(a.out, "fixture/cert.pem")), wpath(a.apk)],
+                     "record-late.log", port=True, pre=pre)
+    d = Drive(port, os.path.join(a.out, "record-late.log"))
+    d("settle 20000")
+    d("open apksim://network?signin=1")
+    d("settle 10000")
+    d.tap_text("User")
+    time.sleep(0.3)
+    d("type ada")
+    time.sleep(0.3)
+    d.tap_text("Password")
+    time.sleep(0.3)
+    d("type " + PASSWORD)
+    d("key A 1 ctrl")  # a shortcut in the password field: not part of the text
+    time.sleep(1)
+    for _ in range(20):
+        cp = d("rec checkpoint now")
+        if cp.startswith("checkpoint #"):
+            break
+        time.sleep(0.5)
+    check(cp.startswith("checkpoint #"), f"checkpoint after typing: {cp}")
+    d.tap_text("Sign in")
+    r = d.wait_text(lambda t: t.startswith("signin:") and not t.endswith(("idle", "fetching")))
+    check(r == "signin: 200 Welcome, ada", f"signed in at the fixture: {r}")
+    d("rec window 5")
+    time.sleep(8)  # the window's start passes the checkpoint: nothing from before it is kept
+    bundle = os.path.join(a.out, "late.apkrec")
+    s = d("rec save 5 " + wpath(bundle))
+    check(s.startswith("saving"), f"saved: {s}")
+    for _ in range(100):
+        if "KB in" in d("rec"):
+            break
+        time.sleep(0.2)
+    d("quit")
+    finish(p, 60)
+    if a.image:
+        subprocess.run(["docker", "rm", "-f", "replaycheck-rec3"], capture_output=True)
+    z = zipfile.ZipFile(bundle)
+    har = z.read("network.har")
+    si = [e for e in json.loads(har)["log"]["entries"] if e["request"]["url"].endswith("/v1/signin")]
+    check(len(si) == 1 and si[0].get("_apksimRedactedInput") is True, f"the sign-in is in the HAR and marked ({len(si)})")
+    check(PASSWORD.encode() not in har and PASSWORD.replace(" ", "+").encode() not in har
+          and PASSWORD.replace(" ", "%20").encode() not in har, "the password is nowhere in the HAR")
+
+
 def by_url(r, part):
     return [e for e in r.get("requests", {}).get("entries", []) if part in e["url"]]
 
 
 def signin_checks(fport, stop):
+    late_checkpoint(fport)
     bundle, entries = record_signin(fport)
     stop()  # the fixture: from here every answer is the bundle's
     r = replay_exit("signin-a", bundle, CARET, 3, "the sign-in replayed as it is (an id made at run time is unmatched)")

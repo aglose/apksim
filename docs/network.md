@@ -245,8 +245,9 @@ When the closest entry has the same method, body and query parameter names and o
 the parameters (`--network-ignore-query device matches it`): a value made at run time, such as an id the app generates.
 `--network-loose` (what `apksim replay --loose` passes) answers such a request without naming them: from the entry with
 the same method, path, parameter names and body whose values differ in the fewest parameters, one not yet served
-first. Exact matches always come first, then an entry marked `_apksimRedactedInput` with the request's method and URL,
-then the loose one. `apksim replay` reports how each entry was matched (replay.md "What happened to each request").
+first. Exact matches always come first, then an entry marked `_apksimRedactedInput` with the request's method and URL
+(with or without `--network-loose`, and for every request with that method and URL, whatever its body), then the loose
+one. `apksim replay` reports how each entry was matched (replay.md "What happened to each request").
 
 It gets a `599 No Recorded Response` with header `X-Apksim-Replay: unmatched` and that text as its body. In a test
 run the test it happened in then fails with the same text (after its own result: a passing test becomes a failure),

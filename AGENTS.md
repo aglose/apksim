@@ -532,8 +532,9 @@ Read README.md for results and limits; this file covers how to work on the code.
     in order with the closest entry and what differs, and stderr's last line counts them ("N of M recorded requests
     asked again, K unmatched"). A session with a typed sign-in replays as recorded (docs/replay.md "A session with a
     sign-in"): the recorder keeps left-out characters in memory (`FlightRecorder.LeftOut`) and a save writes the
-    requests that carried them with as many `x` (`Recording.scrub`, `_apksimRedactedInput`, which also matches without
-    its body); an unmatched request that differs only in query values names `--network-ignore-query NAME`, and
+    requests that carried them with as many `x` (`Recording.scrub`, `_apksimRedactedInput`; any request with that method
+    and URL also matches such an entry whatever its body). The left-out runs are never dropped for age (a request that
+    carried one can be newer than the window), only past 64; a key with Ctrl or Meta ends a run and adds nothing; an unmatched request that differs only in query values names `--network-ignore-query NAME`, and
     `apksim replay --loose` (`--network-loose`) answers it from the closest such entry, marked in the report.
     `scripts/bisect-rec.py BUNDLE BUILD...`: the first build whose replay diverges, an HTML report (`bisect-rec-check.py`).
     `apksim replay --journey` writes journey.json (taps resolved to nodes: `Journey`), run by `scripts/journey.py` (JUnit XML; `journey-start-check.py`: its start and steps' timing, against a stand-in apksim; `check-journey.sh`: `JourneyCheck`, which texts it may expect and how taps and presses become steps, on a stand-in screen).

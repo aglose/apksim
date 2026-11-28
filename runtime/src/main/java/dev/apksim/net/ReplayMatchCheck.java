@@ -73,6 +73,19 @@ public final class ReplayMatchCheck {
     check(cleaned != null && cleaned.length == binary.length && cleaned[1] == (byte) 0xff && cleaned[2] == 'x' && cleaned[8] == (byte) 0xfe,
         "scrub: a body that is not text keeps its other bytes");
 
+    for (String[] c : new String[][] {
+        {"t=%3Dhunter2&u=1", "t=%3Dxxxxxxx&u=1"},
+        {"{\"a\":\"\\u0022hunter2\\u0022\"}", "{\"a\":\"\\u0022xxxxxxx\\u0022\"}"},
+        {"a\\nhunter2", "a\\nxxxxxxx"}, {"a\\rhunter2", "a\\rxxxxxxx"}, {"a\\thunter2", "a\\txxxxxxx"},
+        {"a\\bhunter2", "a\\bxxxxxxx"}, {"a\\fhunter2", "a\\fxxxxxxx"}}) {
+      check(c[1].equals(text(Recording.scrub(c[0].getBytes(StandardCharsets.UTF_8), "hunter2"))), "scrub: found right after an escape: " + c[0]);
+    }
+    check(Recording.scrub("3Dhunter2 nhunter2".getBytes(StandardCharsets.UTF_8), "hunter2") == null, "scrub: the same letters without % or a backslash are a longer word");
+    check("p=xxxx&u=1".equals(text(Recording.scrub("p=abc%25&u=1".getBytes(StandardCharsets.UTF_8), "abc%"))), "scrub: a last % that was encoded leaves nothing behind");
+    String pasted = "long pasted text ".repeat(4000);
+    check(("a=" + "x".repeat(pasted.length())).equals(text(Recording.scrub(("a=" + pasted).getBytes(StandardCharsets.UTF_8), pasted))),
+        "scrub: a long pasted text does not overflow the stack");
+
     // ---- a recording as the flight recorder saves it
     Recording rec = new Recording(null, match);
     rec.add(entry(1000, "POST", "https://api.example.test/v1/early", "{\"note\":\"hunter2!\"}", 200));  // before it was typed

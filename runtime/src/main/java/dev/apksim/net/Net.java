@@ -387,6 +387,8 @@ public final class Net {
   static void connectFailed(String host, int port, String error, long startWall, long ms) {
     Recording r = recording;
     if (r == null || mode != Mode.LIVE || host == null) return;
+    // Loopback is never read (a port opened with allow-loopback is), so its refused connects are not kept either.
+    if (loopbackHost(host) && !ALLOWED_LOOPBACK.contains(port)) return;
     // A name that did not resolve is not a connect: replaying, every name resolves, and the app's lookup is its own.
     if (error.contains("UnknownHostException")) return;
     Recording.Entry e = new Recording.Entry();
@@ -730,6 +732,18 @@ public final class Net {
    */
   static boolean openedLoopback(InetSocketAddress a) {
     return !ALLOWED_LOOPBACK.isEmpty() && ALLOWED_LOOPBACK.contains(a.getPort()) && bypass(a);
+  }
+
+  /** Whether `host`, a name or an address literal, is this machine's loopback. No lookup is made. */
+  private static boolean loopbackHost(String host) {
+    if (bypass(InetSocketAddress.createUnresolved(host, 1))) return true;
+    if (loopbackToo) return false;
+    try {
+      InetAddress ip = InetAddress.ofLiteral(host);
+      return ip.isLoopbackAddress() || ip.isAnyLocalAddress();
+    } catch (IllegalArgumentException notALiteral) {
+      return false;
+    }
   }
 
   static boolean bypass(InetSocketAddress a) {

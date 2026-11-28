@@ -312,7 +312,6 @@ final class FlightRecorder {
    */
   private static final class LeftOut {
     final long fromWall = System.currentTimeMillis();
-    long lastWall = fromWall;
     final boolean pasted;
     final StringBuilder text = new StringBuilder();
     /** A key whose character is not known: the run is not looked for. */
@@ -339,7 +338,6 @@ final class FlightRecorder {
       leftOut.add(typing);
       if (leftOut.size() > LEFT_OUT_RUNS) leftOut.remove(0);
     }
-    typing.lastWall = System.currentTimeMillis();
     if (ch <= 0) typing.unknown = true;
     else typing.text.appendCodePoint(ch);
   }
@@ -353,11 +351,12 @@ final class FlightRecorder {
     }
   }
 
-  /** The runs a save looks for in its requests: [0] when each began, [1] its text. Runs out of the window are dropped. */
+  /**
+   * The runs a save looks for in its requests: [0] when each began, [1] its text. A run older than the window is kept:
+   * a request that carried it can be newer (a checkpoint between typing and sign-in). LEFT_OUT_RUNS bounds them.
+   */
   private static Object[] leftOutNow() {
-    long keep = Rec.keepFromWallMs();
     synchronized (leftOut) {
-      leftOut.removeIf(r -> r != typing && r.lastWall < keep);
       List<LeftOut> use = new ArrayList<>();
       for (LeftOut r : leftOut) if (!r.unknown && r.text.length() >= 4) use.add(r);
       long[] from = new long[use.size()];
@@ -391,7 +390,9 @@ final class FlightRecorder {
     m.put("w", wall);
     m.put("ev", t >= 0 && t < EVENTS.length && EVENTS[t] != null ? EVENTS[t] : "type-" + t);
     m.put("type", t);
-    boolean typed = t == SimWindow.CHAR || (t == SimWindow.KEY && printableKey((int) e.value()));
+    // A key with Ctrl or Meta held is a shortcut (select all, paste): it types nothing, even in a password field.
+    boolean chord = t == SimWindow.KEY && ((int) e.x() & (android.view.KeyEvent.META_CTRL_ON | android.view.KeyEvent.META_META_ON)) != 0;
+    boolean typed = t == SimWindow.CHAR || (t == SimWindow.KEY && !chord && printableKey((int) e.value()));
     if (t == SimWindow.CHAR && e.y() == SimWindow.PASTED) {
       // Pasted text is the clipboard's, which stays on this Mac wherever it goes; a replay pastes a placeholder.
       m.put("pasted", true);
@@ -409,7 +410,7 @@ final class FlightRecorder {
     } else {
       // Delete takes the last left-out character back; anything else that begins (a touch, a key, other text) ends the run.
       synchronized (leftOut) {
-        if (t == SimWindow.KEY && (int) e.value() == android.view.KeyEvent.KEYCODE_DEL) {
+        if (t == SimWindow.KEY && !chord && (int) e.value() == android.view.KeyEvent.KEYCODE_DEL) {
           if (typing != null && typing.text.length() > 0) typing.text.setLength(typing.text.offsetByCodePoints(typing.text.length(), -1));
         } else if (t == SimWindow.DOWN || t == SimWindow.TOUCH2_DOWN || t == SimWindow.KEY || t == SimWindow.CHAR || t == SimWindow.BACK) {
           typing = null;
