@@ -144,33 +144,37 @@ private fun PlaceActions(place: Place, saved: Boolean, onOpen: (Int) -> Unit) {
   }
 }
 
-/** Search, the counter (the screen's one loud moment) and the filter. */
+/** The counter (the screen's one loud moment, first: a watch shows little more), search and the filter. */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun HomeHeader(state: HomeState, count: Int, shown: Int) {
   Column(Modifier.padding(bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-    TextField(state.query, { state.query = it }, Modifier.fillMaxWidth(), singleLine = true, shape = CircleShape,
-        placeholder = { Text("Search places") }, leadingIcon = { Icon(Icons.Filled.Search, null) },
-        trailingIcon = if (state.query.isEmpty()) null else ({ IconButton({ state.query = "" }) { Icon(Icons.Filled.Clear, "Clear search") } }),
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-        colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
-            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh, unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh))
     Surface(color = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
         shape = MaterialTheme.shapes.extraLargeIncreased, modifier = Modifier.fillMaxWidth()) {
+      // Under 300 dp of width (a watch) the text takes the whole card and the shapes stay out.
+      val narrow = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp < 300
       Box(Modifier.height(IntrinsicSize.Min)) {
         // Two of Material's shapes, turned a notch by every count: the springs are the theme's expressive ones.
         val turn by animateFloatAsState(count * 40f, MaterialTheme.motionScheme.slowSpatialSpec(), label = "turn")
+        if (!narrow) {
         Box(Modifier.align(Alignment.CenterEnd).offset(x = 44.dp).size(176.dp).graphicsLayer { rotationZ = turn }
             .background(MaterialTheme.colorScheme.onPrimaryContainer, MaterialShapes.Cookie9Sided.toShape()))
         Box(Modifier.align(Alignment.CenterEnd).offset(x = (-78).dp, y = 34.dp).size(64.dp).graphicsLayer { rotationZ = -turn * 1.5f }
             .background(MaterialTheme.colorScheme.tertiaryContainer, MaterialShapes.Flower.toShape()))
-        Column(Modifier.padding(start = 24.dp, top = 24.dp, bottom = 24.dp, end = 156.dp)) {
+        }
+        Column(Modifier.padding(start = 24.dp, top = 24.dp, bottom = 24.dp, end = if (narrow) 24.dp else 156.dp)) {
           Text("Where to next?", style = MaterialTheme.typography.labelLarge)
           Text("FAB clicks: $count", Modifier.padding(top = 4.dp), style = MaterialTheme.typography.headlineMediumEmphasized)
           Text("Tap + to count. Tap a place to save it.", Modifier.padding(top = 6.dp), style = MaterialTheme.typography.bodyMedium)
         }
       }
     }
+    TextField(state.query, { state.query = it }, Modifier.fillMaxWidth(), singleLine = true, shape = CircleShape,
+        placeholder = { Text("Search places") }, leadingIcon = { Icon(Icons.Filled.Search, null) },
+        trailingIcon = if (state.query.isEmpty()) null else ({ IconButton({ state.query = "" }) { Icon(Icons.Filled.Clear, "Clear search") } }),
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        colors = TextFieldDefaults.colors(focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
+            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh, unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh))
     Row(verticalAlignment = Alignment.CenterVertically) {
       Row(horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
         ToggleButton(!state.onlySaved, { state.onlySaved = false }, shapes = ButtonGroupDefaults.connectedLeadingButtonShapes()) { Text("All") }

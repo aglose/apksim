@@ -138,12 +138,13 @@ fun Root(db: Db, startTab: Int = 0) {
     modifier = Modifier.semantics { testTagsAsResourceId = true },
     topBar = {
       TopAppBar(
-        title = { Text("ComposeApp", style = MaterialTheme.typography.titleLargeEmphasized) },
+        // One line, cut short on a small display (a watch) rather than wrapped beside the badge.
+        title = { Text("ComposeApp", style = MaterialTheme.typography.titleLargeEmphasized, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
         actions = {
           // The window size class, as a badge: what `device` and `size` change.
           Surface(color = MaterialTheme.colorScheme.secondaryContainer, contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
               shape = MaterialTheme.shapes.small) {
-            Text("$widthClass $window", Modifier.padding(horizontal = 10.dp, vertical = 6.dp), style = MaterialTheme.typography.labelLarge)
+            Text("$widthClass $window", Modifier.padding(horizontal = 10.dp, vertical = 6.dp), style = MaterialTheme.typography.labelLarge, maxLines = 1, softWrap = false)
           }
           Box {
             IconButton({ menu = true }) { Icon(Icons.Filled.MoreVert, "More options") }
