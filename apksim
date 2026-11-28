@@ -29,7 +29,7 @@ else STATE="$ROOT/work"; fi
 # Two short commands, handled here so they work whatever version is pinned: `apksim use` (scripts/use.sh) pins this Mac
 # to a release, and `apksim inspect` lets a web app's sessions ask for the network inspector.
 case "${1:-}" in
-  use) shift; APKSIM_STATE_DIR="$STATE" exec "$ROOT/scripts/use.sh" "$ROOT" "${BASH_SOURCE[0]}" "$@" ;;
+  use) shift; exec "$ROOT/scripts/use.sh" "$ROOT" "${BASH_SOURCE[0]}" "$@" ;;
   inspect)
     case "${2:-optional}" in on|optional|off) ;; *) echo "apksim inspect [optional|on|off]" >&2; exit 2 ;; esac
     "${BASH_SOURCE[0]}" beam config inspect-network "${2:-optional}"
@@ -38,12 +38,16 @@ case "${1:-}" in
 esac
 # A pinned release (`apksim use X.Y.Z`) runs in place of this one. Only for a Homebrew or install.sh install: a copy of
 # apksim bundled in another app keeps its own version. `beam install|uninstall` stay here, so launchd's jobs name this
-# launcher, which survives a change of pin.
-if [[ -f "$STATE/use" && ( "$ROOT" == */Caskroom/apksim/* || "$ROOT" == "$HOME/.local/share/apksim/"* ) \
+# launcher, which survives a change of pin. The pin and the releases are run unsandboxed, so they are kept where no
+# app's sandbox may write: never in STATE, which every instance may. APKSIM_NO_PIN=1 runs this install (use.sh,
+# install.sh).
+VERSIONS="${HOME:-}/.apksim-versions"
+if [[ -z "${APKSIM_NO_PIN:-}" && -f "$VERSIONS/use" \
+      && ( "$ROOT" == */Caskroom/apksim/* || "$ROOT" == "${HOME:-}/.local/share/apksim/"* ) \
       && ! ( "${1:-}" == beam && ( "${2:-}" == install || "${2:-}" == uninstall ) ) ]]; then
-  PIN=""; { read -r PIN < "$STATE/use"; } 2>/dev/null || true
-  if [[ -n "$PIN" && -x "$STATE/versions/$PIN/apksim" ]]; then exec "$STATE/versions/$PIN/apksim" "$@"; fi
-  echo "[apksim] the pinned release ${PIN:-?} is missing: running the installed one (apksim use ${PIN:-default} fixes it)" >&2
+  PIN=""; { read -r PIN < "$VERSIONS/use"; } 2>/dev/null || true
+  if [[ "$PIN" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && -x "$VERSIONS/$PIN/apksim" ]]; then exec "$VERSIONS/$PIN/apksim" "$@"; fi
+  echo "[apksim] the pinned release ${PIN:-?} is missing: running the installed one (apksim use default clears the pin)" >&2
 fi
 # Standbys are per install and state folder.
 KEY="$ROOT"; [[ "$STATE" != "$ROOT/work" ]] && KEY="$ROOT:$STATE"

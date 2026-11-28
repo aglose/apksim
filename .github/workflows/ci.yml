@@ -163,6 +163,8 @@ jobs:
         run: scripts/check-net-fetch.sh
       - name: replay match check (left-out input in requests, loose query values, failed connects, the per-request report)
         run: scripts/check-replay-match.sh
+      - name: Pinned releases (apksim use)
+        run: scripts/check-use.sh
       - name: journey.py check (its start, and steps' timing, against a stand-in apksim)
         run: python3 scripts/journey-start-check.py
       - name: crawl.py replay check (flaky screens explored, steps retried; a stand-in app, no apksim)

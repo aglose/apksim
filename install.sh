@@ -3,7 +3,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/aglose/apksim/main/install.sh | bash
 # It downloads the release for Apple Silicon Macs, checks it against the release's SHA256SUMS, unpacks it into
 # ~/.local/share/apksim/VERSION (APKSIM_PREFIX for another folder) and links ~/.local/bin/apksim (APKSIM_BIN) to it.
-# apksim keeps what it writes (caches, app data) in ~/.apksim. To uninstall, delete those three.
+# apksim keeps what it writes (caches, app data) in ~/.apksim, and `apksim use`'s releases in ~/.apksim-versions. To
+# uninstall, delete those four.
 set -euo pipefail
 REPO=aglose/apksim
 PREFIX="${APKSIM_PREFIX:-$HOME/.local/share/apksim}"
@@ -44,11 +45,14 @@ mv "$TMP/$NAME" "$PREFIX/$VERSION"
 ln -sfn "$PREFIX/$VERSION/apksim" "$BIN/apksim"
 # Earlier versions: stop their standbys (background JVMs that make launches warm), then remove them.
 for d in "${OLD[@]+"${OLD[@]}"}"; do
-  "$d/apksim" --stop-standbys >/dev/null 2>&1 || true
+  APKSIM_NO_PIN=1 "$d/apksim" --stop-standbys >/dev/null 2>&1 || true
   rm -rf "$d"
 done
 
 echo "Installed apksim $VERSION in $PREFIX/$VERSION"
+if [[ "$PREFIX" == "$HOME/.local/share/apksim" && -f "$HOME/.apksim-versions/use" ]]; then
+  echo "apksim is still pinned to $(< "$HOME/.apksim-versions/use"): apksim use default runs $VERSION"
+fi
 case ":$PATH:" in
   *":$BIN:"*) echo "Try:  apksim app.apk" ;;
   *) echo "Add $BIN to your PATH (for zsh: echo 'export PATH=\"$BIN:\$PATH\"' >> ~/.zshrc), then:  apksim app.apk" ;;

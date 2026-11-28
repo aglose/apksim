@@ -889,11 +889,13 @@ months apart in either direction.
   least the last three releases' protocols. Additive fields need no new protocol: both sides ignore what they do not
   know.
 - **Matching a site's version**: `apksim use X.Y.Z` (older or newer; also `latest`, `default`, or nothing to see
-  which) downloads that release into `~/.apksim/versions` and has the installed launcher hand everything to it
-  (`~/.apksim/use`), ending the agent, its sessions and the standbys first. Homebrew's or install.sh's copy is not
-  touched; `beam install|uninstall` stay with it, so launchd's jobs follow the pin. Versions share `~/.apksim`, so the
-  startup cache is rebuilt after a switch, and an older release may drop settings it does not know when it writes the
-  beam config. `scripts/use.sh`.
+  which) downloads that release into `~/.apksim-versions` and has the installed launcher hand everything to it
+  (`~/.apksim-versions/use`), ending the agent, its sessions and the standbys. Homebrew's or install.sh's copy is not
+  touched; `beam install|uninstall` stay with it, so launchd's jobs follow the pin. The folder is outside `~/.apksim`
+  because apps' sandboxes may write that, and the launcher runs what the pin names unsandboxed. Releases before 0.37.0
+  are refused. A `brew upgrade` or reinstall keeps the pin (`apksim use default` drops it); downloaded releases stay
+  until you delete their folders. Versions share `~/.apksim`, so the startup cache is rebuilt after a switch, and an
+  older release may drop settings it does not know when it writes the beam config. `scripts/use.sh`.
 - **The network inspector**: `apksim inspect [optional|on|off]` is `beam config inspect-network` (`optional` by
   default) followed by `beam stop --force`, which ends running sessions.
 - **Protocols so far**: 1, the first release's; 2 (issue 173), a start may answer `need: "data"` (see "Phase 5 as

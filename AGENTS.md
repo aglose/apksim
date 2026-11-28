@@ -22,7 +22,8 @@ Read README.md for results and limits; this file covers how to work on the code.
 ## Layout
 - `apksim use [X.Y.Z|latest|default]` (`scripts/use.sh`) pins an installed release to another one; `apksim inspect
   [optional|on|off]` sets the beam inspector and restarts the agent. Both are handled before the pin's hand-off
-  (docs/beam.md "Versions").
+  (docs/beam.md "Versions"). The pin and its releases are in `~/.apksim-versions`, never under the state folder: apps
+  may write that, and the launcher runs the pin unsandboxed. `scripts/check-use.sh` (CI) checks both.
 - `apksim`: launcher (bash). Hands the launch to a standby when it can (`work/runtime/apksim-client`), otherwise
   builds the classpath, sandbox (`sandbox-exec`) and AOT cache flags, then runs `dev.apksim.Main`. Builtins only up
   to that hand-off: each fork there cost a few ms. Two of its settings are for memory (docs/perf-plan.md, "Memory,
