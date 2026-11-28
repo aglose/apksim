@@ -175,6 +175,15 @@
                 <data android:scheme="apksim" android:host="idle-zoo" />
             </intent-filter>
         </activity>
+        <!-- apksim://unstable?mode=tick|fail: content that changes between reads, a request that fails on opening (crawl.py's unstable screens). -->
+        <activity android:name=".UnstableActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="unstable" />
+            </intent-filter>
+        </activity>
         <!-- apksim://edittext: a focused View EditText, its caret blink and `settle` (issue 479). -->
         <activity android:name=".EditTextActivity" android:exported="true">
             <intent-filter>

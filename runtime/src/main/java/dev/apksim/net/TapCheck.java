@@ -498,6 +498,7 @@ public final class TapCheck {
 
   private static void failures() throws Exception {
     System.out.println("== failures");
+    long failed0 = NetFailures.count();
     int port = serve(new String[0], (s, in, out) -> {
       head(in);
       out.write(ascii("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nonly this much"));
@@ -514,6 +515,7 @@ public final class TapCheck {
     s.close();
     Map<String, Object> cut = find("/cut");
     check(cut != null && cut.get("_apksimError") != null && "only this much".equals(body(cut)), "a body cut short is kept with what came and why it ended (" + (cut == null ? null : cut.get("_apksimError")) + ")");
+    check(NetFailures.count() > failed0, "an exchange the tap saw end without its answer counts as a failed request (network failures)");
     int silent = serve(null, (s2, in2, out2) -> {
       head(in2);
       Thread.sleep(3000);  // never answers
@@ -555,6 +557,9 @@ public final class TapCheck {
     } catch (IOException expected) {
       Net.drain(2000);
       check(Inspector.eventsForCheck().stream().anyMatch(e -> e.contains("\"CONNECT\"") && e.contains(":" + dead)), "a connect that failed is a row in the inspector");
+      String said = Net.command(new String[] {"network", "failures"});
+      check(said.matches("\\d+ failed: .*") && said.contains(":" + dead + " connect failed") && !said.contains("the app reset"),
+          "`network failures` names the connect that failed, and not the stream the app cancelled (" + said + ")");
     }
   }
 

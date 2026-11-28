@@ -36,6 +36,9 @@ Usage: crawl-check.py [--apk APK] [--out DIR] [--quick] [--docker IMAGE] [-j N] 
    that its start screen has a password field; with `--autofill` and the test app's sign-in saved (in the state
    folder, or mounted into the image), each launch signs in first and the walk finds the account screen behind it, with
    no relaunch; crawl.json records the zone (UTC). Skipped on the Mac when a sign-in is already saved for the test app.
+15. `apksim://unstable?mode=tick` (content that changes between reads) and `?mode=fail` (a request that fails as it
+   opens) are `unstable` in a seed walk, home is not, and the same build walked against that seed with `--diff-seed`
+   reports none of them changed, new or gone (exit 0). No screen of walk 1 is unstable.
 
 --quick (CI, where the image is slow) walks to depth 2. --docker IMAGE runs crawl.py in the Linux image
 (`--entrypoint crawl.py`, OUT mounted at /work) as scripts/ci-smoke.sh does. Exit status 1 on any failed expectation.
@@ -176,6 +179,8 @@ def main():
     check(os.path.getsize(os.path.join(a_dir, "report.html")) > 5000, "the HTML report is written")
     skipped = [e for e in doc["edges"] if e["kind"] == "skipped"]
     check(any(e["action"] == "Share" for e in skipped), "a control on the skip list is not tapped (Share)")
+    shaky = [(s["id"], s["unstable"]) for s in screens if s.get("unstable")]
+    check(not shaky, "no screen of the test app's walk is unstable (read twice alike, no request failed)", str(shaky)[:600])
 
     # 2
     doc2, secs_b, _ = crawl(args.apk, b_dir, *starts, *opts, "--no-captures")
@@ -605,11 +610,38 @@ def main():
         bad = [f["detail"][:80] for d in (doc_o, doc_i) for f in d["findings"] if f["kind"] in ("replay", "capture", "flaky", "crash")]
         check(not bad, "the sign-in walks replay and capture every screen", str(bad))
 
+    # 15: unstable screens (docs/crawl.md "Unstable screens"). apksim://unstable?mode=tick counts every 100 ms (two reads
+    # never agree), mode=fail fails a request as it opens; home is still. A seed walk records each as `unstable` with its
+    # reason, and the same build walked against it with --diff-seed reports none of them changed, new or gone.
+    u_seed, u_diff = os.path.join(args.out, "unstable-seed"), os.path.join(args.out, "unstable-diff")
+    tick_u, fail_u = "apksim://unstable?mode=tick", "apksim://unstable?mode=fail"
+    ustarts = ["--start", tick_u, "--start", fail_u, "--start", "apksim://composeapp/home", "--max-depth", "1",
+               "--matrix", "appearance=light", "-j", str(min(args.j, 3))]
+    doc_us, secs_u, _ = crawl(args.apk, u_seed, *ustarts)
+    by_start = {s["path"].get("start"): s for s in doc_us["screens"] if not s["path"]["steps"]}
+    tick_s, fail_s, home_s = (by_start.get(u, {}) for u in (tick_u, fail_u, "apksim://composeapp/home"))
+    check("content changed" in (tick_s.get("unstable") or ""), "a screen whose content changes between two reads is unstable",
+          str(tick_s.get("unstable")))
+    check("failed while it was reached" in (fail_s.get("unstable") or "") and "127.0.0.1:9" in fail_s.get("unstable", ""),
+          "a screen reached while a request failed is unstable, the request named", str(fail_s.get("unstable")))
+    check(bool(home_s) and not home_s.get("unstable"), "a still screen is not", str(home_s.get("unstable")))
+    ids = [s["id"] for s in (tick_s, fail_s, home_s) if s]
+    doc_ud, _, p_ud = crawl(args.apk, u_diff, "--matrix", "appearance=light", "-j", str(min(args.j, 3)), "--seed", wpath(u_seed),
+                            "--only", ",".join(ids), "--diff-seed", expect=(0, 1))
+    noisy = [(p["status"], p["id"] or p["base"]) for p in doc_ud.get("compare", []) if p["status"] in ("changed", "new", "gone")]
+    left = {u["id"] or u["base"] for u in doc_ud.get("unstable", [])}
+    check(not noisy and p_ud.returncode == 0 and left <= set(ids) - {home_s.get("id")}
+          and all(p["status"] == "same" for p in doc_ud.get("compare", []) if p["id"] == home_s.get("id")),
+          "the same build against that seed: no unstable screen is changed, new or gone, and the run passes",
+          f"exit {p_ud.returncode}, {noisy}, unstable {sorted(left)}")
+    check(tick_s.get("id") in left, "the ticking screen, whose text differs from the seed's, is listed as unstable",
+          str(doc_ud.get("unstable")))
+
     print(f"timings: walk+captures {secs_a:.0f} s ({len(screens)} screens, {len(doc['edges'])} transitions), repeat walk {secs_b:.0f} s, "
           f"compare {secs_c:.0f} s, prepared {secs_d:.0f} s, sweep {secs_e:.0f} s ({secs_f:.0f} s with an allow-list), "
           f"seeded walk of one screen {secs_g:.0f} s, walk with --record-deps {secs_deps:.0f} s (without {secs_plain:.0f} s), "
           f"slot walk with a relaunch {secs_h:.0f} s, kept-data walk on two instances {secs_k:.0f} s, "
-          f"signed-in walk {secs_s:.0f} s")
+          f"signed-in walk {secs_s:.0f} s, unstable seed walk {secs_u:.0f} s")
     if failures:
         print(f"crawl-check: {len(failures)} check(s) failed", file=sys.stderr)
         sys.exit(1)

@@ -1387,6 +1387,7 @@ final class NetEngine {
       missed.incrementAndGet();
       Net.log(msg);
       Net.unmatched.add(msg.replace("\n         ", "; "));
+      NetFailures.note(msg.replace("\n         ", "; "));
       byte[] body = (msg + "\n").getBytes(StandardCharsets.UTF_8);
       String head = "HTTP/1.1 599 No Recorded Response\r\nX-Apksim-Replay: unmatched\r\nContent-Type: text/plain; charset=utf-8\r\n"
           + "Content-Length: " + body.length + "\r\n\r\n";
@@ -1717,6 +1718,7 @@ final class NetEngine {
         missed.incrementAndGet();
         Net.log(msg);
         Net.unmatched.add(msg);
+        NetFailures.note(msg);
         return;
       }
       // The JDK's own TLS through the proxy's tunnel (a relayed HttpsURLConnection) is expected, and the tap reads it.
