@@ -112,6 +112,12 @@ its certificate). Any option turns it on; without one, the hooks cost one static
   logged once per host, counted in the status line, `log._apksimNotKept` and crawl.json's `network.not_kept`). Before,
   a replayed login left the app without its cookie and the server's 401 to every later fetch was frozen.
   `scripts/check-net-fetch.sh` (`FetchCheck`, CI quick checks).
+- A connect that fails before any request (a mapped host nothing listens on, a host the sandbox refuses) is an entry:
+  `CONNECT host:port` with `_apksimError: "connect failed: EXCEPTION"` (`Net.connectFailed`, from the engine's
+  `connectUpstream` and the tap's `finish`); replaying, a connect to a host and port with such entries and no answer
+  fails with that exception again (`Recording.connectFailure`) instead of a 599 the app retries (docs/network.md
+  "Failed connects"). `scripts/check-replay-match.sh` (`ReplayMatchCheck`, CI quick checks) checks it with the
+  matching above.
 - Not covered: Ktor CIO and other NIO `SocketChannel` clients, `new Socket(host, port)`, Cronet's native stack
   (docs/network.md says what it would need), replay of WebSockets and of HTTP/2-only clients such as gRPC (recorded,
   messages included; the replay engine speaks HTTP/1.1). Checks: `scripts/check-net-tap.sh` (`TapCheck`, CI's quick

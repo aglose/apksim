@@ -90,13 +90,18 @@ plays through); Trips has a "Trip note" field with
 imePadding; the app follows dark mode and handles `apksim://composeapp/<tab>` deep links. `apksim://network` opens
 `NetworkActivity` (HTTPS fetches with OkHttp and HttpURLConnection, ConnectivityManager's state; see "Network";
 `apksim://network?url=URL` adds "Get" and "Get URL" for any address and shows the protocol OkHttp got;
+`apksim://network?signin=1` adds a User and a Password field, "Sign in" (a POST with both in its JSON body, then a GET
+with an id made at run time in its query) and "Ping down" (a connect to down.apksim.test, which a check maps to a port
+nothing listens on): replay-check.py's session with a typed sign-in;
 `apksim://grpc`, `apksim://websocket` and `apksim://media` are the protocol and media screens, see "Test APKs").
 `apksim://bitmaps` opens `ViewBitmapsActivity` (Views only: a stretched BitmapDrawable background, FIT_XY and
 CENTER_CROP ImageViews, `drawBitmap(Bitmap, Matrix, Paint)`, a mutable bitmap redrawn every frame; `?animate=0` holds
 still for pixel comparisons, `?video=1` adds the clip scaled up in a large TextureView), the GpuBitmaps check on
 `--device tablet`.
 `apksim://bluetooth` opens `BluetoothActivity`: "bluetooth: on, scanner yes", the ACTION_STATE_CHANGED broadcasts
-received ("broadcasts: TURNING_OFF OFF") and the Bluetooth features (`scripts/adb-check.py` switches it with `svc`).
+received ("broadcasts: TURNING_OFF OFF") and the Bluetooth features (`scripts/adb-check.py` switches it with `svc`); its
+text is white on the blue, so a changed line differs by more than a replay's per-channel delta of 64 (the theme's dark
+text did not: a replay "matched" with the line changed, found by `scripts/pr-evidence-check.py`).
 `apksim://timer` opens `TimerActivity`: a 60 s CountDownTimer, SystemClock's drift from the wall clock, counts of
 onUserInteraction, touches and keys, a "Sleep worker" (SystemClock.sleep on a thread) and "Sleep on main" (an uptime
 deadline waited for with SystemClock.sleep); `scripts/timer-check.py
