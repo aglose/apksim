@@ -26,11 +26,11 @@ import java.util.Properties;
  *
  * Each key names a field by the text a person would read for it: its placeholder or hint, or the label just above
  * it. Fields are found through the accessibility tree (framework API, so minified apps work too), filled with
- * ACTION_SET_TEXT, and then the button whose text is `submit` is pressed. It signs in at most once per launch (and
- * once again after a `restart`, which starts the app's activities as a launch does, if the form shows within
- * {@link #REARM_NANOS}: past that the app is taken for signed in, so a form reached later, a re-authentication say, is
- * left alone), only when every named field is on screen, and logs which fields it filled, never their values. The `autofill` command reports where it is
- * ({@link #state}), so a script (scripts/crawl.py --autofill) can wait for the sign-in before it reads the screen.
+ * ACTION_SET_TEXT, and then the button whose text is `submit` is pressed. It signs in at most once per launch, only
+ * when every named field is on screen, and logs which fields it filled, never their values. The `autofill` command
+ * reports where it is ({@link #state}), so a script (scripts/crawl.py --autofill) can wait for the sign-in before it
+ * reads the screen; `autofill off` ({@link #disarm}) stops it looking, and `autofill on` ({@link #rearm}) has it look
+ * once more, for {@link #REARM_NANOS}, say after a `restart`. Neither happens unless asked.
  */
 final class Autofill {
   private final Map<String, String> fields = new LinkedHashMap<>();
@@ -42,22 +42,36 @@ final class Autofill {
   private int fills;
   private Map<String, Nodes.Node> filled;  // The nodes filled last, found again by identity: a filled field loses its placeholder.
   private Nodes.Node filledButton;
-  private String outcome;  // How the last sign-in ended (`filled ...`, `gave up: ...`, `idle: ...`); null while it has not.
-  private long armedUntilNanos;  // After a restart: when to stop looking for a form that has not shown; 0 at launch.
+  private String outcome;  // How it ended (`filled ...`, `gave up: ...`, `idle: ...`, `disarmed`); null while it has not.
+  private long armedUntilNanos;  // After `autofill on`: when to stop looking for a form that has not shown; 0 at launch.
   static final long REARM_NANOS = 10_000_000_000L;
 
   private Autofill() {}
 
   /**
    * `waiting` (no form with every named field yet), `filling` (filled, checking the values stuck), `done: filled A, B;
-   * pressed X`, `gave up: WHY` or `idle: ...` (no form within REARM_NANOS of a restart). Never a value.
+   * pressed X`, `gave up: WHY`, `idle: ...` (no form within REARM_NANOS of `autofill on`) or `disarmed` (`autofill
+   * off` before anything was typed). Never a value.
    */
   synchronized String state() {
-    if (done) return outcome != null && (outcome.startsWith("gave up") || outcome.startsWith("idle")) ? outcome : "done: " + outcome;
-    return fills > 0 ? "filling" : "waiting";
+    if (!done) return fills > 0 ? "filling" : "waiting";
+    boolean filledIt = outcome != null && outcome.startsWith("filled");
+    return filledIt ? "done: " + outcome : outcome;
   }
 
-  /** After `restart`: look for the form again, as a launch does (an app that signs in per start shows it again). */
+  /**
+   * Stops looking for the form, if nothing has been typed yet; a sign-in under way is left to finish, so the form is
+   * never left half done. Answers {@link #state}.
+   */
+  synchronized String disarm() {
+    if (!done && fills == 0) {
+      done = true;
+      outcome = "disarmed";
+    }
+    return state();
+  }
+
+  /** `autofill on`: look for the form once more, as a launch does (an app that signs in per start shows it again). */
   synchronized void rearm() {
     done = false;
     fills = 0;
@@ -103,7 +117,7 @@ final class Autofill {
     if (done || now < nextLookNanos) return;
     if (fills == 0 && seenSinceNanos == 0 && armedUntilNanos != 0 && now > armedUntilNanos) {
       done = true;
-      outcome = "idle: no form within " + REARM_NANOS / 1_000_000_000L + " s of the restart";
+      outcome = "idle: no form within " + REARM_NANOS / 1_000_000_000L + " s";
       return;
     }
     List<View> roots = rootViews.get();

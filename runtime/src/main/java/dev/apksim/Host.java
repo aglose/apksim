@@ -2552,13 +2552,18 @@ public class Host {
         }
       }
       case "restart" -> {
-        String r = restart(a.length > 1 ? a[1] : null);
-        if (autofill != null && !r.startsWith("error")) autofill.rearm();  // a start of the app's activities, as a launch
-        return r;
+        return restart(a.length > 1 ? a[1] : null);
       }
       case "autofill" -> {
-        // Where the saved sign-in is (Autofill.state): scripts/crawl.py --autofill waits for it before reading a screen.
-        if (autofill != null) return autofill.state();
+        // autofill [on|off]: where the saved sign-in is (Autofill.state); scripts/crawl.py --autofill waits for it before
+        // reading a screen, stops it looking once a start's sign-in is settled, and has it look again after its restarts.
+        String op = a.length > 1 ? a[1] : "";
+        if (!op.isEmpty() && !op.equals("on") && !op.equals("off")) return "error: autofill [on|off]";
+        if (autofill != null) {
+          if (op.equals("off")) return autofill.disarm();
+          if (op.equals("on")) autofill.rearm();
+          return autofill.state();
+        }
         return Boolean.getBoolean("apksim.noAutofill") ? "off (--no-autofill)" : "none: no saved sign-in for this app";
       }
       case "diff" -> {
