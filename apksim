@@ -612,8 +612,6 @@ STANDBY_ON=""
 if [[ "$OS" == Darwin ]]; then [[ "${APKSIM_STANDBY:-1}" != 0 ]] && STANDBY_ON=1
 elif [[ "$OS" == Linux && ( "${APKSIM_STANDBY:-}" == 1 || "${APKSIM_STANDBY:-}" == cold ) ]]; then STANDBY_ON=1; fi
 WARM_OK="" COLD_OPT=""
-# The replay's own (its plain JVM has read it): an app must not learn where the key file is.
-unset APKSIM_SECRETS_KEY_FILE
 # Passwords typed while recording are kept, sealed to this key (apksim rec secrets on; Secrets.java).
 [[ -f "${HOME:-}/.apksim-secrets/public.key" ]] && EXTRA+=("-Dapksim.rec.seal=$HOME/.apksim-secrets/public.key")
 if [[ -n "$STANDBY_ON" && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSIM_SANDBOX_TEST:-}" && -z "$STANDBY_SOCK" ]]; then
@@ -716,6 +714,9 @@ if [[ -n "${SERVE:-}" ]]; then
   exec "$JAVA" -XX:+UseSerialGC -Xmx256m -XX:TieredStopAtLevel=1 -Dapksim.root="$ROOT" -Dapksim.state="$STATE" \
     -cp "$ROOT/work/apksim.jar" dev.apksim.serve.Serve "$@"
 fi
+# From here on this is an instance (rec secrets, replay's plan and serve are above): an app must not learn where the
+# key file is.
+unset APKSIM_SECRETS_KEY_FILE
 # The JVM starts with LC_NUMERIC en_US.UTF-8. Robolectric's libandroid_runtime sets it when it loads
 # (AndroidRuntime::onStarted, setlocale(LC_NUMERIC, "en_US.UTF-8")), on the main thread with the JIT compilers running.
 # macOS's setlocale swaps the global locale's numeric part under any thread formatting a number or string:

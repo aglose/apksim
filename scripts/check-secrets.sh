@@ -10,6 +10,7 @@ mkdir -p "$T/state/secrets"
 run() { APKSIM_SECRETS_KEY_FILE="$T/key" "$JDK/bin/java" -Dapksim.state="$T/state" -Dapksim.secrets.dir="$T/dir" -cp "$ROOT/work/apksim.jar" dev.apksim.Secrets "$@" 2>&1 || true; }
 fails=0
 check() { if [[ "$2" == *"$3"* ]]; then echo "ok   $1"; else echo "FAIL $1: wanted '$3' in: $2"; fails=1; fi; }
+check "the launcher passes the key file on" "$(HOME="$T/home" APKSIM_HOME="$T/state2" APKSIM_SECRETS_KEY_FILE="$T/key2" "$ROOT/apksim" rec secrets on 2>&1 || true)" "on: the private key is in $T/key2"
 check "off at first" "$(run)" "off:"
 check "on makes a key" "$(run on)" "on: the private key is in $T/key"
 check "its file is the owner's alone" "$(ls -l "$T/key")" "-rw-------"

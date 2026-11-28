@@ -404,8 +404,9 @@ def secrets_checks(fport, stop):
     env = {"HOME": home, "APKSIM_SECRETS_KEY_FILE": os.path.join(a.out, "secrets.key")}
     os.environ.update(env)
     apksim = os.path.join(ROOT, "apksim")
-    on = subprocess.run([apksim, "rec", "secrets", "on"], capture_output=True, text=True)
-    check(on.stdout.startswith("on:"), f"apksim rec secrets on: {on.stdout}{on.stderr}")
+    on = subprocess.run([apksim, "rec", "secrets", "on"], capture_output=True, text=True, timeout=90)
+    if not check(on.stdout.startswith("on:") and env["APKSIM_SECRETS_KEY_FILE"] in on.stdout, f"apksim rec secrets on, with the key file: {on.stdout}{on.stderr}"):
+        return  # never the Keychain from here
     before = set(subprocess.run([apksim, "rec", "secrets", "list"], capture_output=True, text=True).stdout.split())
     host = ["--network-host", f"api.apksim.test=127.0.0.1:{fport}", "--network-trust", os.path.join(a.out, "fixture/cert.pem")]
     p, port = launch("secrets-rec", ["--headless", "--fresh", "--rec", "all", "--rec-checkpoint", "0",

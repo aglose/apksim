@@ -294,15 +294,17 @@ public final class Secrets {
     try (var o = p.getOutputStream()) {
       if (stdin != null) o.write(stdin.getBytes(StandardCharsets.UTF_8));
     }
-    String text = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    // Waited for before its output (a key, well under a pipe's buffer) is read: it may put up a prompt nobody answers.
     try {
       if (!p.waitFor(60, TimeUnit.SECONDS)) {
         p.destroyForcibly();
-        throw new IOException("the Keychain did not answer");
+        throw new IOException("the Keychain did not answer in a minute (a prompt?)");
       }
     } catch (InterruptedException e) {
+      p.destroyForcibly();
       throw new IOException("interrupted");
     }
+    String text = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
     return new String[] {String.valueOf(p.exitValue()), text};
   }
 
