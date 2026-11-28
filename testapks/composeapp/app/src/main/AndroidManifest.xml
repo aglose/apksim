@@ -202,6 +202,16 @@
                 <data android:scheme="apksim" android:host="cyclic-nodes" />
             </intent-filter>
         </activity>
+        <!-- apksim://login: a username and password form in front of the rest, for the crawler's autofill walks (docs/crawl.md). -->
+        <activity android:name=".LoginActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="apksim" android:host="login" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".LoginAccountActivity" android:exported="false" />
         <!-- apksim://signin: a browser sign-in whose redirect comes back through apksim://signin-callback (issue 336). -->
         <activity android:name=".SignInActivity" android:exported="true" android:launchMode="singleTask">
             <intent-filter>

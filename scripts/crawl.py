@@ -2,7 +2,7 @@
 """Explores an APK's screens breadth-first over the control channel and maps them (docs/crawl.md).
 
 Usage: crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] [--max-seconds S] [--max-depth N]
-                [--skip-text REGEX]... [--tap-unlabeled] [--fill TEXT] [--matrix AXIS=V,V]... [--matrix-file SPEC.json]
+                [--skip-text REGEX]... [--tap-unlabeled] [--fill TEXT] [--autofill] [--matrix AXIS=V,V]... [--matrix-file SPEC.json]
                 [-j N] [--setting NS:KEY=VALUE]... [--sdcard-file PATH=text:TEXT]... [--standby] [--keep-data] [--keep-app-state] [--data-ignore PATTERN]...
                 [--base-option "APKSIM OPTIONS"] [--sweep LIST ...] [--seed RUN (--only ID,... | --only-file PATH)]
                 [--events] [--screen-titles] [--freeze-network] [--deterministic] [-- APKSIM_OPTION...]
@@ -42,6 +42,9 @@ DEFAULT_SKIP = (r"\b(delete|remove|erase|clear( all| data| history)?|reset|sign[
                 r"purchase|buy|pay|checkout|order|subscribe|unsubscribe|send|submit|post|publish|share|"
                 r"uninstall|deactivate|close account|cancel (subscription|order)|confirm|transfer|withdraw|donate)\b")
 SETTLE = "settle 1500 100"
+# --autofill: how long a launch may take to fill the saved sign-in and press its button once its form shows (Autofill
+# waits for the form to sit still 1.5 s, checks the values stuck, then presses).
+AUTOFILL_WAIT_S = 20
 SETTLE_FAST = "settle 1500 80 1000 tree 80"
 # A replay step or screen that is not there yet (data from the network, a list that fills in late): wait this long, then
 # settle for longer, before trying again (Instance.wait_longer).
@@ -969,6 +972,7 @@ class Instance(snapshot.Worker):
         self.configure(DEFAULT_COMBO)
         if self.fresh_at_root and not path.get("start") and not (self.ctx.get("record_deps") and need_deps):
             self.fresh_at_root = False
+            self.await_signin()
             if explore_fast and path["steps"] and self.ctx.get("root_id") and not need_deps:
                 act, recs = self.read_ui()
                 if act == "none" or structure(act, recs)[0] != self.ctx["root_id"]:
@@ -983,6 +987,7 @@ class Instance(snapshot.Worker):
             self.fresh_at_root = False
             self.say(f"clock {CLOCK}")
             self.expect_ok("restart" + (f" {path['start']}" if path.get("start") else ""))
+            self.await_signin()
             if explore_fast and path["steps"] and not path.get("start") and self.ctx.get("root_id") and not need_deps:
                 act, recs = self.read_ui()
                 if act == "none" or structure(act, recs)[0] != self.ctx["root_id"]:
@@ -1035,6 +1040,40 @@ class Instance(snapshot.Worker):
             last_obs = None
         self.say("pick cancel")
         return last_obs
+
+    def await_signin(self):
+        """--autofill: when the screen shows a password field while the app's saved sign-in (Autofill, the `autofill`
+        command) looks for its form, waits until it has filled the form and pressed its button (AUTOFILL_WAIT_S at most),
+        then for the screen to settle, so a replay starts signed in and the start's data is read after the sign-in wrote
+        it. A screen with no password field is read as it is: the app is signed in already, or has no form to fill."""
+        if not self.ctx.get("autofill"):
+            return
+        state = self.say("autofill")
+        if state.startswith(("unknown", "error")):
+            self.ctx["autofill"] = False  # an apksim older than the command: launches still sign in, unseen
+            log("--autofill: this apksim has no `autofill` command; the walk does not wait for the sign-in")
+            return
+        if state == "waiting":
+            self.settle(SETTLE)
+            _act, recs = self.read_ui()
+            if not any("p" in r.flags for r in recs):
+                return
+        deadline = time.time() + AUTOFILL_WAIT_S
+        while state in ("waiting", "filling") and time.time() < deadline:
+            time.sleep(0.25)
+            state = self.say("autofill")
+        self.note_signin(state)
+        self.settle(SETTLE)
+
+    def note_signin(self, state):
+        if state == "waiting":
+            state = f"waiting: the form was on screen {AUTOFILL_WAIT_S} s and was not filled (do its labels match the saved names?)"
+        with self.ctx["lock"]:
+            states = self.ctx["autofill_states"]
+            first = state not in states
+            states[state] = states.get(state, 0) + 1
+        if first:
+            log(f"--autofill: {state}")
 
     def read_deps(self):
         """--record-deps: the classes whose code ran and the resources resolved since the last `restart` (each opens a
@@ -1496,9 +1535,11 @@ class Explorer:
         self.seed_actions = {}
         self.seed_edges_by_from = {}
         self.options = list(args.apksim) + list(extra_options)
-        # Never the owner's saved sign-ins, and a slot namespace of the crawler's own: --fresh would empty an ordinary
-        # launch's `default` slot (--keep-data walks copies of a prepared slot: KeptSlot; an option of the caller's own wins).
-        self.options += ["--no-autofill"]
+        # Never the owner's saved sign-ins unless asked (--autofill), and a slot namespace of the crawler's own: --fresh would
+        # empty an ordinary launch's `default` slot (--keep-data walks copies of a prepared slot: KeptSlot; an option of the
+        # caller's own wins).
+        if not getattr(args, "autofill", False):
+            self.options += ["--no-autofill"]
         # Headless walks have no speakers and need not render continuously animating screens at 120 fps (Host gives
         # post-input reaction frames a 120 Hz burst automatically, then drops back to this cap for idle animations).
         if "--max-fps" not in self.options:
@@ -1543,6 +1584,7 @@ class Explorer:
         self.cap_left = {}
         self.first_recs = {}    # id -> the records the screen showed when it was found (a flaky screen's controls)
         self.alt_paths = {}     # id -> its path's steps with every tap as coordinates (Instance.reach's alt)
+        self.signin_warnings = []  # start screens with a password field (signin_warning)
         os.makedirs(os.path.join(out, "logs"), exist_ok=True)
         self.stage = tempfile.mkdtemp(prefix="apksim-crawl-")
         if re.search(r"\s", self.stage):
@@ -1561,6 +1603,8 @@ class Explorer:
                     "data_ignore": list(args.data_ignore or []),
                     "relaunches": [0], "relaunch_files": {}, "first_values": {}, "nav_values": {}, "startup_writes": {}, "unsettled": set(),
                     "record_deps": bool(args.record_deps), "lock": threading.Lock(),
+                    "autofill": bool(getattr(args, "autofill", False)) and "--no-autofill" not in self.options,
+                    "autofill_states": {},
                     "spawn": (SPAWN, STOPPING), "skip_re": self.skip_re}
         self.inline_shots = {}   # newly discovered sid -> (rel_path, settled) captured inline on first observation
         self.instances = []
@@ -1570,6 +1614,14 @@ class Explorer:
             self.options += ["--jvm", "-Dapksim.deps=true"]
             if args.deps_packages:
                 self.options += ["--jvm", f"-Dapksim.deps.packages={args.deps_packages}"]
+
+    def timezone(self):
+        zone = self.ctx["spec"].get("timezone", "UTC")
+        opts = list(self.options)
+        for i, o in enumerate(opts[:-1]):
+            if o == "--timezone":
+                zone = opts[i + 1]
+        return zone
 
     def record_start_deps(self):
         """--record-deps: the app-start span, once per walk, and the class -> source map for the probed packages."""
@@ -1704,10 +1756,31 @@ class Explorer:
                     self.cut_by.add("max-screens")
                     continue
                 level.append(self.add_screen(obs, {"start": start, "steps": []}, None, 0))
+        for start, obs in zip(starts, roots):
+            if obs is not None and any("p" in r.flags for r in obs["recs"]):
+                self.signin_warning(start)
         if len(starts) == 1 and starts[0] is None and level:
             self.ctx["root_id"] = level[0]["id"]
         self.walk(level)
         self.t_explore = time.time() - t0
+
+    def signin_warning(self, start):
+        """A start screen with a password field: the walk sees what a signed-out user sees (docs/crawl.md "Apps behind a
+        sign-in")."""
+        where = start or "the launcher activity"
+        states = self.ctx["autofill_states"]
+        if not getattr(self.args, "autofill", False):
+            how = ("--autofill signs each launch in with the sign-in saved for the app (STATE/autofill/PACKAGE.properties), "
+                   "or start from a signed-in slot with --keep-data")
+        elif not self.ctx.get("autofill"):
+            how = "--autofill could not be followed (see above)"
+        elif any(s.startswith("none") for s in states) or not states:
+            how = "--autofill found no sign-in saved for this app (STATE/autofill/PACKAGE.properties)"
+        else:
+            how = "--autofill did not sign in: " + "; ".join(states)
+        line = f"warning: the start screen ({where}) has a password field: the walk stays signed out. {how}"
+        log(line)
+        self.signin_warnings.append(line)
 
     def walk(self, level):
         """Explores level after level from [level]: each screen's controls tried, new screens one level deeper."""
@@ -2758,6 +2831,13 @@ class Explorer:
         d["cut_by"] = sorted(self.cut_by)
         # Launches that replaced an instance whose app had written to its data (Instance.reach).
         d["relaunches"] = self.ctx["relaunches"][0]
+        # The zone every instance ran in (snapshot.Worker passes --timezone UTC; one after `--` wins), so walks made on
+        # different machines, or a plain launch in the Mac's own zone, are not compared unawares.
+        d["timezone"] = self.timezone()
+        # Signing in: whether launches used the saved sign-in (--autofill) and how each sign-in ended, and start screens
+        # that showed a password field.
+        d["signin"] = {"autofill": bool(getattr(self.args, "autofill", False)), "states": dict(self.ctx["autofill_states"]),
+                       "warnings": list(self.signin_warnings)}
         if self.ctx["relaunch_files"]:
             d["relaunch_files"] = dict(sorted(self.ctx["relaunch_files"].items(), key=lambda kv: -kv[1]))
         if self.start_deps is not None:
@@ -3931,6 +4011,9 @@ def parse(argv):
     p.add_argument("--max-scrolls", type=int, default=4, help="scroll-downs looking for more controls on one screen")
     p.add_argument("--skip-text", action="append", help="regex of labels never tapped (replaces the default list; repeatable)")
     p.add_argument("--tap-unlabeled", action="store_true", help="also tap controls with no text or description")
+    p.add_argument("--autofill", action="store_true",
+                   help="sign each launch in with the sign-in saved for the app (STATE/autofill/PACKAGE.properties, as a "
+                        "plain launch does), waiting for it before a screen is read; otherwise launches never use it")
     p.add_argument("--fill", help="type this text into the text fields of each screen (otherwise they are left alone)")
     p.add_argument("--matrix", action="append", default=[], metavar="AXIS=V,V", help="captures: device, appearance, locale, fontscale")
     p.add_argument("--matrix-file", help="a snapshot spec: its matrix and exclude")

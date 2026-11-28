@@ -32,11 +32,15 @@ scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] 
   identical steps in a row is not followed, default 4: a counter, a stack of dialogs), `--screen-titles` (the title is part of a screen's id: see "Where it takes two for one").
 - Starting points: the launcher activity, or each `--start URL` (a deep link, as `restart URL`: `apksim://stack`, an
   `https` link the app handles). Every start is a root; screens reached from several are merged.
-- Apps behind a sign-in: start where the app is signed in. `--setting global|secure|system:KEY=V`, `--sdcard-file
-  PATH=text:TEXT` and any apksim option after `--` (`--feature`, `--locale`, `--network replay FILE`...) go to every
-  launch; a deep link past the sign-in screen is a `--start`; `--keep-data` starts from a prepared data slot (the one a
-  launch with the same `--data-slots NAME` after `--` takes, `NAME-0`, else `default`) for an app whose session lives
-  in its data: each instance (`-j N` as without it) runs on a copy of its own (an APFS clone, or a reflink), made
+- Apps behind a sign-in: start where the app is signed in (see "Signed-in walks" below for the three ways).
+  `--setting global|secure|system:KEY=V`, `--sdcard-file PATH=text:TEXT` and any apksim option after `--`
+  (`--feature`, `--locale`, `--network replay FILE`...) go to every launch; a deep link past the sign-in screen is a
+  `--start`. A start screen with a password field prints `warning: the start screen (...) has a password field: the
+  walk stays signed out` with what to do, and crawl.json's `signin.warnings` keeps it. The crawler never types a
+  password: text fields are left alone unless `--fill TEXT` is given, which types it into the fields of each screen
+  before its controls are tried.
+- `--keep-data` starts from a prepared data slot (the one a launch with the same `--data-slots NAME` after `--` takes,
+  `NAME-0`, else `default`) for an app whose session lives in its data: each instance (`-j N` as without it) runs on a copy of its own (an APFS clone, or a reflink), made
   again from the prepared slot at each of its launches, so replays start from the prepared data as they would from an
   emptied slot, and the prepared slot's data is never written (only its `.lock` file, to see it is not in use). The
   copies keep its serial and ANDROID_ID (a slot's name gives them otherwise) and are removed at the end, a stop
@@ -44,9 +48,7 @@ scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] 
   next `--keep-data` walk of that app. `--keep-data` also passes `--biometrics auto` unless `--biometrics` is set after
   `--`, so apps that unlock saved sessions or biometric-gated sections via `BiometricPrompt` stay unlocked across
   workers and relaunches. A prepared slot in use by a running instance stops the walk. An app that stored
-  absolute paths into its data folder in its own files reads the prepared slot through them, from the copy. The crawler never types a
-  password: text fields are left alone unless `--fill TEXT` is given, which types it into the fields of each screen
-  before its controls are tried.
+  absolute paths into its data folder in its own files reads the prepared slot through them, from the copy.
 - Safety: a control whose label (its text, description or the text inside it) matches the skip list is never tapped and
   is shown as skipped in the graph. The default list: delete, remove, erase, clear, reset, sign out, log out, purchase,
   buy, pay, checkout, order, subscribe, unsubscribe, send, submit, post, publish, share, uninstall, close account,
@@ -72,10 +74,50 @@ scripts/crawl.py APK --out DIR [--base APK2] [--start URL]... [--max-screens N] 
 - `-j N` instances at once (default 3; others share this machine). Exit status: 0 when the walk finished, 1 when it
   found a crash (or with `--base` a difference), 2 for bad arguments or an instance that never started.
 
+### Signed-in walks
+
+Three ways to walk what a signed-in user sees, from least to most set-up:
+
+- `--autofill`: each launch signs in with the sign-in saved for the app, as a plain `apksim` launch does
+  (`STATE/autofill/PACKAGE.properties`: `work/autofill` in a checkout, `~/.apksim/autofill` for an installed release).
+  The file maps what each field says (its placeholder or hint, or the label just above it) to the value to type, and
+  `submit` to the text of the button to press:
+
+  ```properties
+  Username=tester
+  Password=...
+  submit=Sign in
+  ```
+
+  Write it yourself (`chmod 600`; from a password manager's CLI, say): apksim never shows its values, only the field
+  names, `nodes` and crawl.json leave a password field's text out, and captures show it masked as the app draws it. Without `--autofill` the crawler passes
+  `--no-autofill`, so a walk never signs in with a saved sign-in by accident. With it, whenever a start or a replay's
+  `restart` shows a password field while the sign-in looks for its form, the walk waits (up to 20 s) until it has
+  filled the form and pressed the button, then for the screen to settle, before it reads anything; so the root is the
+  signed-in screen, and what the sign-in writes is part of the data the app had at its start (no relaunch for it). A
+  `restart` looks for the form again, as a launch does. crawl.json's `signin.states` counts how each sign-in ended
+  (`done: filled Username, Password; pressed Sign in`, `gave up: ...`, or `waiting: ...` when the form stayed unfilled:
+  its labels do not match the saved names). Every instance (`-j N`) and relaunch signs in again against the real
+  server, so a walk of 200 screens may sign in dozens of times: fine for a test account, not for one that locks after
+  repeated sign-ins. The test app's `apksim://login` (`LoginActivity`: `tester` / `apksim-test`) is the check
+  (`crawl-check.py`, 14).
+- `--keep-data`: for an app whose session lives in its data. Sign in once in a launch of your own that takes the slot
+  the walk will copy (`apksim --data-slots NAME ... APK`, then `crawl.py --keep-data APK ... -- --data-slots NAME`), quit
+  it, and every instance runs on a copy of that slot (above). The copies keep the slot's serial and ANDROID_ID, which a
+  server may have tied the session to.
+- Fingerprint sign-in: an app that unlocks a saved session with `BiometricPrompt` (a "sign in with fingerprint" after
+  the first password sign-in) stays unlocked with `--biometrics auto` (every prompt answered with a match), which
+  `--keep-data` passes unless `--biometrics` is set after `--`. Prepare the slot as above, turn fingerprint sign-in on
+  in the app's own settings during that launch (`--biometrics enrolled` for it, `biometrics match` when it asks), and
+  the walk's copies unlock by themselves. `--autofill` and `--keep-data` together are allowed: the copy is the start,
+  and a form that still shows is filled.
+
 ## What one walk does
 
 1. `-j` headless instances start (`apksim --headless --snapshot`, the code of `snapshot.py`'s `Worker`: a fixed clock
-   and UTC, no animations, carets not blinking).
+   and UTC, no animations, carets not blinking). The zone is UTC whatever the Mac's own is (a `--timezone` after `--`
+   wins), so a walk compared with a plain launch, or with a walk on another machine, may show times and dates that
+   differ by the zone alone; crawl.json's `timezone` records it.
 2. Level 0 is each start (`restart URL`, settle, read the screen). Then, level by level: every screen of the level goes
    to an instance, which replays its path (default configuration, `restart [URL]`, the path's steps), checks it
    arrived where it should, reads the controls from `nodes tree`, and tries each in turn: replay, tap, settle, read

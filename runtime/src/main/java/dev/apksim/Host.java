@@ -209,7 +209,7 @@ public class Host {
     }
     Timing.mark("activity-resumed");
     // (Not with --no-autofill: `apksim serve` instances must never sign anyone in with the owner's credentials.)
-    Autofill autofill = Boolean.getBoolean("apksim.noAutofill") ? null
+    autofill = Boolean.getBoolean("apksim.noAutofill") ? null
         : Autofill.load(Path.of(System.getProperty("apksim.cacheRoot")), System.getProperty("apksim.package"));
 
     ShadowLooper looper = shadowOf(Looper.getMainLooper());
@@ -766,6 +766,9 @@ public class Host {
    * else the launcher one) started again with no saved state, or with URL the app's activity for that ACTION_VIEW intent. App statics, the
    * Application and data persist. Screenshot tests start every screen this way, so none sees what another left.
    */
+  /** The saved sign-in for this app (`work/autofill`), or null: none saved, or --no-autofill. */
+  private Autofill autofill;
+
   private String restart(String url) throws Exception {
     String pkg = System.getProperty("apksim.package");
     Intent intent = startIntent();
@@ -2549,7 +2552,14 @@ public class Host {
         }
       }
       case "restart" -> {
-        return restart(a.length > 1 ? a[1] : null);
+        String r = restart(a.length > 1 ? a[1] : null);
+        if (autofill != null && !r.startsWith("error")) autofill.rearm();  // a start of the app's activities, as a launch
+        return r;
+      }
+      case "autofill" -> {
+        // Where the saved sign-in is (Autofill.state): scripts/crawl.py --autofill waits for it before reading a screen.
+        if (autofill != null) return autofill.state();
+        return Boolean.getBoolean("apksim.noAutofill") ? "off (--no-autofill)" : "none: no saved sign-in for this app";
       }
       case "diff" -> {
         // diff GOLDEN.png ACTUAL.png [MAP.png] [DELTA]: how many pixels differ by more than DELTA in any channel.
