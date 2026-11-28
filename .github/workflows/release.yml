@@ -122,6 +122,8 @@ jobs:
           grep -qE ', [1-9][0-9]* with recorded dependencies' evidence.log
       - name: Pinned releases (apksim use, with the Mac sandbox)
         run: scripts/check-use.sh
+      - name: Sandbox writes (nothing that runs outside the sandbox is writable from it)
+        run: scripts/check-sandbox-writes.sh
       - name: Checksums
         run: |
           cd dist

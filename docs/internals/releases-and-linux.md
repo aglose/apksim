@@ -16,7 +16,18 @@ that hash; offline, training fails with a line saying so and touches `STATE/trai
 change, measured locally). `work/release` makes the launcher keep its state (`STATE`: AOT cache,
 `cache/`, `tmp/`, screenshots, autofill) in `~/.apksim` rather than `work/` (`APKSIM_HOME` overrides either way;
 `train.sh` and `ctl.py` follow the same rule), so the install folder can be read-only. The sandbox allows writes to
-`STATE`. Standbys are keyed by install folder plus `STATE`. A release has no AOT cache (it is tied to its folder and
+`STATE`, but never to what runs outside it (`scripts/check-sandbox-writes.sh`, Mac only, in CI's `startup-gate`
+job and the release's Mac job): the install folder (a Homebrew install is outside the home folder, which alone was
+denied before 0.71.0, so an app could rewrite its launcher), Homebrew's prefix, `/usr/local` and `/Applications`,
+every `$TMPDIR/apksim-<12 hex>` link to a `work/lib` (training's launches load the jars it names; the launcher also
+replaces one that points anywhere else), in `STATE` the startup cache (`app.aot*`), `testapp-*` and training's logs
+and pid file, and in a checkout `work/`'s build outputs (`apksim.jar`, `lib`, `runtime`, the JDK and `jdk.path`,
+`release`). Training's stages run outside the sandbox, so on macOS they work in a folder of their own in the home
+folder (`~/.apksim-train.XXXXXX`, removed after), on a copy of the test app checked against the release's hash, with
+a class cache, extracted libraries and resource table made there rather than read from `STATE/cache`, which apps may
+write; the files of the class cache and table that `STATE` lacks are then put there, each by rename (a running
+instance maps the table). Still app-writable, and only read by sandboxed launches: `STATE/cache` (one app could plant translated classes
+for another), and the standby sockets in `$TMPDIR`. A standby keeps the profile it booted with (`--stop-standbys`). Standbys are keyed by install folder plus `STATE`. A release has no AOT cache (it is tied to its folder and
 JDK): the first launch without one, and the beam agent when it starts (`start_training` in the launcher; never a beamed launch, whose sandbox refuses the record stage's writes: issue 559), starts `train.sh --headless` detached (`STATE/train.pid`, log `STATE/train.log`)
 and goes on without it; a headless-trained cache is as fast as a windowed one (1.73 against 1.72 s). The launcher
 follows a symlink to itself (Homebrew's and install.sh's `bin/apksim`). The tarball's `scripts/` must hold every sibling a shipped script imports or opens by

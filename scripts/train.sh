@@ -43,6 +43,9 @@ if [[ $# -eq 0 && ! -f "$APK" && -f "$ROOT/work/release" && -f "$ROOT/work/testa
   RELEASE_APK="$STATE/testapp-$VERSION.apk"
   APK="$RELEASE_APK"
 fi
+# Training runs its launches outside the sandbox (the record stage writes where an app may not), so nothing it reads
+# or writes may be a file an app could have put there: a link planted in STATE is removed before it is written through.
+for f in "$STATE/train.pid" "$STATE/train-record.log" "$STATE/train-create.log"; do [[ -L "$f" ]] && rm -f "$f"; done
 # One training at a time per state folder: the launcher reads train.pid before starting one.
 if ! (set -C; echo $$ > "$STATE/train.pid") 2>/dev/null; then
   OTHER="$(cat "$STATE/train.pid" 2>/dev/null || true)"
@@ -62,6 +65,12 @@ trap 'rm -f "$CONF" "$NEW" "$REL" "$DL"; [[ "$(cat "$STATE/train.pid" 2>/dev/nul
 # An installed release does not ship the test app (22 MB of its download): the first training fetches it from the
 # release, checked against the hash the release carries (work/testapp.sha256), and keeps it in STATE.
 # APKSIM_DOWNLOAD_URL points at a mirror or a local folder (file://), as for install.sh.
+# A kept one is checked too, each time: training runs it outside the sandbox, so one an app replaced is fetched again.
+if [[ -n "$RELEASE_APK" && -f "$RELEASE_APK" ]] \
+    && [[ "$(shasum -a 256 "$RELEASE_APK" | cut -d' ' -f1)" != "$(tr -d ' \n' < "$ROOT/work/testapp.sha256")" ]]; then
+  echo "train.sh: $RELEASE_APK does not match the release's test app; fetching it again" >&2
+  rm -f "$RELEASE_APK"
+fi
 if [[ -n "$RELEASE_APK" && ! -f "$RELEASE_APK" ]]; then
   URL="${APKSIM_DOWNLOAD_URL:-https://github.com/aglose/apksim/releases/download/v$VERSION}/apksim-testapp-$VERSION.apk"
   WANT="$(tr -d ' \n' < "$ROOT/work/testapp.sha256")"
@@ -86,10 +95,28 @@ if [[ ! -f "$APK" ]]; then
   exit 1
 fi
 rm -f "$STATE/train.failed"
+# On macOS the stages run in a folder of their own in the home folder, which apps' sandboxes may not write (they may
+# write STATE): its own copy of the APK (checked again, for a release), and a class cache, extracted libraries and
+# resource table made fresh, not ones an app could have planted in STATE/cache. Its class cache and resource table go
+# to STATE after, as before. Elsewhere (Linux: no sandbox) the stages use STATE as they always did.
+TS="$STATE"
+if [[ "$(uname -s)" == Darwin ]]; then
+  # A training killed outright (SIGKILL, power loss) leaves its folder: those over a day old go.
+  find "$HOME" -maxdepth 1 -type d -name '.apksim-train.??????' -mmin +1440 -exec rm -rf {} + 2>/dev/null || true
+  TS="$(mktemp -d "$HOME/.apksim-train.XXXXXX")"
+  trap 'rm -f "$CONF" "$NEW" "$REL" "$DL" "$STATE/app.aot.new.$$" "$STATE/app.aot.root.$$"; rm -rf "$TS"; [[ "$(cat "$STATE/train.pid" 2>/dev/null)" == "$$" ]] && rm -f "$STATE/train.pid"; true' EXIT
+  cp "$APK" "$TS/train.apk"; APK="$TS/train.apk"
+  if [[ -n "$RELEASE_APK" && "$(shasum -a 256 "$APK" | cut -d' ' -f1)" != "$(tr -d ' \n' < "$ROOT/work/testapp.sha256")" ]]; then
+    echo "train.sh: the test app changed while training started; not used" >&2
+    [[ -n "$BACKGROUND" ]] && touch "$STATE/train.failed"
+    exit 1
+  fi
+  CONF="$TS/app.aotconf"; NEW="$TS/app.aot.new"
+fi
 # Each stage keeps its output, and a failure says which stage and where to look, rather than ending silently.
 stage() {
   local name="$1"; shift
-  if ! APKSIM_NOCACHE=1 "$ROOT/apksim" "$@" > "$STATE/train-$name.log" 2>&1 || [[ "$name" == create && ! -s "$NEW" ]]; then
+  if ! APKSIM_NOCACHE=1 APKSIM_HOME="$TS" "$ROOT/apksim" "$@" > "$STATE/train-$name.log" 2>&1 || [[ "$name" == create && ! -s "$NEW" ]]; then
     echo "train.sh: the $name stage failed; see $STATE/train-$name.log" >&2
     # Not started again beside every launch: a launch tries again in an hour (apksim --train at once).
     [[ -n "$BACKGROUND" ]] && touch "$STATE/train.failed"
@@ -108,12 +135,28 @@ AOT_BASE="${APKSIM_AOT_BASE:-}"
 # speeding up every first-ever launch of a new APK even when the test app's class cache is already warm.
 stage record --jvm -XX:AOTMode=record --jvm "-XX:AOTConfiguration=$CONF" --jvm -XX:TieredStopAtLevel=1 --jvm -Dapksim.classCache=false "${HEADLESS[@]+"${HEADLESS[@]}"}" --exit-after-first-frame "$APK"
 stage create --jvm -XX:AOTMode=create --jvm "-XX:AOTConfiguration=$CONF" --jvm "-XX:AOTCache=$NEW" ${AOT_BASE:+--jvm "-XX:SharedBaseAddress=$AOT_BASE"} "${HEADLESS[@]+"${HEADLESS[@]}"}" --exit-after-first-frame "$APK"
-# Into place by rename, so running instances keep the cache they mapped; the root last, as launches check it.
+# Into place by rename, so running instances keep the cache they mapped; the root last, as launches check it. From the
+# private folder, a copy beside it first (another volume than the home folder is possible with APKSIM_HOME).
+if [[ "$TS" != "$STATE" ]]; then
+  cp "$NEW" "$STATE/app.aot.new.$$" || { echo "train.sh: could not copy the startup cache into $STATE" >&2; exit 1; }
+  NEW="$STATE/app.aot.new.$$"
+  # The test app's translated classes and the framework's resource table, so its next launch is warm, as before. Only
+  # files STATE lacks (both are named by what they hold), each by rename: a running instance maps the table, and a
+  # file copied over in place is truncated under it. Not through a link an app put in place of a folder.
+  if [[ ! -L "$STATE/cache" ]]; then
+    # (Either folder may be missing: a launch that translated nothing has no classes/. Not an error under pipefail.)
+    { (cd "$TS/cache" 2>/dev/null && find classes framework -type f 2>/dev/null) || true; } | while IFS= read -r f; do
+      d="$STATE/cache/$f"
+      [[ -e "$d" || -L "$d" || -L "$(dirname "$d")" ]] && continue
+      mkdir -p "$(dirname "$d")" && cp "$TS/cache/$f" "$d.train.$$" && mv -f "$d.train.$$" "$d" || rm -f "$d.train.$$"
+    done || true
+  fi
+fi
 mv -f "$NEW" "$STATE/app.aot"
 # An installed release's cache is for that release too (the launcher compares app.aot.release with work/release).
 # Written through a temp file rather than `cp`: work/release in a read-only install (Homebrew) is 0444, so a copied
 # stamp would be read-only and the next training would fail to overwrite it.
 if [[ -f "$ROOT/work/release" ]]; then cat "$ROOT/work/release" > "$REL"; else : > "$REL"; fi
 mv -f "$REL" "$STATE/app.aot.release"
-printf '%s' "$ROOT" > "$STATE/app.aot.root"
+printf '%s' "$ROOT" > "$STATE/app.aot.root.$$" && mv -f "$STATE/app.aot.root.$$" "$STATE/app.aot.root"
 ls -la "$STATE/app.aot"
