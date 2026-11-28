@@ -36,3 +36,7 @@ scripts/crawl.py app.apk --out crawl/ --base app-old.apk  # every screen it can 
     `-j` instances and reuses a screen in place when an action leaves the data alone: a ~169-screen app's walk with `-j 6` and light captures
     went from 8,762 s to 966 s. A screen whose path no longer replays exactly (live data) is still explored where the
     path leads now. See [docs/crawl.md](crawl.md).
+- **Bug to pull request:** `scripts/pr-evidence.py` chains these: a recording of a bug replayed on the old build and
+    on the fix, with the step where the screens part; the screens the change's files can reach walked again and compared
+    with a map of the old build; and the Markdown and pictures for the pull request. See
+    [docs/bug-to-pr.md](bug-to-pr.md).

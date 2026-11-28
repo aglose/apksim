@@ -63,7 +63,7 @@ jobs:
           if [ "${{ github.event_name }}" = pull_request ]; then
             files=$(git diff --no-renames --name-only "$BASE...$HEAD_SHA")
             img='^(\.github/workflows/release\.yml|docker/|scripts/docker-build\.sh$|\.github/actions/linux-build/)'
-            pkg='^(\.github/workflows/release\.yml|scripts/(package-release|setup|train|jdk)\.sh|apksim|install\.sh|scripts/(ctl|drive|instrument|affected|coverage|snapshot|crawl|crawl-select|device-profile|replay-adb|mcp|subsystem-audit)\.py)$|^packaging/'
+            pkg='^(\.github/workflows/release\.yml|scripts/(package-release|setup|train|jdk)\.sh|apksim|install\.sh|scripts/(ctl|drive|instrument|affected|coverage|snapshot|crawl|crawl-select|pr-evidence|device-profile|replay-adb|mcp|subsystem-audit)\.py)$|^packaging/'
             printf '%s\n' "$files" | grep -qE "$img" || image=false
             printf '%s\n' "$files" | grep -qE "$pkg" || package=false
           fi
@@ -116,6 +116,10 @@ jobs:
           python3 "$D/scripts/crawl.py" "$APKSIM_HOME/testapp-$VERSION.apk" --out "$RUNNER_TEMP/crawl" --keep-data \
             --max-screens 2 --max-seconds 180 -- --no-network 2>&1 | tee crawl.log
           python3 -c 'import json, sys; c = json.load(open(sys.argv[1])); assert c["screens"], c' "$RUNNER_TEMP/crawl/crawl.json"
+          # pr-evidence.py (docs/bug-to-pr.md) finds crawl.py and the launcher beside it in the installed tree.
+          python3 "$D/scripts/pr-evidence.py" baseline "$APKSIM_HOME/testapp-$VERSION.apk" --out "$RUNNER_TEMP/evidence-map" \
+            --depth 1 --max-seconds 180 --no-captures -- --no-network 2>&1 | tee evidence.log
+          grep -qE ', [1-9][0-9]* with recorded dependencies' evidence.log
       - name: Checksums
         run: |
           cd dist
@@ -131,6 +135,7 @@ jobs:
             dist/SHA256SUMS
             launch.log
             crawl.log
+            evidence.log
             ${{ runner.temp }}/state/train-*.log
       # The files the draft release gets, made by `draft` once the images are pushed.
       - uses: actions/upload-artifact@v4
