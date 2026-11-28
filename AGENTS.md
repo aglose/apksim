@@ -1475,6 +1475,13 @@ its certificate). Any option turns it on; without one, the hooks cost one static
   `NetResolver.systemLookup`, `--network-host` honoured, the app's TLS factory), answered with `X-Apksim-Replay: fetched`
   and kept in `Net.fetched` (OUT, saved as a recording is, `Recording.tapless`); a repeat is answered from it (one fetch
   per match key, `fetchLocks`); failures are unmatched as with `fail`. Launches cold unless OUT is under STATE.
+  Servers that sign in with a cookie: a fetched answer's redacted headers' values (`Set-Cookie`) go to `OUT.secrets`
+  (mode 600, written before OUT, never in the HAR; `Recording.saveSecrets`/`loadSecrets`, `Entry.secretResp`), and a
+  replay of a recording with a `.secrets` file beside it sends them to the app (`writeRecorded`), so later fetches are
+  signed in; `crawl.py`'s `NetFreeze` merges and copies it with `network.har`. A fetched 401/403 after a replayed answer
+  whose redacted header had no value, or a 401 after one that had, is not kept (`NetEngine.lostCredential`: answered,
+  logged once per host, counted in the status line, `log._apksimNotKept` and crawl.json's `network.not_kept`). Before,
+  a replayed login left the app without its cookie and the server's 401 to every later fetch was frozen.
   `scripts/check-net-fetch.sh` (`FetchCheck`, CI quick checks).
 - Not covered: Ktor CIO and other NIO `SocketChannel` clients, `new Socket(host, port)`, Cronet's native stack
   (docs/network.md says what it would need), replay of WebSockets and of HTTP/2-only clients such as gRPC (recorded,

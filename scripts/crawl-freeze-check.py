@@ -93,6 +93,50 @@ def main():
           "crawl.json records the clock and the recording, with what launches fetched until then", str(ws))
     net.finish()
     check(not [n for n in os.listdir(net.dir) if n.startswith("replay-")], "the launches' copies are removed at the end")
+
+    # A server that signs in with a cookie: apksim keeps the cookie beside what a launch fetched (FILE.secrets, mode 600),
+    # and counts in the file the 401/403 answers it left out. The walk carries both.
+    sec = crawl.NetFreeze(tempfile.mkdtemp(prefix="crawl-freeze-check-secrets-"))
+    f0 = sec.options("new-0")[4][len("fetch:"):]
+    login = entry("https://api.example/login", "welcome", "POST", '{"u":1}')
+    login["startedDateTime"] = "2026-11-27T10:00:00.000Z"
+    login["response"]["headers"] = [{"name": "Set-Cookie", "value": "REDACTED"}]
+    write(f0, har(login, entry("https://api.example/me", "A")))
+    item = {"method": "POST", "url": "https://api.example/login", "startedDateTime": "2026-11-27T10:00:00.000Z",
+            "responseHeaders": [{"name": "Set-Cookie", "value": "sid=s3cret"}]}
+    write(f0 + ".secrets", {"entries": [item]})
+    # Another instance signed in too, later: its answer (and cookie) lose to the first, as the entry does.
+    f1 = sec.options("new-1")[4][len("fetch:"):]
+    login2 = json.loads(json.dumps(login))
+    login2["startedDateTime"] = "2026-11-27T10:00:01.000Z"
+    doc1 = har(login2)
+    doc1["log"]["_apksimNotKept"] = {"count": 2, "requests": [
+        {"method": "GET", "url": "https://api.example/sessions/1", "status": 401, "reason": "no cookie"}]}
+    write(f1, doc1)
+    write(f1 + ".secrets", {"entries": [dict(item, startedDateTime="2026-11-27T10:00:01.000Z",
+                                             responseHeaders=[{"name": "Set-Cookie", "value": "sid=other"}])]})
+    sec.merge_all()
+    msec = sec.master + ".secrets"
+    text = open(msec).read() if os.path.exists(msec) else ""
+    check("sid=s3cret" in text and "sid=other" not in text, "a fetched sign-in's cookie is merged beside the recording, the first kept", text)
+    check(os.path.exists(msec) and (os.stat(msec).st_mode & 0o777) == 0o600, "network.har.secrets is its owner's alone")
+    check("s3cret" not in open(sec.master).read(), "and never in the recording itself")
+    check(not os.path.exists(f0 + ".secrets") and not os.path.exists(f1 + ".secrets"), "merged .secrets files are removed")
+    r2 = sec.options("new-0")[2]
+    check(os.path.exists(r2 + ".secrets") and "sid=s3cret" in open(r2 + ".secrets").read()
+          and (os.stat(r2 + ".secrets").st_mode & 0o777) == 0o600, "a launch's copy of the recording has its secrets beside it")
+    crawl.NET = sec
+    ws = crawl.walk_settings()["network"]
+    check(ws.get("not_kept") == 2 and ws.get("not_kept_requests", [{}])[0].get("status") == 401,
+          "crawl.json counts the 401/403 answers launches fetched and did not keep", str(ws))
+    write(f1, doc1)  # the launch, still running, writes its file again: the same two, not two more
+    sec.merge_all()
+    check(sec.not_kept == 2, "a running launch's file merged twice is counted once", str(sec.not_kept))
+    seeded2 = crawl.NetFreeze(tempfile.mkdtemp(prefix="crawl-freeze-check-seeded2-"), os.path.dirname(sec.master))
+    check(os.path.exists(seeded2.master + ".secrets") and "sid=s3cret" in open(seeded2.master + ".secrets").read(),
+          "a seeded walk starts with its seed's secrets too")
+    sec.finish()
+    check(not [n for n in os.listdir(sec.dir) if n.startswith("replay-")], "the copies' secrets are removed at the end with them")
     # With APKSIM_HOME set, NetFreeze keeps per-launch fetch files under APKSIM_HOME/tmp so --standby stays warm.
     fake_home = tempfile.mkdtemp(prefix="crawl-freeze-home-")
     old_home = os.environ.get("APKSIM_HOME")

@@ -34,7 +34,8 @@ import javax.net.ssl.X509TrustManager;
  * TLS, a POST body, a gzip answer), answered and appended to OUT with recordings' redaction; a repeat, on the same
  * connection, a new one or two at once, reaches the server once; a server that is down and a connection that is not HTTP
  * give the 599 and are listed as unmatched; IN is not changed; OUT holds the fetched exchanges alone and is written ~300 ms
- * after an exchange. `no-replay` checks that the policy without --network replay stops the launch.
+ * after an exchange. `no-replay` checks that the policy without --network replay stops the launch; `session 1|2|3 DIR`
+ * a server that signs in with a cookie, over three launches (see {@link #session}).
  * Run by scripts/check-net-fetch.sh; exits 1 on any failure.
  */
 public final class FetchCheck {
@@ -68,12 +69,13 @@ public final class FetchCheck {
               hits.computeIfAbsent(path, k -> new AtomicInteger()).incrementAndGet();
               int len = 0;
               boolean gzipOk = false;
-              String auth = "";
+              String auth = "", cookie = "";
               for (String h : head.split("\r\n")) {
                 String l = h.toLowerCase();
                 if (l.startsWith("content-length:")) len = Integer.parseInt(h.substring(15).trim());
                 if (l.startsWith("accept-encoding:") && l.contains("gzip")) gzipOk = true;
                 if (l.startsWith("authorization:")) auth = h.substring(14).trim();
+                if (l.startsWith("cookie:")) cookie = h.substring(7).trim();
               }
               byte[] reqBody = in.readNBytes(len);
               byte[] body;
@@ -103,11 +105,19 @@ public final class FetchCheck {
                   o.flush();
                   return;
                 }
+                case "/login" -> {
+                  body = "welcome".getBytes(StandardCharsets.UTF_8);
+                  extra = "Set-Cookie: " + SESSION + "; Path=/; HttpOnly\r\n";
+                }
                 default -> body = ("path " + path).getBytes(StandardCharsets.UTF_8);
               }
               int status = path.equals("/missing") ? 404 : 200;
+              // A server that signs in with a session cookie: /private* only with it, /expired never, /forbidden for nobody.
+              if (path.startsWith("/private") && !cookie.equals(SESSION) || path.equals("/expired")) status = 401;
+              if (path.equals("/forbidden")) status = 403;
+              if (status == 401 || status == 403) body = "{\"detail\":\"Unauthorized\"}".getBytes(StandardCharsets.UTF_8);
               OutputStream o = c.getOutputStream();
-              o.write(("HTTP/1.1 " + status + (status == 200 ? " OK" : " Not Found") + "\r\nContent-Type: text/plain\r\n" + extra
+              o.write(("HTTP/1.1 " + status + (status == 200 ? " OK" : status == 404 ? " Not Found" : " Refused") + "\r\nContent-Type: text/plain\r\n" + extra
                   + "Content-Length: " + body.length + "\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
               o.write(body);
               o.flush();
@@ -138,6 +148,111 @@ public final class FetchCheck {
   }
 
   private static SSLContext clientTls;
+
+  static final String SESSION = "sid=s3cret-session-cookie";
+  private static final java.util.Set<String> REDACT = java.util.Set.of("authorization", "proxy-authorization", "cookie", "set-cookie");
+
+  @SuppressWarnings("unchecked")
+  private static long notKept(Path har) throws IOException {
+    entries(har);
+    return lastLog.get("_apksimNotKept") instanceof Map<?, ?> m ? ((Number) ((Map<String, Object>) m).get("count")).longValue() : 0;
+  }
+
+  /**
+   * A server that signs in with a session cookie, over three launches (one process each: Net is configured once).
+   * `1`: nothing recorded, the sign-in and a private request are fetched; the cookie is in OUT.secrets (owner only), not OUT.
+   * `2`: launch 1's OUT replayed with its .secrets: the replayed sign-in gives the app the cookie, so a request the
+   * recording lacks is fetched with it and kept; a 401 the server gives that cookie is not kept, a 403 is.
+   * `3`: the same recording without its .secrets (as shared): the app gets no cookie, the 401 its fetch gets reaches the
+   * app, is not kept, is logged and counted, and is asked of the server again; another host's 401 is kept.
+   */
+  private static void session(String phase, Path dir) throws Exception {
+    int port = serve(new ServerSocket(0, 50, InetAddress.getLoopbackAddress()));
+    Path first = dir.resolve("launch1.har"), firstSecrets = dir.resolve("launch1.har.secrets");
+    Path in, out = dir.resolve("launch" + phase + ".har");
+    switch (phase) {
+      case "1" -> {
+        in = dir.resolve("empty.har");
+        Files.writeString(in, "{\"log\":{\"version\":\"1.2\",\"entries\":[]}}");
+      }
+      case "2" -> in = first;
+      default -> {
+        in = dir.resolve("shared.har");
+        Files.copy(first, in);
+      }
+    }
+    System.setProperty("apksim.netCheckLoopback", "true");
+    System.setProperty("apksim.network", "replay:" + in);
+    System.setProperty("apksim.networkUnmatched", "fetch:" + out);
+    System.setProperty("apksim.networkHost", "api.fetch.test=127.0.0.1:" + port + ",www.fetch.test=127.0.0.1:" + port + ",other.test=127.0.0.1:" + port);
+    Net.configure();
+    Answer login;
+    try (Socket s = connect("api.fetch.test", 80, false)) {
+      login = ask(s, "POST", "api.fetch.test", "/login", "Content-Type: application/json\r\n", "{\"user\":\"u\"}".getBytes(StandardCharsets.UTF_8));
+    }
+    String got = login.header("Set-Cookie");
+    // What an app's cookie jar would now send.
+    String jar = got == null ? "" : "Cookie: " + got.split(";")[0] + "\r\n";
+    if (phase.equals("1")) {
+      check(login.status == 200 && got != null && got.startsWith(SESSION) && hits("/login") == 1, "launch 1: the sign-in is fetched, its Set-Cookie to the app: " + got);
+      Answer p;
+      try (Socket s = connect("api.fetch.test", 80, false)) {
+        p = ask(s, "GET", "api.fetch.test", "/private/1", jar, null);
+      }
+      check(p.status == 200, "launch 1: a private request with the cookie: " + p.status);
+      Net.flush();
+      check(entries(out).size() == 2 && !Files.readString(out).contains("s3cret"), "launch 1: OUT has both, the cookie redacted");
+      check(Files.exists(firstSecrets) && Files.readString(firstSecrets).contains(SESSION), "launch 1: OUT.secrets has the cookie");
+      String mode = Files.exists(firstSecrets) ? java.nio.file.attribute.PosixFilePermissions.toString(Files.getPosixFilePermissions(firstSecrets)) : "";
+      check(mode.equals("rw-------"), "launch 1: OUT.secrets is its owner's alone: " + mode);
+      check(!Files.exists(dir.resolve("launch1.har.secrets.apksim-tmp")), "launch 1: its temporary file was renamed over it");
+      Recording plain = Recording.load(out, new Recording.Match(java.util.Set.of("method", "url", "body"), java.util.Set.of(), java.util.Set.of(), REDACT));
+      check(plain.entries.stream().anyMatch(e -> e.secretResp != null), "launch 1: OUT loads with its secrets");
+      return;
+    }
+    if (phase.equals("2")) {
+      check(login.status == 200 && "recorded".equals(login.header("X-Apksim-Replay")) && hits("/login") == 0 && got != null && got.startsWith(SESSION),
+          "launch 2: the replayed sign-in gives the app the cookie from .secrets: " + got);
+      Answer p, old, exp, forb;
+      try (Socket s = connect("api.fetch.test", 80, false)) {
+        old = ask(s, "GET", "api.fetch.test", "/private/1", jar, null);
+        p = ask(s, "GET", "api.fetch.test", "/private/2", jar, null);
+        exp = ask(s, "GET", "api.fetch.test", "/expired", jar, null);
+        forb = ask(s, "GET", "api.fetch.test", "/forbidden", jar, null);
+      }
+      check(old.status == 200 && hits("/private/1") == 0, "launch 2: what the recording has is replayed");
+      check(p.status == 200 && "fetched".equals(p.header("X-Apksim-Replay")) && hits("/private/2") == 1,
+          "launch 2: a request the recording lacks is fetched with the cookie: " + p.status + " " + p.text());
+      check(exp.status == 401 && forb.status == 403, "launch 2: the server's refusals reach the app: " + exp.status + " " + forb.status);
+      Net.flush();
+      List<Map<String, Object>> es = entries(out);
+      check(with(es, "/private/2").size() == 1 && with(es, "/expired").isEmpty() && with(es, "/forbidden").size() == 1,
+          "launch 2: the 200 and the 403 are kept, the 401 given to the replayed cookie is not");
+      check(notKept(out) == 1, "launch 2: and it is counted in OUT: " + notKept(out));
+      check(!Files.readString(out).contains("s3cret"), "launch 2: no cookie in OUT");
+      return;
+    }
+    check(login.status == 200 && hits("/login") == 0 && got == null, "launch 3 (no .secrets): the replayed sign-in sets no cookie: " + got);
+    Answer p, again, www, missing, other;
+    try (Socket s = connect("api.fetch.test", 80, false)) {
+      p = ask(s, "GET", "api.fetch.test", "/private/2", jar, null);
+      again = ask(s, "GET", "api.fetch.test", "/private/2", jar, null);
+      missing = ask(s, "GET", "api.fetch.test", "/missing", jar, null);
+    }
+    www = get("www.fetch.test", 80, false, "/private/3");
+    other = get("other.test", 80, false, "/private/4");
+    check(p.status == 401 && "fetched".equals(p.header("X-Apksim-Replay")) && again.status == 401 && hits("/private/2") == 2,
+        "launch 3: the 401 reaches the app and is asked of the server each time: " + p.status + ", " + hits("/private/2") + " hits");
+    check(www.status == 401 && other.status == 401 && missing.status == 404, "launch 3: the other answers: " + www.status + " " + other.status + " " + missing.status);
+    String status = Net.command(new String[] {"network"});
+    check(status.contains("2 fetched, 3 fetched and not kept"), "launch 3: the status line counts them: " + status);
+    Net.flush();
+    List<Map<String, Object>> es = entries(out);
+    check(with(es, "/private/2").isEmpty() && with(es, "/private/3").isEmpty(), "launch 3: the 401s of the sign-in's site are not kept");
+    check(with(es, "/missing").size() == 1 && with(es, "/private/4").size() == 1, "launch 3: a 404, and another site's 401, are");
+    check(notKept(out) == 3, "launch 3: OUT counts what it left out: " + notKept(out));
+    check(!Files.exists(dir.resolve("launch3.har.secrets")), "launch 3: no .secrets is written for nothing");
+  }
 
   /** As app code connects: through Net.connect, with TLS layered by the app's factory through Net.createSocket. */
   private static Socket connect(String host, int port, boolean tls) throws IOException {
@@ -215,6 +330,11 @@ public final class FetchCheck {
   }
 
   public static void main(String[] args) throws Exception {
+    if (args.length == 3 && args[0].equals("session")) {
+      session(args[1], Path.of(args[2]));
+      System.out.println(failures == 0 ? "all ok" : failures + " FAILED");
+      System.exit(failures == 0 ? 0 : 1);
+    }
     Path dir = Files.createTempDirectory("fetchcheck");
     if (args.length == 1 && args[0].equals("no-replay")) {
       System.setProperty("apksim.networkUnmatched", "fetch:" + dir.resolve("out.har"));
