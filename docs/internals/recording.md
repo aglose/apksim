@@ -31,7 +31,11 @@ code comment cites as `AGENTS.md "Name"` is in one of these files: AGENTS.md's i
   sign-in"): the recorder keeps left-out characters in memory (`FlightRecorder.LeftOut`) and a save writes the
   requests that carried them with as many `x` (`Recording.scrub`, `_apksimRedactedInput`; any request with that method
   and URL also matches such an entry whatever its body). The left-out runs are never dropped for age (a request that
-  carried one can be newer than the window), only past 64; a key with Ctrl or Meta ends a run and adds nothing; an unmatched request that differs only in query values names `--network-ignore-query NAME`, and
+  carried one can be newer than the window), only past 64; a key with Ctrl or Meta ends a run and adds nothing; `Secrets` (`apksim rec secrets`, docs/replay.md "Passwords in a recording"): a run in a password field has a name
+  (`"secret": "s1"` on its events, `secretDelete` on a Delete within it); a save seals the values (X25519, HKDF, AES-GCM, JDK providers by name) to
+  `~/.apksim-secrets/public.key` (the launcher's `-Dapksim.rec.seal`; not with `--no-autofill`) in `STATE/secrets/ID.sealed`; `ReplayPlan.passwords` opens them outside the sandbox
+  (Keychain through `security`, the key on its stdin, or `APKSIM_SECRETS_KEY_FILE`) and prints them as its first line, which the launcher puts on descriptor 9 (`--replay-secrets 9`, a pipe,
+  cold launch; not a here-string, which bash 3.2 writes to the temp folder); `Replay` types the run's final text over its events, only into a password field, and `NetEngine.blanked` makes the request that is matched, logged and reported. `scripts/check-secrets.sh` (CI), `scripts/replay-check.py --secrets` (by hand); an unmatched request that differs only in query values names `--network-ignore-query NAME`, and
   `apksim replay --loose` (`--network-loose`) answers it from the closest such entry, marked in the report.
   `scripts/bisect-rec.py BUNDLE BUILD...`: the first build whose replay diverges, an HTML report (`bisect-rec-check.py`).
   `apksim replay --journey` writes journey.json (taps resolved to nodes: `Journey`), run by `scripts/journey.py` (JUnit XML; `journey-start-check.py`: its start and steps' timing, against a stand-in apksim; `check-journey.sh`: `JourneyCheck`, which texts it may expect and how taps and presses become steps, on a stand-in screen).

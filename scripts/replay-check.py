@@ -15,6 +15,8 @@ with the fixture server stopped, so every answer must come from the bundle's HAR
      with --changed APK, also that build (`--apk`, same signer) must diverge;
   4. records a crash (apksim://crash?kind=post, which saves a crash bundle by itself) and replays it: exit 10, and
      the report says the app crashed;
+  With --secrets only: passwords kept apart from a recording (apksim rec secrets), with a key file and a home folder of
+     its own under OUT: typed again, matched exactly, in no report, log or journey; from a file; off; without the key.
   5. first records a password typed, a checkpoint, the sign-in sent and a 5 s window saved once the typing is older
      than it (the password must not be in the HAR); then records a session with a typed sign-in (apksim://network?signin=1: a user and a password typed into fields, a
      POST with both in its body, a GET with an id made at run time in its query, and a connect to a mapped host
@@ -394,6 +396,172 @@ def by_url(r, part):
     return [e for e in r.get("requests", {}).get("entries", []) if part in e["url"]]
 
 
+def secrets_checks(fport, stop):
+    """Passwords kept apart from the recording (apksim rec secrets), on this Mac or a Linux host: no container's home."""
+    print("== a sign-in whose password is kept for replays")
+    home = os.path.join(a.out, "home")
+    os.makedirs(home)
+    env = {"HOME": home, "APKSIM_SECRETS_KEY_FILE": os.path.join(a.out, "secrets.key")}
+    os.environ.update(env)
+    apksim = os.path.join(ROOT, "apksim")
+    on = subprocess.run([apksim, "rec", "secrets", "on"], capture_output=True, text=True, timeout=90)
+    if not check(on.stdout.startswith("on:") and env["APKSIM_SECRETS_KEY_FILE"] in on.stdout, f"apksim rec secrets on, with the key file: {on.stdout}{on.stderr}"):
+        return  # never the Keychain from here
+    before = set(subprocess.run([apksim, "rec", "secrets", "list"], capture_output=True, text=True).stdout.split())
+    host = ["--network-host", f"api.apksim.test=127.0.0.1:{fport}", "--network-trust", os.path.join(a.out, "fixture/cert.pem")]
+    p, port = launch("secrets-rec", ["--headless", "--fresh", "--rec", "all", "--rec-checkpoint", "0",
+                                     "--feature", "dev.apksim.testapp.no_timings"] + host + [a.apk], "record-secrets.log", port=True)
+    d = Drive(port, os.path.join(a.out, "record-secrets.log"))
+    d("settle 20000")
+    for _ in range(20):
+        if d("rec checkpoint now").startswith("checkpoint #"):
+            break
+        time.sleep(0.5)
+    time.sleep(1)
+    d("open apksim://network?signin=1")
+    d("settle 10000")
+    d.tap_text("User")
+    time.sleep(0.3)
+    d("type ada")
+    time.sleep(0.3)
+    d.tap_text("Password")
+    time.sleep(0.3)
+    d("type " + PASSWORD[:-2] + "zz")  # a slip, deleted and typed again
+    d("key DEL 2")
+    d("type " + PASSWORD[-2:])
+    time.sleep(0.3)
+    d.tap_text("Sign in")
+    r = d.wait_text(lambda t: t.startswith("signin:") and not t.endswith(("idle", "fetching")))
+    check(r == "signin: 200 Welcome, ada", f"signed in at the fixture: {r}")
+    d("rec clear")  # what was typed is still known
+    time.sleep(0.5)
+    d.tap_text("Sign in")
+    time.sleep(2)
+    cleared = os.path.join(a.out, "secrets-cleared.apkrec")
+    d("rec save 60 " + cleared)
+    for _ in range(100):
+        if "KB in" in d("rec"):
+            break
+        time.sleep(0.2)
+    d("quit")
+    finish(p, 60)
+    har = zipfile.ZipFile(cleared).read("network.har")
+    check(b"/v1/signin" in har and PASSWORD.encode() not in har, "a sign-in sent after `rec clear` does not hold the password typed before it")
+
+    p, port = launch("secrets-paste", ["--headless", "--fresh", "--rec", "all", "--rec-checkpoint", "0",
+                                       "--feature", "dev.apksim.testapp.no_timings"] + host + [a.apk],
+                     "record-paste.log", port=True)
+    d = Drive(port, os.path.join(a.out, "record-paste.log"))
+    d("settle 20000")
+    d("open apksim://network?signin=1")
+    d("settle 10000")
+    d.tap_text("User")
+    time.sleep(0.3)
+    d("type ada")
+    d.tap_text("Password")
+    time.sleep(0.5)
+    d("clipboard set " + PASSWORD)
+    d("key V 1 ctrl")
+    time.sleep(0.5)
+    d.tap_text("Sign in")
+    r = d.wait_text(lambda t: t.startswith("signin:") and not t.endswith(("idle", "fetching")))
+    check(r == "signin: 200 Welcome, ada", f"signed in with a pasted password: {r}")
+    time.sleep(1)
+    pasted = os.path.join(a.out, "secrets-pasted.apkrec")
+    d("rec save 60 " + pasted)
+    for _ in range(100):
+        if "KB in" in d("rec"):
+            break
+        time.sleep(0.2)
+    d("quit")
+    finish(p, 60)
+    z = zipfile.ZipFile(pasted)
+    check(not [n for n in z.namelist() if PASSWORD.encode() in z.read(n)], "a password pasted with Ctrl+V is nowhere in the bundle")
+
+    p, port = launch("secrets-rec2", ["--headless", "--fresh", "--rec", "all", "--rec-checkpoint", "0",
+                                      "--feature", "dev.apksim.testapp.no_timings"] + host + [a.apk], "record-secrets2.log", port=True)
+    d = Drive(port, os.path.join(a.out, "record-secrets2.log"))
+    d("settle 20000")
+    for _ in range(20):
+        if d("rec checkpoint now").startswith("checkpoint #"):
+            break
+        time.sleep(0.5)
+    time.sleep(1)
+    d("open apksim://network?signin=1")
+    d("settle 10000")
+    d.tap_text("User")
+    time.sleep(0.3)
+    d("type ada")
+    time.sleep(0.3)
+    d.tap_text("Password")
+    time.sleep(0.3)
+    d("type " + PASSWORD[:-2] + "zz")
+    d("key DEL 2")
+    d("type " + PASSWORD[-2:])
+    time.sleep(0.3)
+    d.tap_text("Sign in")
+    r = d.wait_text(lambda t: t.startswith("signin:") and not t.endswith(("idle", "fetching")))
+    check(r == "signin: 200 Welcome, ada", f"signed in again: {r}")
+    d.wait_text(lambda t: t.startswith("profile:") and not t.endswith(("idle", "fetching")))
+    time.sleep(1.5)
+    bundle = os.path.join(a.out, "secrets.apkrec")
+    d("rec save 60 " + bundle)
+    for _ in range(100):
+        if "KB in" in d("rec"):
+            break
+        time.sleep(0.2)
+    d("quit")
+    finish(p, 60)
+    z = zipfile.ZipFile(bundle)
+    man = json.loads(z.read("manifest.json"))
+    s = man.get("secrets", {})
+    check(re.fullmatch("[0-9a-f]{32}", s.get("id", "")) is not None and s.get("items") == [{"name": "s1", "length": len(PASSWORD)}],
+          f"the manifest names the secret and its length: {s}")
+    check(not [n for n in z.namelist() if PASSWORD.encode() in z.read(n)], "the password is nowhere in the bundle")
+    new = set(subprocess.run([apksim, "rec", "secrets", "list"], capture_output=True, text=True).stdout.split()) - before
+    check(s.get("id") in new, f"it is kept, sealed: {new}")
+
+    def replay(name, extra, want, what):
+        r = replay_exit(name, bundle, CARET + ["--loose"] + extra, want, what)
+        held = []
+        for root, _, files in os.walk(os.path.join(a.out, name)):
+            held += [f for f in files if PASSWORD.encode() in open(os.path.join(root, f), "rb").read()]
+        check(not held and PASSWORD not in read(os.path.join(a.out, name + ".log")), f"{name}: its report and log do not hold the password {held}")
+        return r
+
+    r = replay("secrets-a", ["--journey"], 0, "the sign-in replayed with its kept password")
+    si = by_url(r, "/v1/signin")
+    check(len(si) == 1 and si[0]["matched"] == ["exact"] and r.get("secretInput", 0) >= len(PASSWORD) and not r.get("redactedInput"),
+          f"the real password was typed and the request matched exactly: {si}, {r.get('secretInput')} typed, {r.get('redactedInput')} placeholders")
+    f = os.path.join(a.out, "other.properties")
+    with open(f, "w") as o:
+        o.write("s1=another, longer pass phrase\n")
+    r = replay("secrets-b", ["--secrets", f], 0, "another account's password, of another length, from a file")
+    si = by_url(r, "/v1/signin")
+    check(len(si) == 1 and si[0]["matched"] == ["exact"], f"it matched exactly too: {si}")
+    r = replay("secrets-c", ["--secrets", "off"], 0, "with --secrets off")
+    check(r.get("redactedInput", 0) >= len(PASSWORD) and not r.get("secretInput"), "x was typed")
+    # Too short to be blanked (4 characters or more are): really typed, it is not the x the recording holds, so the body
+    # differs and the entry answers by its mark. (Placeholders match exactly, so an exact match alone proves nothing.)
+    with open(f, "w") as o:
+        o.write("s1=abc\n")
+    r = replay_exit("secrets-short", bundle, CARET + ["--loose", "--secrets", f], 0, "a password too short to blank")
+    si = by_url(r, "/v1/signin")
+    check(len(si) == 1 and si[0]["matched"] == ["redacted-input"], f"what was sent is what was given, not x: {si}")
+    q = subprocess.run([apksim, "replay", "--live-network", "--headless", "--exit-after-first-frame", bundle], capture_output=True, text=True, timeout=120)
+    check("x is typed for passwords (a live replay" in q.stderr, "a live replay types none unless asked")
+    stop()
+    q = subprocess.run([apksim, "replay", "--secrets", "store", "--network", "record", os.path.join(a.out, "x.har"), bundle], capture_output=True, text=True)
+    check(q.returncode == 2 and "cannot be used with --network" in q.stderr, f"refused with a recording of what is sent: {q.stderr.strip()}")
+    # Another key: what is kept does not open, and the replay goes on with x.
+    os.environ["APKSIM_SECRETS_KEY_FILE"] = os.path.join(a.out, "none.key")
+    r = replay("secrets-d", [], 0, "without the key")
+    check(r.get("redactedInput", 0) >= len(PASSWORD) and "x is typed" in read(os.path.join(a.out, "secrets-d.log")), "x was typed, and stderr says why")
+    os.environ["APKSIM_SECRETS_KEY_FILE"] = env["APKSIM_SECRETS_KEY_FILE"]
+    for i in new:
+        subprocess.run([apksim, "rec", "secrets", "forget", i], capture_output=True)
+
+
 def signin_checks(fport, stop):
     late_checkpoint(fport)
     bundle, entries = record_signin(fport)
@@ -459,6 +627,7 @@ def main():
     ap.add_argument("out", nargs="?", default=os.path.join(ROOT, "work/replay-check"))
     ap.add_argument("--image")
     ap.add_argument("--changed")
+    ap.add_argument("--secrets", action="store_true", help="only the checks of kept passwords (not in the image)")
     a = ap.parse_args()
     a.out = os.path.abspath(a.out)
     for f in [a.apk] + ([a.changed] if a.changed else []):
@@ -490,6 +659,9 @@ def main():
                 time.sleep(0.1)
             if not fport:
                 raise SystemExit("the fixture server did not start")
+        if a.secrets:
+            secrets_checks(fport, lambda: (fixture.terminate(), fixture.wait()))
+            return done()
         bundle, end = record(fport)
         if fixture:
             fixture.terminate()
@@ -569,6 +741,10 @@ def main():
         if a.image:
             for n in ["rec", "a", "replay-b", "replay-c", "replay-d", "crash", "replay-crash", "rec2", "signin-a", "signin-b", "signin-c", "signin-d"]:
                 subprocess.run(["docker", "rm", "-f", f"replaycheck-{n}"], capture_output=True)
+    done()
+
+
+def done():
     print()
     if problems:
         print(f"replay-check: {len(problems)} problem(s):")

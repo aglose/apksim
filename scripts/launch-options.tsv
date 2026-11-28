@@ -79,6 +79,7 @@ option	value	cli	serve	beam	mcp	note
 --record-size	value	yes	no: test-run movies write files	no: test-run movies write files	no: test-run movies write files	
 --replay-dir	value	yes	no: reads a host folder	no: reads a host folder	no: reads a host folder	
 --replay-out	value	yes	no: writes files	no: writes files	no: writes files	
+--replay-secrets	value	yes	no: a launcher's own descriptor	no: a launcher's own descriptor	no: a launcher's own descriptor	
 --sdcard-file	value	yes	yes	yes	yes	
 --sensor	value	yes	no: undecided	no: undecided	no: undecided	
 --serial	value	yes	yes	yes	yes	

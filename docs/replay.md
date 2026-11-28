@@ -163,6 +163,41 @@ path are not covered (`--network-match method,url` for the first).
 **Servers that were not there.** See [network.md](network.md) "Failed connects": the connect fails in the replay as it
 failed in the recording, instead of the app retrying against 599s.
 
+## Passwords in a recording
+
+A recording never holds a password typed into it, so by default a replay types `x` for each character. To replay a
+sign-in with the real one, have apksim keep passwords apart from the recordings:
+
+```
+apksim rec secrets on            # once; off | list | forget ID|all
+apksim replay session.apkrec     # types the kept password, on this machine
+apksim replay --secrets test.properties session.apkrec   # another account's: s1=VALUE lines (the manifest names them)
+apksim replay --secrets off session.apkrec               # x, as before
+```
+
+- **Off until you turn it on.** On, instances started from then on keep each password typed into a password field, when
+  a recording with it is saved, in `secrets/ID.sealed` in the state folder (`~/.apksim`), until `forget`. The recording has only the ID, the names (`s1`, `s2`)
+  and lengths, so it can be sent to someone else; they give their own with `--secrets FILE`.
+- **Who can open them.** The recorder runs in the app's sandbox with a public key only (`~/.apksim-secrets/public.key`,
+  which an app may read and not change), so no app can open what it or another sealed. The private key is in your login
+  Keychain, which the sandbox cannot reach; `apksim replay` reads it outside the sandbox. Anything that runs as you
+  outside the sandbox can read it too. On Linux, in CI or over SSH, `APKSIM_SECRETS_KEY_FILE=FILE` (mode 600) is used
+  instead (keep it in `~/.config`, which the Mac sandbox does not let apps read).
+- **What they are bound to.** The recording's random ID, the app's package and its signing key, taken from the APK about
+  to run: a sealed file copied under another recording's ID does not open for another app. Anyone can seal (the key
+  is public): an app could replace a sealed file so that a replay types something else, not learn what was in it.
+- **Where they go.** From the replay's plan to the app's process through a pipe: not its arguments, its environment or a
+  file. They are typed only while a password field has the focus; anywhere else `x` is. Such a launch is always cold.
+- **Matching** is exact again: what the app sends is blanked as the recording is before it is compared (4 characters or
+  more, in the URL and body, with as many `x` as the recorded password was long, so another account's matches too).
+  Reports, logs and `journey.json` hold the placeholder.
+- **A live replay** (`--live-network`, or a recording with no `net` channel) sends them to the real server, so it types
+  them only with `--secrets store` or `--secrets FILE`. With options that keep or show what the app sends (`--rec`,
+  `--network`, `--network-unmatched`, `--network-inspect`, `--jvm`, `--debug`) they are never typed.
+- **Not kept:** by `apksim serve` and `apksim beam`, replays and crawls (`--no-autofill`); text pasted outside a
+  password field; a password typed on both sides of a checkpoint (`x` is typed for the rest); keys whose character the key map does not give. `scripts/replay-adb.py` and `journey.py` type
+  placeholders.
+
 ## Divergence
 
 The recorder keeps frames of the presented screen at most 5 a second, scaled to 960 pixels on the long side and

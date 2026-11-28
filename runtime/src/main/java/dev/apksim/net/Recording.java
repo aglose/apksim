@@ -606,6 +606,11 @@ final class Recording {
    * one: "pass" is not found in "passport". Bytes, so a body that is not text is searched too.
    */
   static byte[] scrub(byte[] data, String secret) {
+    return scrub(data, secret, secret.length());
+  }
+
+  /** With `length` x for each (a replay's own password standing for a recorded one of that length). */
+  static byte[] scrub(byte[] data, String secret, int length) {
     if (data == null || data.length == 0 || secret.length() < TYPED_MIN) return null;
     int[] cps = secret.codePoints().toArray();
     byte[][] raw = new byte[cps.length][];
@@ -621,7 +626,7 @@ final class Recording {
       if (end < 0) continue;
       if (out == null) out = new java.io.ByteArrayOutputStream(data.length);
       out.write(data, copied, at - copied);
-      for (int i = 0; i < secret.length(); i++) out.write('x');
+      for (int i = 0; i < length; i++) out.write('x');
       copied = end;
       at = end - 1;
     }

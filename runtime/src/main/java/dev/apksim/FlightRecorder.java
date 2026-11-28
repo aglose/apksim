@@ -179,8 +179,8 @@ final class FlightRecorder {
         Rec.NET.clear(now);
         Net.clearCaptured();  // the in-memory capture; a --network record file keeps its own
         redacted = 0;
+        // What was typed stays known (in memory): the request that carries it may be sent after the clear.
         synchronized (leftOut) {
-          leftOut.clear();
           typing = null;
         }
         List<Checkpoint> gone;
@@ -316,30 +316,78 @@ final class FlightRecorder {
     final StringBuilder text = new StringBuilder();
     /** A key whose character is not known: the run is not looked for. */
     boolean unknown;
+    /** Its name in the journal (`"secret": "s1"`) for a run typed or pasted into a password field, else null. */
+    final String secret;
+    /** How many events typed it. */
+    int events;
 
-    LeftOut(boolean pasted) {
+    LeftOut(boolean pasted, boolean password) {
       this.pasted = pasted;
+      this.secret = password ? "s" + ++secrets : null;
     }
   }
+
+  private static int secrets;
 
   private static final List<LeftOut> leftOut = new ArrayList<>();
   private static LeftOut typing;
   private static final int LEFT_OUT_RUNS = 64;
 
-  private static void leftOut(boolean pasted, int ch) {
+  /** One left-out character; answers its run's name when it went into a password field. */
+  private static String leftOut(boolean pasted, boolean password, int ch) {
     synchronized (leftOut) {
-      leftOutLocked(pasted, ch);
+      if (typing == null || typing.pasted != pasted || (typing.secret != null) != password) {
+        typing = new LeftOut(pasted, password);
+        addLeftOut(typing);
+      }
+      if (ch <= 0) typing.unknown = true;
+      else typing.text.appendCodePoint(ch);
+      typing.events++;
+      return typing.secret;
     }
   }
 
-  private static void leftOutLocked(boolean pasted, int ch) {
-    if (typing == null || typing.pasted != pasted) {
-      typing = new LeftOut(pasted);
-      leftOut.add(typing);
-      if (leftOut.size() > LEFT_OUT_RUNS) leftOut.remove(0);
+  private static void addLeftOut(LeftOut r) {
+    leftOut.add(r);
+    if (leftOut.size() > LEFT_OUT_RUNS) leftOut.remove(0);
+  }
+
+  /**
+   * A password that reached its field without being typed (autofill, the field's own text, a paste by Ctrl+V or the
+   * field's menu): looked for in the requests that follow, as typed text is. In memory only.
+   */
+  static void leftOutValue(CharSequence value) {
+    if (value == null || value.length() < 4 || value.length() > Secrets.MAX_VALUE) return;
+    String v = value.toString();
+    synchronized (leftOut) {
+      for (LeftOut r : leftOut) if (!r.unknown && r.text.toString().equals(v)) return;
+      LeftOut r = new LeftOut(true, false);
+      r.text.append(v);
+      addLeftOut(r);
     }
-    if (ch <= 0) typing.unknown = true;
-    else typing.text.appendCodePoint(ch);
+  }
+
+  /** The focused password field's own text, for a View's (Compose reports only bullets); cheap: every touch asks. */
+  private static void passwordField() {
+    try {
+      View root = Host.keyTarget(Host.rootViews());
+      if (root != null && root.findFocus() instanceof TextView tv && password(tv)) leftOutValue(tv.getText());
+    } catch (RuntimeException e) {
+      // as it was
+    }
+  }
+
+  /** Ctrl+V into a password field: what it puts there. */
+  private static void pastedByKey() {
+    if (!passwordFocused()) return;
+    try {
+      android.content.ClipboardManager c = (android.content.ClipboardManager)
+          org.robolectric.RuntimeEnvironment.getApplication().getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+      android.content.ClipData d = c == null ? null : c.getPrimaryClip();
+      if (d != null && d.getItemCount() > 0) leftOutValue(d.getItemAt(0).getText());
+    } catch (RuntimeException e) {
+      // as it was
+    }
   }
 
   /** The character a printable key types (with Shift when `meta` has it), or 0 when the key map cannot say. */
@@ -398,20 +446,27 @@ final class FlightRecorder {
       m.put("pasted", true);
       m.put("redacted", true);
       redacted++;
-      leftOut(true, (int) e.value());
+      String s = leftOut(true, passwordFocused(), (int) e.value());
+      if (s != null) m.put("secret", s);
     } else if (typed && passwordFocused()) {
       // What goes into a password field stays on this Mac; a replay types a placeholder there.
       m.put("redacted", true);
       redacted++;
       // A modifier's own key event (Shift going down) types nothing.
       if (t == SimWindow.CHAR || !android.view.KeyEvent.isModifierKey((int) e.value())) {
-        leftOut(false, t == SimWindow.CHAR ? (int) e.value() : keyChar((int) e.value(), (int) e.x()));
+        m.put("secret", leftOut(false, true, t == SimWindow.CHAR ? (int) e.value() : keyChar((int) e.value(), (int) e.x())));
       }
     } else {
+      if (t == SimWindow.DOWN || (t == SimWindow.KEY && !typed)) passwordField();
+      if (chord && (int) e.value() == android.view.KeyEvent.KEYCODE_V) pastedByKey();
       // Delete takes the last left-out character back; anything else that begins (a touch, a key, other text) ends the run.
       synchronized (leftOut) {
         if (t == SimWindow.KEY && !chord && (int) e.value() == android.view.KeyEvent.KEYCODE_DEL) {
-          if (typing != null && typing.text.length() > 0) typing.text.setLength(typing.text.offsetByCodePoints(typing.text.length(), -1));
+          if (typing != null && typing.text.length() > 0) {
+            typing.text.setLength(typing.text.offsetByCodePoints(typing.text.length(), -1));
+            // A replay that types the run's final text needs no Delete within it.
+            if (typing.secret != null) m.put("secretDelete", typing.secret);
+          }
         } else if (t == SimWindow.DOWN || t == SimWindow.TOUCH2_DOWN || t == SimWindow.KEY || t == SimWindow.CHAR || t == SimWindow.BACK) {
           typing = null;
         }
@@ -479,6 +534,11 @@ final class FlightRecorder {
    * can move between two of them without a touch (a PIN field that moves on by itself after each digit).
    */
   private static boolean passwordFocused() {
+    return passwordFocused(true);  // cannot tell: leave it out
+  }
+
+  /** `unknown`: the answer when it cannot be told (a replay types a kept password only when it can). */
+  static boolean passwordFocused(boolean unknown) {
     boolean pw = false;
     try {
       // The window the characters go to (Host.sendChar's), not merely the topmost one.
@@ -504,7 +564,7 @@ final class FlightRecorder {
         }
       }
     } catch (RuntimeException e) {
-      pw = true;  // could not tell: leave it out
+      pw = unknown;
     }
     return pw;
   }
@@ -1392,6 +1452,7 @@ final class FlightRecorder {
     }
     if (crash != null) Net.drain(2000);  // answers the app already has, being recorded, belong in the crash's HAR
     Object[] left = leftOutNow();
+    byte[] kept = secrets(manifest, events);
     int[] scrubbed = {0};
     java.util.function.Supplier<byte[]> har = Net.captured(w -> w >= start && Rec.NET.contains(w), (long[]) left[0], (String[]) left[1], scrubbed);
     List<Ring.Item<Map<String, Object>>> db = Rec.DB.since(start);
@@ -1407,6 +1468,7 @@ final class FlightRecorder {
       long t0 = System.nanoTime();
       boolean ok = false;
       try {
+        if (kept != null) keep(manifest, kept, pkg);
         write(target, manifest, events, lines, har, db, frames, from, to, used, pkg, scrubbed);
         ok = true;
         long size = Files.size(target);
@@ -1531,6 +1593,56 @@ final class FlightRecorder {
     if (Rec.DB.dropped() > 0) notes.add(Rec.DB.dropped() + " db calls dropped for the memory budget");
     m.put("notes", notes);
     return m;
+  }
+
+  /**
+   * Names the password runs the saved journal types (`secrets` in the manifest: their names and lengths, which the
+   * placeholders show too), and answers their values when they are to be kept (Secrets), else null.
+   */
+  private static byte[] secrets(Map<String, Object> manifest, List<Ring.Item<Map<String, Object>>> events) {
+    Map<String, Integer> used = new LinkedHashMap<>();
+    for (Ring.Item<Map<String, Object>> e : events) if (e.value().get("secret") instanceof String s) used.merge(s, 1, Integer::sum);
+    if (used.isEmpty()) return null;
+    Map<String, String> values = new LinkedHashMap<>();
+    List<Object> items = new ArrayList<>();
+    synchronized (leftOut) {
+      for (String name : used.keySet()) {
+        LeftOut run = null;
+        for (LeftOut r : leftOut) if (name.equals(r.secret) && !r.unknown) run = r;
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("name", name);
+        if (run != null) {
+          item.put("length", run.text.length());
+          // Only a run the journal has whole: one a checkpoint split is already half in the field a replay restores.
+          if (run.events == used.get(name) && Secrets.usable(run.text.toString())) values.put(name, run.text.toString());
+        }
+        items.add(item);
+      }
+    }
+    Map<String, Object> m = new LinkedHashMap<>();
+    m.put("items", items);
+    manifest.put("secrets", m);
+    return values.isEmpty() || Secrets.sealingKey() == null ? null : Secrets.json(values);
+  }
+
+  /** Seals the values for this recording, if its owner keeps them; the manifest then names the sealed file's id. */
+  private static void keep(Map<String, Object> manifest, byte[] values, String pkg) {
+    java.security.PublicKey to = Secrets.sealingKey();
+    String apk = System.getProperty("apksim.apk");
+    String signers = to == null || apk == null ? null : signers(Path.of(apk));
+    if (signers == null) {
+      System.err.println("[apksim] rec: the passwords were not kept: the APK's signer cannot be read");
+      return;
+    }
+    try {
+      String id = Secrets.newId();
+      byte[] sealed = Secrets.seal(to, values, Secrets.binding(id, pkg, signers.substring(signers.indexOf(':') + 1)));
+      Secrets.write(Path.of(System.getProperty("apksim.cacheRoot")).getParent(), id, sealed);
+      @SuppressWarnings("unchecked") Map<String, Object> m = (Map<String, Object>) manifest.get("secrets");
+      m.put("id", id);
+    } catch (IOException | java.security.GeneralSecurityException | RuntimeException e) {
+      System.err.println("[apksim] rec: the passwords were not kept: " + e);
+    }
   }
 
   private static void write(Path target, Map<String, Object> manifest, List<Ring.Item<Map<String, Object>>> events,
