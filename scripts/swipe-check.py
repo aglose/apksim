@@ -2,7 +2,7 @@
 """A timed swipe flings as a device's `input swipe` does, and a press held in place does not scroll (issue 346).
 
 Usage: swipe-check.py PORT
-Drives a running instance of the test app (phone device, Home tab: a list of "Item N" rows 128 px apart) over its
+Drives a running instance of the test app (phone device, Home tab: a list of evenly spaced "Item N" rows, whose spacing it reads off the list) over its
 --control port. A 500 px swipe over 300 ms, and one with no duration (300 ms by default), must scroll further than the
 drag (a fling); over 1000 ms about the drag distance; `drag` (which holds before lifting)
 the drag distance and no more; `swipe X Y X Y 1500` must not scroll.
@@ -28,11 +28,17 @@ def main():
                 buf += chunk
             return buf.decode(errors="replace").strip()
 
+    grid = []  # where "Item 1" starts and how far apart the rows are, read off the list at its top
+
     def scrolled():
-        m = re.search(r'\[\d+,(-?\d+),\d+,\d+\] text="Item (\d+)"', ctl("nodes"))
-        if not m:
+        rows = re.findall(r'\[\d+,(-?\d+),\d+,\d+\] text="Item (\d+)"', ctl("nodes"))
+        if not rows:
             raise RuntimeError("no list item on screen")
-        return 320 + 128 * (int(m.group(2)) - 1) - int(m.group(1))
+        if not grid:
+            if len(rows) < 2 or rows[0][1] != "1" or rows[1][1] != "2":
+                raise RuntimeError("the list did not start at its top")
+            grid.extend((int(rows[0][0]), int(rows[1][0]) - int(rows[0][0])))
+        return grid[0] + grid[1] * (int(rows[0][1]) - 1) - int(rows[0][0])
 
     def swipe(args, ms):
         ctl("restart")

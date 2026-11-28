@@ -892,11 +892,21 @@ Read README.md for results and limits; this file covers how to work on the code.
   Python tools; skipped jobs count as passed for the required checks, which a workflow path filter would leave pending).
   `.github/workflows/corpus.yml`: nightly and by hand, `linux-build` (no test app), `corpus.py --selftest`, then
   `corpus.py --json` over `scripts/corpus.json`; the report is the artifact. Not required, and green whatever it finds.
-- `testapks/composeapp`: the test app. It has a list, Trips (SQLite rename: "Italian vacation" ↔ "Roman vacation"),
-  Settings, and a **Shader** tab, a full-screen unthrottled noise shader used as the 120 fps stress test. It is
-  adaptive (material3-adaptive window size classes): below 600 dp of width a bottom bar and a list, from 600 dp a
-  navigation rail and a grid; the top bar shows the class and window size in dp ("compact 411×891"), which `nodes`
-  reads; Settings shows the wall clock in the locale's format. `apksim://stack` opens `SecondActivity` (plain views, a
+- `testapks/composeapp`: the test app, and the sample app Greenroom ships (each release's `apksim-testapp-VERSION.apk`).
+  Material 3 Expressive (material3 1.5.0's `MaterialExpressiveTheme`, expressive motion, its own colour roles in
+  `ui/theme/Color.kt`, generated from seed #6A3DE8 with the 2025 colour spec's expressive variant; edge to edge). Home
+  (`Home.kt`) has a search field, a counter card ("FAB clicks: N", its shapes turning a notch per count), an All/Saved
+  filter and a list of 100 places ("Item N", a segmented list: a tap saves one, its arrow opens the place's page);
+  the place's page (`Detail.kt`: a large flexible app bar, a floating toolbar, a date picker, a slider, a single choice,
+  checkboxes, a confirmation dialog, a snackbar; Back returns); Trips (`Trips.kt`; SQLite rename: "Italian vacation" ↔
+  "Roman vacation"); Settings (grouped sections); and a **Shader** tab, a full-screen unthrottled noise shader used as
+  the 120 fps stress test. The top bar's menu has "Clear saved places", "Reset counter" and "About". Nothing on Home,
+  Trips or Settings animates at rest (`settle` answers). It is
+  adaptive (material3-adaptive window size classes): below 600 dp of width a short navigation bar and a list, from
+  600 dp a navigation rail and a grid; the top bar shows the class and window size in dp ("compact 411×891"), which
+  `nodes` reads; Settings shows the wall clock in the locale's format. Scripts tap the tabs and the FAB by
+  coordinate ("Everyday commands"): keep four equal navigation items and a FAB that covers 733,1533 on the phone.
+  Its build needs AGP 9.1 and compile SDK 37 (Compose 1.12, which material3 1.5.0 brings); targetSdk stays 36. `apksim://stack` opens `SecondActivity` (plain views, a
 colour and tap count per level) over what is running, and its "Deeper" stacks another, for stack checks;
 `apksim://floating` a dialog-themed `FloatingActivity`; `apksim://floating-tall[?bars=hide]` a floating, translucent,
 dimming WRAP_CONTENT window with a list taller than the display (`FloatingTallActivity`, issue 506; `ci-smoke.sh` checks its size);
@@ -1257,7 +1267,7 @@ Dock icon click shows it focused. The window server activates a newly launched r
 launching, asked or not, so the other modes start as an accessory app and turn regular (Dock icon) in
 applicationDidFinishLaunching. Hidden or minimized, there is no display vsync and Host paces on its grid; App Nap is
 held off (`beginActivityWithOptions`) in every mode, since it throttles the timers of covered or hidden apps. A
-permission or biometric sheet on a window the user cannot see bounces the Dock icon. Test-app Settings tab (scroll down) has a pinch area and Camera/Locate/Notify/Copy/Unlock/
+permission or biometric sheet on a window the user cannot see bounces the Dock icon. Test-app Settings tab (scroll down) has a pinch area and, under "Device features", "Background and keys" and "Media", Camera/Locate/Notify/Copy/Unlock/
 Pick file/Choose trip (in-app result)/Share/Background/Keystore/Bind buttons for these (Bind: "bind: null
 binding to .NullBindingService"), and "Play clip" (ExoPlayer, a 3 s
 HEVC + AAC clip into a TextureView; "clip: ended at 3.0 s after N s, video video/hevc, audio audio/mp4a-latm" when it
@@ -2088,7 +2098,9 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
 (each found by a suite that passed on the emulator and failed here):
 - Compose's test clock posts to the UI thread behind what is queued there on a device; here the test is on the main
   thread, so the translator calls `TestActivities.beforeUiThreadAction` before Compose's `runOnUiThread`, which runs
-  the main queue first (GlobalSnapshotManager's apply). Without it, with autoAdvance off, a state set in runOnIdle
+  the main queue first (GlobalSnapshotManager's apply). The rule's idling resource is noted where the translator
+  sees `RobolectricIdlingStrategy`'s constructor (so Espresso's waits also wait for Compose): ui-test 1.12 gave that
+  constructor a third argument, and until both shapes were matched `ComposeEspressoIdleTest` failed on Compose 1.12. Without it, with autoAdvance off, a state set in runOnIdle
   never reached the composition. The looper stays PAUSED: Compose's Robolectric idling needs it
   (INSTRUMENTATION_TEST mode made it call Espresso.onIdle on the main thread; a device fingerprint made it wait for
   draw passes that never come).

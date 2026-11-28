@@ -34,7 +34,7 @@ def send(sock, cmd, timeout=10.0):
 
 
 def field_text(reply):
-    m = re.search(r'field clickable text="(.*?)" ; \[56,\d+,\d+,\d+\] text="Trip note"', reply, re.S)
+    m = re.search(r'field clickable text="(.*?)" ; \[\d+,\d+,\d+,\d+\] text="Trip note"', reply, re.S)
     return m.group(1) if m else None
 
 

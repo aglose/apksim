@@ -29,7 +29,7 @@ if (apksimTargetSdk != null) {
 
 android {
   namespace = "dev.apksim.composeapp"
-  compileSdk = 36
+  compileSdk = 37
   defaultConfig {
     applicationId = "dev.apksim.composeapp"
     minSdk = 26

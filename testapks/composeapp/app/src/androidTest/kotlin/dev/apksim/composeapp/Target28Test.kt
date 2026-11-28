@@ -107,7 +107,7 @@ class Target28Test {
     put("btAdapter", seen { context.getSystemService(BluetoothManager::class.java).adapter != null })
     put("btName", seen { context.getSystemService(BluetoothManager::class.java).adapter.name != null })
     put("btScan", seen {
-      val s = context.getSystemService(BluetoothManager::class.java).adapter.bluetoothLeScanner
+      val s = context.getSystemService(BluetoothManager::class.java).adapter.bluetoothLeScanner!!
       val cb = object : android.bluetooth.le.ScanCallback() {}
       s.startScan(cb)
       s.stopScan(cb)
@@ -137,7 +137,7 @@ class Target28Test {
   fun legacyBluetoothPermissionsAllowAScan() {
     at(28)
     assertTrue(grant(Manifest.permission.BLUETOOTH_ADMIN))
-    val scanner = context.getSystemService(BluetoothManager::class.java).adapter.bluetoothLeScanner
+    val scanner = context.getSystemService(BluetoothManager::class.java).adapter.bluetoothLeScanner!!
     val cb = object : android.bluetooth.le.ScanCallback() {}
     scanner.startScan(cb)
     scanner.stopScan(cb)

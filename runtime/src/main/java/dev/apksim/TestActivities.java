@@ -608,6 +608,11 @@ public final class TestActivities {
     composeClockBase = -1;
   }
 
+  /** Compose ui-test 1.12's RobolectricIdlingStrategy(rootRegistry, resource, idlingResourceRegistry). */
+  public static void composeIdling(Object resource, Object registry) {
+    composeIdling(resource);
+  }
+
   private static volatile java.lang.reflect.Method composeShouldPump;
   private static volatile long composeRealBase;
   private static volatile long composeClockBase = -1;

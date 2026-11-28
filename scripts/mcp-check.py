@@ -104,8 +104,13 @@ check(json.loads(p.stdout.readline()).get("error", {}).get("code") == -32602, "p
 t = c.ok("launch", apk=apk)
 print("launch answer:", len(t), "bytes")
 check("MainActivity" in t and "FAB clicks: 0" in t, "launch answers with the screen")
-# The FAB's box folds into its icon's label ("Add"); a test app built before the icon had one has it unlabelled.
-fab = [l.split()[0] for l in t.splitlines() if l.endswith(" click") and ('"' not in l or l.split(" ", 1)[1] == '"Add" click')]
+# The FAB's box folds into its icon's label ("Add"); a test app built before the icon had one has it unlabelled. (The
+# list's rows are clickable boxes too, each holding several texts, so they stay unlabelled entries.) The launch answer
+# lists the screen's first nodes only, and the FAB comes after the list: `nodes` has them all.
+screen = c.ok("nodes")
+fab = [l.split()[0] for l in screen.splitlines() if l.endswith(" click") and l.split(" ", 1)[1] == '"Add" click']
+if not fab:
+    fab = [l.split()[0] for l in screen.splitlines() if l.endswith(" click") and '"' not in l]
 check(len(fab) == 1, "the FAB is one clickable entry: " + " ".join(fab))
 c.ok("record", action="start")
 c.ok("tap", text="Trips")

@@ -4,39 +4,41 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.graphics.RuntimeShader
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.withInfiniteAnimationFrameNanos
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Place
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material3.*
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
+import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
-import androidx.compose.ui.platform.LocalWindowInfo
-import androidx.window.core.layout.WindowSizeClass
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.graphics.ShaderBrush
-import androidx.compose.foundation.background
-import androidx.compose.animation.core.withInfiniteAnimationFrameNanos
-import android.graphics.RuntimeShader
 import androidx.compose.ui.unit.dp
-import dev.apksim.composeapp.ui.theme.*
+import androidx.window.core.layout.WindowSizeClass
+import dev.apksim.composeapp.ui.theme.ComposeAppTheme
 
 class Db(c: Context) : SQLiteOpenHelper(c, "trips.db", null, 1) {
   override fun onCreate(d: SQLiteDatabase) {
@@ -54,15 +56,17 @@ class Db(c: Context) : SQLiteOpenHelper(c, "trips.db", null, 1) {
 
 class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
+    // Edge to edge, as every app targeting Android 15 and up is drawn: the bars' insets reach the Scaffold.
+    enableEdgeToEdge()
+    // No scrim behind a three-button navigation bar: the navigation bar's own container reaches the screen's edge.
+    if (android.os.Build.VERSION.SDK_INT >= 29) window.isNavigationBarContrastEnforced = false
     super.onCreate(savedInstanceState)
     val db = Db(this)
     Log.i("ComposeApp", "onCreate; rows=" + db.all())
     // A deep link apksim://composeapp/<tab> opens on that tab (apksim's `open` command).
     val startTab = listOf("home", "trips", "settings", "shader").indexOf(intent?.data?.lastPathSegment).coerceAtLeast(0)
-    // Follows the system's dark mode; light is Material's default scheme, as before.
-    setContent {
-      MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) { Root(db, startTab) }
-    }
+    // Follows the system's dark mode, in the app's own Material 3 Expressive theme (ui/theme).
+    setContent { ComposeAppTheme { Root(db, startTab) } }
     // overlay=full is a full-screen one that is FLAG_NOT_TOUCHABLE (issue 323): taps must go to the activity below.
     if (intent?.data?.getQueryParameter("overlay") == "full") {
       window.decorView.post {
@@ -91,13 +95,30 @@ class MainActivity : ComponentActivity() {
   }
 }
 
+private class Tab(val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector, val selectedIcon: androidx.compose.ui.graphics.vector.ImageVector)
+
+private val TABS = listOf(
+  Tab("Home", Icons.Outlined.Home, Icons.Filled.Home),
+  Tab("Trips", Icons.Outlined.Place, Icons.Filled.Place),
+  Tab("Settings", Icons.Outlined.Settings, Icons.Filled.Settings),
+  Tab("Shader", Icons.Outlined.Star, Icons.Filled.Star),
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun Root(db: Db, startTab: Int = 0) {
-  // Saved, so resizing the window (an activity recreated for the new size) keeps the tab and the count.
+  // Saved, so resizing the window (an activity recreated for the new size) keeps the tab, the count and the rest.
   var tab by rememberSaveable { mutableIntStateOf(startTab) }
   var count by rememberSaveable { mutableIntStateOf(0) }
-  // Adaptive: a bottom bar and a list below 600 dp of width (phones), a navigation rail and a grid from there on
+  val home = rememberHomeState()
+  // The place whose page is open over the tabs (Detail.kt), 0 for none. Back closes it.
+  var detail by rememberSaveable { mutableIntStateOf(0) }
+  if (detail != 0) {
+    BackHandler { detail = 0 }
+    DetailScreen(detail, saved = detail in home.saved, onSave = { home.toggle(detail) }, onBack = { detail = 0 })
+    return
+  }
+  // Adaptive: a navigation bar and a list below 600 dp of width (phones), a navigation rail and a grid from there on
   // (foldables, tablets, desktop, TV), as Material's window size classes suggest.
   val sizeClass = currentWindowAdaptiveInfo().windowSizeClass
   val wide = sizeClass.isWidthAtLeastBreakpoint(WindowSizeClass.WIDTH_DP_MEDIUM_LOWER_BOUND)
@@ -107,43 +128,61 @@ fun Root(db: Db, startTab: Int = 0) {
     else -> "compact"
   }
   val window = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.let { "${it.width.toDp().value.toInt()}×${it.height.toDp().value.toInt()}" } }
-  val tabs = listOf("Home" to Icons.Default.Home, "Trips" to Icons.Default.Place, "Settings" to Icons.Default.Settings, "Shader" to Icons.Default.Star)
+  var menu by remember { mutableStateOf(false) }
+  var about by rememberSaveable { mutableStateOf(false) }
   Scaffold(
     // Test tags as resource ids, so UiAutomator finds the FAB by By.res("fab").
     modifier = Modifier.semantics { testTagsAsResourceId = true },
-    topBar = { TopAppBar(title = { Text("ComposeApp") }, actions = { Text("$widthClass $window", Modifier.padding(end = 16.dp)) }) },
-    floatingActionButton = { FloatingActionButton(onClick = { count++ }, Modifier.testTag("fab")) { Icon(Icons.Default.Add, "Add") } },
+    topBar = {
+      TopAppBar(
+        title = { Text("ComposeApp", style = MaterialTheme.typography.titleLargeEmphasized) },
+        actions = {
+          // The window size class, as a badge: what `device` and `size` change.
+          Surface(color = MaterialTheme.colorScheme.secondaryContainer, contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+              shape = MaterialTheme.shapes.small) {
+            Text("$widthClass $window", Modifier.padding(horizontal = 10.dp, vertical = 6.dp), style = MaterialTheme.typography.labelLarge)
+          }
+          Box {
+            IconButton({ menu = true }) { Icon(Icons.Filled.MoreVert, "More options") }
+            DropdownMenu(menu, { menu = false }) {
+              DropdownMenuItem({ Text("Clear saved places") }, { menu = false; home.saved = emptySet() },
+                  leadingIcon = { Icon(Icons.Filled.Clear, null) }, enabled = home.saved.isNotEmpty())
+              DropdownMenuItem({ Text("Reset counter") }, { menu = false; count = 0 }, leadingIcon = { Icon(Icons.Filled.Refresh, null) })
+              DropdownMenuItem({ Text("About") }, { menu = false; about = true }, leadingIcon = { Icon(Icons.Filled.Info, null) })
+            }
+          }
+        },
+      )
+    },
+    floatingActionButton = {
+      // The one action that matters on Home is big there (a medium FAB, 80 dp) and an ordinary 56 dp elsewhere.
+      val motion = MaterialTheme.motionScheme
+      val size by animateDpAsState(if (tab == 0) 80.dp else 56.dp, motion.fastSpatialSpec(), label = "fab size")
+      val corner by animateDpAsState(if (tab == 0) 20.dp else 16.dp, motion.fastSpatialSpec(), label = "fab corner")
+      FloatingActionButton(onClick = { count++ }, Modifier.size(size).testTag("fab"), shape = RoundedCornerShape(corner),
+          containerColor = MaterialTheme.colorScheme.tertiaryContainer, contentColor = MaterialTheme.colorScheme.onTertiaryContainer) {
+        Icon(Icons.Filled.Add, "Add", Modifier.size(if (tab == 0) 28.dp else 24.dp))
+      }
+    },
     bottomBar = {
-      if (!wide) NavigationBar {
-        tabs.forEachIndexed { i, (l, ic) ->
-          NavigationBarItem(selected = tab == i, onClick = { tab = i }, icon = { Icon(ic, l) }, label = { Text(l) })
+      if (!wide) ShortNavigationBar {
+        TABS.forEachIndexed { i, t ->
+          ShortNavigationBarItem(selected = tab == i, onClick = { tab = i },
+              icon = { Icon(if (tab == i) t.selectedIcon else t.icon, null) }, label = { Text(t.label) })
         }
       }
     },
   ) { pad ->
-    Row(Modifier.padding(pad)) {
-      if (wide) NavigationRail {
-        tabs.forEachIndexed { i, (l, ic) ->
-          NavigationRailItem(selected = tab == i, onClick = { tab = i }, icon = { Icon(ic, l) }, label = { Text(l) })
+    Row(Modifier.padding(pad).consumeWindowInsets(pad)) {
+      if (wide) WideNavigationRail {
+        TABS.forEachIndexed { i, t ->
+          WideNavigationRailItem(selected = tab == i, onClick = { tab = i }, railExpanded = false,
+              icon = { Icon(if (tab == i) t.selectedIcon else t.icon, null) }, label = { Text(t.label) })
         }
       }
       Box(Modifier.weight(1f)) {
         when (tab) {
-          0 -> if (wide) {
-            LazyVerticalGrid(GridCells.Adaptive(240.dp), Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp)) {
-              item(span = { GridItemSpan(maxLineSpan) }) { Text("FAB clicks: $count", Modifier.padding(8.dp)) }
-              gridItems((1..100).toList()) { i ->
-                Card(Modifier.fillMaxWidth().padding(4.dp)) { Text("Item $i", Modifier.padding(16.dp)) }
-              }
-            }
-          } else {
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp)) {
-              item { Text("FAB clicks: $count", Modifier.padding(8.dp)) }
-              items((1..100).toList()) { i ->
-                Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) { Text("Item $i", Modifier.padding(16.dp)) }
-              }
-            }
-          }
+          0 -> HomeScreen(home, count, wide, onOpen = { detail = it })
           1 -> Trips(db)
           3 -> ShaderScreen()
           else -> SettingsScreen()
@@ -151,30 +190,13 @@ fun Root(db: Db, startTab: Int = 0) {
       }
     }
   }
-}
-
-@Composable
-fun Trips(db: Db) {
-  var rows by remember { mutableStateOf(db.all()) }
-  // `--feature dev.apksim.testapp.rename_v2`: the rename behaves as a changed build would (scripts/replay-check.py).
-  val context = LocalContext.current
-  val roman = remember(context) { if (context.packageManager.hasSystemFeature("dev.apksim.testapp.rename_v2")) "Roman holiday" else "Roman vacation" }
-  Column(Modifier.fillMaxSize()) {
-  LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(12.dp)) {
-    items(rows, key = { it.first }) { (id, title) ->
-      ListItem(
-        headlineContent = { Text(title) },
-        modifier = Modifier.clickable {
-          db.rename(id, if (title.startsWith("Roman")) "Italian vacation" else roman)
-          rows = db.all()
-        },
-      )
-    }
-  }
-  // A text field that rises with the software keyboard (apksim: `keyboard soft on`).
-  var note by remember { mutableStateOf("") }
-  OutlinedTextField(note, { note = it }, Modifier.fillMaxWidth().padding(12.dp).imePadding(), label = { Text("Trip note") })
-  }
+  if (about) AlertDialog(
+    onDismissRequest = { about = false },
+    icon = { Icon(Icons.Filled.Info, null) },
+    title = { Text("About ComposeApp") },
+    text = { Text("The app apksim is tested and demonstrated with: a list, trips kept in SQLite, device features and a shader, in Material 3 Expressive.") },
+    confirmButton = { TextButton({ about = false }) { Text("Close") } },
+  )
 }
 
 // A stress test: a full-size, unthrottled noise shader that changes every frame the screen offers.

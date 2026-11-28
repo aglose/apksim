@@ -2,6 +2,11 @@
 <resources>
 
     <style name="Theme.ComposeApp" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- The Compose screens in the app's own theme: the window's background is its surface (ui/theme/Color.kt), light
+         or dark, so nothing flashes before the first frame. -->
+    <style name="Theme.ComposeApp.Expressive">
+        <item name="android:windowBackground">@color/app_surface</item>
+    </style>
     <style name="FloatingTall" parent="android:Theme.Material.Light.Dialog">
         <item name="android:windowIsFloating">true</item>
         <item name="android:windowIsTranslucent">true</item>
