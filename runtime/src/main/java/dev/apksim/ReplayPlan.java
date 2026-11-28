@@ -67,7 +67,7 @@ public final class ReplayPlan {
     }
   }
 
-  static final String USAGE = "usage: apksim replay [--apk APK] [--live-network] [--out DIR] [--compare all|end|none]"
+  static final String USAGE = "usage: apksim replay [--apk APK] [--live-network] [--loose] [--out DIR] [--compare all|end|none]"
       + " [--threshold N] [--journey] [--input all|none] [APKSIM OPTIONS...] BUNDLE.apkrec";
 
   static List<String> plan(String[] args, Path state) throws Exception {
@@ -77,6 +77,7 @@ public final class ReplayPlan {
     String threshold = null;
     boolean live = false;
     boolean journey = false;
+    boolean loose = false;
     String input = "all";
     List<String> pass = new ArrayList<>();
     for (int i = 0; i < args.length; i++) {
@@ -84,6 +85,7 @@ public final class ReplayPlan {
         case "--apk" -> apkArg = need(args, ++i);
         case "--live-network" -> live = true;
         case "--journey" -> journey = true;
+        case "--loose" -> loose = true;
         case "--input" -> {
           input = need(args, ++i);
           if (!input.matches("all|none")) throw new Refused("--input takes all or none");
@@ -212,6 +214,8 @@ public final class ReplayPlan {
         launch.add("recorded");
         launch.add("--network-replay-mark");
         launch.add("off");
+        // --loose: a request that differs from a recorded one only in query values (made at run time) gets its answer.
+        if (loose) launch.add("--network-loose");
       }
       launch.addAll(pass);
       launch.add(apk.toString());

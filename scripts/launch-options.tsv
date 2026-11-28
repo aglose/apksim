@@ -51,6 +51,7 @@ option	value	cli	serve	beam	mcp	note
 --network-ignore-query	value	yes	no: only with --network replay	no: only with --network replay	no: only with --network replay	
 --network-inspect	flag	yes	server-only	server-only	no: the serve and beam servers' own	
 --network-inspect-rules	value	yes	server-only	server-only	no: the serve and beam servers' own	
+--network-loose	flag	yes	no: only with --network replay	no: only with --network replay	no: only with --network replay	
 --network-match	value	yes	no: only with --network replay	no: only with --network replay	no: only with --network replay	
 --network-profile	value	yes	yes	yes	yes	
 --network-redact	value	yes	no: only with --network record	no: only with --network record	no: only with --network record	

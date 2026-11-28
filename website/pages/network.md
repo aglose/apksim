@@ -91,6 +91,7 @@ Switch between `online`, `offline`, `3g`, `lossy`, custom latency/bandwidth, and
 | `--network-redact NAMES` | Extra comma-separated header names to redact (`-Name` un-redacts a default) |
 | `--network-match FIELDS` | Replay match keys: `method,url,body` (default), optionally adding `headers` |
 | `--network-ignore-query NAMES` | Ignore volatile query parameters (timestamps, cache busters) when matching |
+| `--network-loose` | Answer a request no entry matches from the one that differs only in query values (`apksim replay --loose`) |
 | `--network-ignore-header NAMES` | Ignore specific headers when matching includes `headers` |
 | `--network-unmatched POLICY` | Unmatched replay policy: `fail` (default: 599 + test failure), `respond` (599), or `fetch:OUT` |
 | `--network-replay-timing MODE` | `none` (instant, default) or `recorded` (preserve original response timing) |

@@ -454,6 +454,7 @@ while [[ -z "${SERVE:-}" && $# -gt 1 ]]; do
     --network-redact) EXTRA+=("-Dapksim.networkRedact=$2"); shift 2 ;;
     --network-match) EXTRA+=("-Dapksim.networkMatch=$2"); shift 2 ;;
     --network-ignore-query) EXTRA+=("-Dapksim.networkIgnoreQuery=$2"); shift 2 ;;
+    --network-loose) EXTRA+=("-Dapksim.networkLoose=true"); shift ;;
     --network-ignore-header) EXTRA+=("-Dapksim.networkIgnoreHeader=$2"); shift 2 ;;
     --network-unmatched)
       # fetch:OUT (with --network replay): what the recording lacks is fetched and kept in OUT, which the sandbox lets the
@@ -601,7 +602,7 @@ if [[ -n "$STANDBY_ON" && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKS
       -Dapksim.network=replay:*|-Dapksim.networkProfile=*|-Dapksim.networkRedact=*|-Dapksim.networkMatch=*) ;;
       # fetch:OUT writes OUT, which a standby's sandbox allows only under STATE; it fetches over the network, as conditions do.
       -Dapksim.networkUnmatched=fetch:*) [[ "${e#*=fetch:}" == "$STATE"/* ]] || { WARM_OK=""; COLD_OPT="--network-unmatched fetch: (its file is outside the state folder)"; } ;;
-      -Dapksim.networkIgnoreQuery=*|-Dapksim.networkIgnoreHeader=*|-Dapksim.networkUnmatched=*) ;;
+      -Dapksim.networkIgnoreQuery=*|-Dapksim.networkIgnoreHeader=*|-Dapksim.networkUnmatched=*|-Dapksim.networkLoose=*) ;;
       # Class probes and resource hits (crawl.py --record-deps): Probes.reload reads them as the standby takes the launch.
       -Dapksim.deps=*|-Dapksim.deps.packages=*|-Dapksim.standbySpawnDelayMs=*|-Dapksim.standbyJitIdle=*|-Dapksim.fastTransitions=*|-Dapksim.lazyRaster=*) ;;
       -Dapksim.networkReplayTiming=*|-Dapksim.networkReplayMark=*|-Dapksim.networkHost=*|-Dapksim.networkTrust=*|-Dapksim.networkTrace=*|-Dapksim.networkInspect=*|-Dapksim.networkInspectRules=*) ;;

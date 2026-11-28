@@ -577,7 +577,10 @@ final class Tap {
     live.remove(c);
     c.bytesIn += c.uncopiedIn.get();
     c.bytesOut += c.uncopiedOut.get();
-    if (never && error != null && error.startsWith("connect failed")) Inspector.failure(c.host, c.port, error);
+    if (never && error != null && error.startsWith("connect failed")) {
+      Inspector.failure(c.host, c.port, error);
+      Net.connectFailed(c.host, c.port, error, c.openedWall, Math.max(0, c.closedWall - c.openedWall));
+    }
     else if (never && c.handshakePending && !c.established) {
       // Issue 440: TLS the app layered on a connected socket that ended before any byte crossed it and before its
       // handshake completed: a row, as the app got an error and the server saw a connection.
