@@ -498,6 +498,7 @@ public final class TapCheck {
 
   private static void failures() throws Exception {
     System.out.println("== failures");
+    long failed0 = NetFailures.count();
     int port = serve(new String[0], (s, in, out) -> {
       head(in);
       out.write(ascii("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nonly this much"));
@@ -514,6 +515,7 @@ public final class TapCheck {
     s.close();
     Map<String, Object> cut = find("/cut");
     check(cut != null && cut.get("_apksimError") != null && "only this much".equals(body(cut)), "a body cut short is kept with what came and why it ended (" + (cut == null ? null : cut.get("_apksimError")) + ")");
+    check(NetFailures.count() > failed0, "an exchange the tap saw end without its answer counts as a failed request (network failures)");
     int silent = serve(null, (s2, in2, out2) -> {
       head(in2);
       Thread.sleep(3000);  // never answers
@@ -531,6 +533,21 @@ public final class TapCheck {
     Map<String, Object> silence = find("/silence");
     check(silence != null && String.valueOf(silence.get("_apksimError")).contains("SocketTimeoutException") && ((Number) resp(silence).get("status")).intValue() == 0,
         "a request that never got an answer is kept, with the timeout that ended it (" + (silence == null ? null : silence.get("_apksimError")) + ")");
+    // A request the app gives up on by closing its socket (a cancelled call) is not a failed request.
+    int slow = serve(null, (s4, in4, out4) -> {
+      head(in4);
+      Thread.sleep(3000);
+    });
+    Socket u = connect("localhost", slow, null);
+    Net.outputStream(u).write(ascii("GET /cancelled HTTP/1.1\r\nHost: fail.test\r\n\r\n"));
+    Thread.sleep(300);
+    long beforeCancel = NetFailures.count();
+    u.close();
+    Thread.sleep(2500);
+    Net.drain(2000);
+    Map<String, Object> cancelled = find("/cancelled");
+    check(cancelled != null && NetFailures.count() == beforeCancel,
+        "a request whose socket the app closed is kept (" + (cancelled == null ? null : cancelled.get("_apksimError")) + ") and not counted as failed");
     // Issue 440: TLS the app's factory refuses (an untrusted certificate) leaves a row, with the reason.
     int selfSigned = serve(new String[] {"http/1.1"}, (s3, in3, out3) -> Thread.sleep(500));
     Socket raw = new Socket();
@@ -555,6 +572,9 @@ public final class TapCheck {
     } catch (IOException expected) {
       Net.drain(2000);
       check(Inspector.eventsForCheck().stream().anyMatch(e -> e.contains("\"CONNECT\"") && e.contains(":" + dead)), "a connect that failed is a row in the inspector");
+      String said = Net.command(new String[] {"network", "failures"});
+      check(said.matches("\\d+ failed: .*") && said.contains(":" + dead + " connect failed") && !said.contains("the app reset"),
+          "`network failures` names the connect that failed, and not the stream the app cancelled (" + said + ")");
     }
   }
 

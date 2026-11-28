@@ -448,6 +448,12 @@ def select_screens(doc, changed, repo=".", diff=None, ignore=(), use_default_ign
                 screens={sid: details[sid] for sid in selected if sid in details})
 
 
+def unstable_in(doc):
+    """The baseline's `unstable` screens (crawl.py: content that changed between two reads, requests that failed while
+    reached), {id: why}: a --diff-seed against this baseline lists them apart, as `unstable`, rather than changed or gone."""
+    return {s["id"]: s["unstable"] for s in doc.get("screens") or [] if s.get("unstable")}
+
+
 def load_crawl_json(path):
     p = os.path.join(path, "crawl.json") if os.path.isdir(path) else path
     with open(p) as f:
@@ -484,6 +490,7 @@ def main(argv=None):
     res = select_screens(doc, resolved, repo=args.repo, diff=args.diff,
                          ignore=args.ignore, use_default_ignore=not args.no_default_ignore,
                          include_unexplored=not args.explored_only)
+    res["unstable"] = unstable_in(doc)
 
     if args.out_ids:
         with open(args.out_ids, "w") as f:
@@ -515,6 +522,10 @@ def main(argv=None):
             print(f"  {sid}" + (f" ({title})" if title else "") + (f"  <- {why}" if why else ""))
     for n in res["notes"]:
         print("  note: " + n)
+    shaky = [sid for sid in res["selected"] if sid in res["unstable"]]
+    if shaky:
+        print(f"  note: {len(shaky)} selected screen(s) are unstable in the baseline (a --diff-seed lists them apart): "
+              + ", ".join(shaky))
     if res["unplaced"]:
         print("  unplaced: " + ", ".join(res["unplaced"]))
     if res["mode"] != "full":

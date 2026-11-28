@@ -442,7 +442,8 @@ final class FlightRecorder {
   /** A control command (or menu item) about to run (main thread): kept if a replay must repeat it. */
   static void commandRan(String[] a) {
     if (!input || a.length == 0 || !COMMANDS.contains(a[0])) return;
-    if (a[0].equals("network") && (a.length == 1 || a[1].equals("status") || a[1].equals("unmatched") || a[1].equals("save"))) return;
+    if (a[0].equals("network") && (a.length == 1 || a[1].equals("status") || a[1].equals("unmatched") || a[1].equals("save")
+        || a[1].equals("failures"))) return;
     if (a[0].equals("sensor") && (a.length == 1 || a[1].equals("list"))) return;  // the status query
     if (a[0].equals("ambient") && a.length == 1) return;  // the status query
     if ((a[0].equals("jobs") || a[0].equals("notifications")) && a.length == 1) return;  // listings

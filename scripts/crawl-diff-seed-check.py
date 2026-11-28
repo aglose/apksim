@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Checks --diff-seed's gone screens and `edges` section on a synthetic graph (no app, no instance)."""
+"""Checks --diff-seed's gone screens, `edges` section and unstable screens on a synthetic graph (no app, no instance)."""
 import importlib.util
 import os
 import sys
@@ -86,4 +86,78 @@ assert ex.find_variant_match("P", changed_obs, edge_cmd="tap-text Child") is Non
 assert ex.find_variant_match("P", changed_obs, edge_cmd="tap-text Row2") == "C"
 # Known seed variant alias V_OLD via variant edge -> collapses to C!
 assert ex.find_variant_match("P", {"id": "V_OLD", "activity": "MainActivity", "recs": []}, edge_cmd="tap-text Row2") == "C"
+
+# Unstable screens (docs/crawl.md "Unstable screens"): a pair whose screen is unstable in the seed or in this walk is
+# left out of changed/new/gone, listed in crawl.json's `unstable`, and does not fail the exit status.
+import tempfile
+out_dir = tempfile.mkdtemp(prefix="crawl-diff-seed-check-")
+seed2 = {"screens": [
+    {"id": "H", "title": "Home", "texts": ["Home"], "actions": [], "parent": None},
+    {"id": "L", "title": "List", "texts": ["Item 1"], "actions": [], "parent": "H"},  # walked again, unstable in the seed
+    {"id": "E", "title": "Error", "texts": ["Could not load"], "actions": [], "parent": "H",
+     "unstable": "1 request of the app failed while it was reached"},  # the seed's error state, gone now
+    {"id": "T", "title": "Tick", "texts": ["tick 1"], "actions": [], "parent": "H"},  # walked again, unstable now
+    {"id": "S", "title": "Same", "texts": ["Same"], "actions": [], "parent": "H"},
+], "edges": [edge("H", "l", "L"), edge("H", "e", "E"), edge("H", "t", "T"), edge("H", "s", "S")], "unexplored": []}
+seed2["screens"][1]["unstable"] = "its content changed when read again 200 ms later: 'Item 1' gone"
+events2 = []
+new2 = types.SimpleNamespace(
+    order=["H", "L", "E", "T", "S", "N"], explored={"H", "L", "T", "N"}, partial=set(), instances=[],
+    screens={"H": dict(seed2["screens"][0], origin="walked", captures={}),
+             "L": dict(seed2["screens"][1], texts=["Item 1", "Item 2"], origin="walked", captures={}, unstable=None),
+             "E": dict(seed2["screens"][2], origin="carried", captures={}),
+             "T": dict(seed2["screens"][3], texts=["tick 2"], origin="walked", captures={},
+                       unstable="its content changed when read again 200 ms later: 'tick 2' gone; 'tick 3' appeared"),
+             "S": dict(seed2["screens"][4], origin="carried", captures={}),
+             "N": {"id": "N", "title": "Oops", "texts": ["Oops"], "actions": [], "parent": "H", "origin": "walked",
+                   "captures": {}, "unstable": "2 requests of the app failed while it was reached"}},
+    edges=[edge("H", "l", "L"), edge("H", "t", "T"), edge("H", "s", "S"), edge("H", "n", "N")],
+    event=lambda kind, **f: events2.append((kind, f)))
+args2 = crawl.parse(["app.apk", "--out", out_dir, "--seed", out_dir, "--only", "H,L,T", "--diff-seed"])
+doc2 = {"combos": [], "findings": []}
+sc2 = crawl.SeedCompare(new2, seed2, out_dir, doc2, args2, out_dir)
+sc2.finish(None)
+st = {p["id"] or p["base"]: p for p in doc2["compare"]}
+assert st["L"]["status"] == "unstable" and st["L"]["was"] == "changed" and "in the seed" in st["L"]["why"], st["L"]
+assert st["T"]["status"] == "unstable" and st["T"]["was"] == "changed" and "in this walk" in st["T"]["why"], st["T"]
+assert st["L"]["unstable_in"] == ["base"] and st["T"]["unstable_in"] == ["walk"] and st["N"]["unstable_in"] == ["walk"], st
+assert st["E"]["status"] == "unstable" and st["E"]["was"] == "gone" and st["E"]["id"] is None, st["E"]
+assert st["N"]["status"] == "unstable" and st["N"]["was"] == "new", st["N"]
+assert st["S"]["status"] == "same" and st["H"]["status"] == "same", (st["S"], st["H"])
+assert not [p for p in doc2["compare"] if p["status"] in ("changed", "gone", "new")], doc2["compare"]
+assert sorted(u["base"] or u["id"] for u in doc2["unstable"]) == ["E", "L", "N", "T"], doc2["unstable"]
+ev2 = {f["id"]: f for k, f in events2 if k == "compare"}
+assert ev2["L"]["status"] == "unstable" and ev2["N"]["status"] == "unstable" and ev2["N"]["was"] == "new", ev2
+# Without `unstable` anywhere, the same walk reports them as before.
+for x in seed2["screens"]:
+    x.pop("unstable", None)
+for x in new2.screens.values():
+    x.pop("unstable", None)
+doc3 = {"combos": [], "findings": []}
+crawl.SeedCompare(new2, seed2, out_dir, doc3, args2, out_dir).finish(None)
+st3 = {p["id"] or p["base"]: p["status"] for p in doc3["compare"]}
+assert st3 == {"H": "same", "L": "changed", "E": "gone", "T": "changed", "S": "same", "N": "new"}, st3
+assert doc3["unstable"] == []
+
+
+# Explorer.instability on a stand-in instance: a second read that differs, and failed requests during the reach.
+class Inst:
+    def __init__(self, reads, failures):
+        self.reads, self.failures, self.failures_base = list(reads), failures, 3
+    def read_ui(self):
+        return "dev.App", self.reads.pop(0)
+    def net_failures(self):
+        return self.failures
+recs_a = fake_recs(["Hello", "tick 1"])
+sid = crawl.structure("dev.App", recs_a)[0]
+here = {"id": sid, "activity": "dev.App", "recs": recs_a, "at": 0}
+ex.args = types.SimpleNamespace(stable_ms=0)
+assert ex.instability(Inst([fake_recs(["Hello", "tick 1"])], (3, "")), here) is None
+why = ex.instability(Inst([fake_recs(["Hello", "tick 2"])], (3, "")), here)
+assert why and "'tick 1' gone" in why and "'tick 2' appeared" in why, why
+why = ex.instability(Inst([fake_recs(["Hello", "tick 1"])], (5, "x.invalid:443 connect failed")), here)
+assert why and why.startswith("2 requests of the app failed") and "x.invalid" in why, why
+# A clock string is not content that changed (screen_sig strips HH:MM).
+here_c = dict(here, recs=fake_recs(["Hello", "9:41"]))
+assert ex.instability(Inst([fake_recs(["Hello", "9:42"])], None), here_c) is None
 print("ok")

@@ -179,6 +179,7 @@ final class AppInfo {
     int target = targetSdk[0] > 0 ? targetSdk[0] : minSdk[0];
     CompatTable.configure(pkg, target > 0 ? target : 1);
     Gaps.reset();
+    dev.apksim.net.NetFailures.reset();  // a standby's own failures before the launch are not the app's
     if (launcher != null) System.setProperty("apksim.launcher", launcher.name);
     StringBuilder aliases = new StringBuilder(",");
     for (Map.Entry<String, ActivityEntry> e : activities.entrySet()) {

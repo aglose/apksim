@@ -132,6 +132,10 @@ network 3g|lossy             profiles below
 network latency MS           extra round-trip time
 network bandwidth KBPS       down and up
 network unmatched [clear]    unmatched replay requests since the test started (or launch), and forget them
+network failures [clear]     the app's failed requests since launch, with or without a --network option: "N failed: LAST |
+                             LAST" (connects refused, unreachable or timed out, lookups that failed, replay misses, and
+                             while the tap reads: exchanges with no answer (not a stream the app reset) or a 5xx; not a lookup the JDK answers from its
+                             10 s cache of failed ones); crawl.py's unstable screens read it (NetFailures)
 network save                 write the recording (or fetch:OUT) now (it is also written 300 ms after each exchange and on exit)
 network reconnect            close the app's open connections, as a change of network does; the app makes them again
                              (after `rec on net` in a running app: connections opened before it are not read, below)

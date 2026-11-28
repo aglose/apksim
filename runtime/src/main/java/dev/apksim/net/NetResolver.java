@@ -32,8 +32,17 @@ public final class NetResolver extends InetAddressResolverProvider {
           }
           return Stream.of(placeholder(host.toLowerCase(Locale.ROOT)));
         }
-        if (!Net.active || local(host)) return builtin.lookupByName(host, policy);
+        if (local(host)) return builtin.lookupByName(host, policy);
+        if (!Net.active) {
+          try {
+            return builtin.lookupByName(host, policy);
+          } catch (UnknownHostException e) {
+            NetFailures.note("DNS lookup of " + host + " failed: " + e.getMessage());
+            throw e;
+          }
+        }
         if (Net.conditions.offline()) {
+          NetFailures.note("DNS lookup of " + host + " failed: offline");
           throw new UnknownHostException("Unable to resolve host \"" + host + "\": No address associated with hostname");
         }
         String h = host.toLowerCase(Locale.ROOT);
@@ -49,6 +58,7 @@ public final class NetResolver extends InetAddressResolverProvider {
           unresolved.remove(h);
           return found;
         } catch (UnknownHostException e) {
+          NetFailures.note("DNS lookup of " + host + " failed: " + e.getMessage());
           if (!Inspector.on) throw e;
           unresolved.add(h);
           // The network inspector (docs/pr-preview.md): the failed lookup is a row, and while a rule answers requests the host

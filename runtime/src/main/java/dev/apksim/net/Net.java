@@ -413,6 +413,9 @@ public final class Net {
       tapped.incrementAndGet();
       changed();
     }
+    // Not what the app ended itself (a socket it closed under a request, an HTTP/2 stream it reset: an image loader's
+    // cancelled request, a GOAWAY it sent).
+    if (e.error != null ? !e.error.startsWith("the app ") && !e.error.startsWith(Tap.CLOSED_BY_APP) : e.status >= 500) NetFailures.note(e.method + " " + e.url + ": " + (e.error != null ? e.error : String.valueOf(e.status)));
     if (Boolean.getBoolean("apksim.networkTrace")) log("network tap: " + (e.error != null ? "failed (" + e.error + ")" : e.status) + " " + e.method + " " + e.url);
     Inspector.exchange(e, 0, 0);
   }
@@ -670,8 +673,9 @@ public final class Net {
 
   // ------------------------------------------------------------------ control command
 
-  /** network [online|offline|3g|lossy|latency MS|bandwidth KBPS|unmatched [clear]|save|reconnect]. */
+  /** network [online|offline|3g|lossy|latency MS|bandwidth KBPS|unmatched [clear]|failures [clear]|save|reconnect]. */
   public static String command(String[] a) {
+    if (a.length > 1 && a[1].equals("failures")) return NetFailures.command(a.length > 2 && a[2].equals("clear"));  // with or without --network
     if (a.length == 1 || a[1].equals("status")) {
       if (!active) return "network: off (no --network option); network offline|3g|lossy|latency MS|bandwidth KBPS turns it on";
       String counts = counts();
@@ -791,7 +795,10 @@ public final class Net {
         // Loopback is otherwise never read, but a connect that fails is a row: "nothing listens on 127.0.0.1:8971"
         // is the answer to an app that shows "can't reach the server" with no other trace (a dev server not running).
         // The inspector's row only: a recording still leaves loopback out.
-        if (Inspector.on && a instanceof InetSocketAddress o) Inspector.failure(hostOf(o), o.getPort(), "connect failed: " + e);
+        if (a instanceof InetSocketAddress o) {
+          NetFailures.note(hostOf(o) + ":" + o.getPort() + " connect failed: " + e);
+          if (Inspector.on) Inspector.failure(hostOf(o), o.getPort(), "connect failed: " + e);
+        }
         throw e;
       }
       if (Tap.on && a instanceof InetSocketAddress o && openedLoopback(o)) Tap.connected(s, hostOf(o), o.getPort(), (System.nanoTime() - t0) / 1_000_000);
@@ -800,7 +807,7 @@ public final class Net {
     Conditions c = conditions;
     String host = hostOf(isa);
     String where = host + (isa.isUnresolved() ? "" : "/" + isa.getAddress().getHostAddress()) + " (port " + isa.getPort() + ")";
-    if (c.offline()) throw new ConnectException("failed to connect to " + where + ": connect failed: ENETUNREACH (Network is unreachable)");
+    if (c.offline()) throw failed(new ConnectException("failed to connect to " + where + ": connect failed: ENETUNREACH (Network is unreachable)"));
     Route route = route(host);
     if (route != Route.DIRECT && s instanceof SSLSocket) {
       // TLS from the start, named by the address it connects to: going through the engine would lose that name (SNI,
@@ -811,7 +818,7 @@ public final class Net {
             + " cannot be replayed";
         log(msg);
         unmatched.add(msg);
-        throw new ConnectException(msg);
+        throw failed(new ConnectException(msg));
       }
       route = Route.DIRECT;
     }
@@ -832,6 +839,8 @@ public final class Net {
         raw.connect(a, timeout);
       } catch (IOException e) {
         Tap.connectFailed(host, isa.getPort(), e);
+        // An unresolved address's failed lookup was counted as it was made (NetResolver): one request, one failure.
+        if (!(isa.isUnresolved() && e instanceof UnknownHostException)) NetFailures.note(host + ":" + isa.getPort() + " connect failed: " + e);
         throw e;
       }
       if (Tap.on) Tap.connected(s, host, isa.getPort(), (System.nanoTime() - t0) / 1_000_000);
@@ -841,13 +850,13 @@ public final class Net {
     }
     if (c.refuse()) {
       Conditions.sleep(Math.min(timeout > 0 ? timeout : 10_000, 10_000));
-      throw new SocketTimeoutException("failed to connect to " + where + " after " + (timeout > 0 ? timeout : 10_000) + "ms");
+      throw (SocketTimeoutException) failed(new SocketTimeoutException("failed to connect to " + where + " after " + (timeout > 0 ? timeout : 10_000) + "ms"));
     }
     // The TCP handshake's round trip counts against the caller's connect timeout, as a real one would.
     int rtt = c.rtt();
     if (timeout > 0 && rtt >= timeout) {
       Conditions.sleep(timeout);
-      throw new SocketTimeoutException("failed to connect to " + where + " after " + timeout + "ms");
+      throw (SocketTimeoutException) failed(new SocketTimeoutException("failed to connect to " + where + " after " + timeout + "ms"));
     }
     Conditions.sleep(rtt);
     int left = timeout > 0 ? timeout - rtt : 0;
@@ -870,6 +879,7 @@ public final class Net {
       if (reply.startsWith("ERR ")) throw exception(reply.substring(4), false);
     } catch (IOException e) {
       s.close();
+      NetFailures.note(where + ": " + e);
       throw e;
     } finally {
       if (!s.isClosed()) s.setSoTimeout(before);
@@ -878,6 +888,12 @@ public final class Net {
     if (s instanceof RelaySocket rs && !inMemory) redirected.put(rs.real(), route);  // TLS is layered on the real one
     // Carried untouched: what the app says on it (or on the TLS it layers on it) is read by the tap, as on a direct one.
     if (route == Route.RELAY && Tap.on) Tap.relayed(s, host, isa.getPort());
+  }
+
+  /** [e], counted as a failed request (NetFailures) on its way to being thrown. */
+  private static IOException failed(IOException e) {
+    NetFailures.note(e.getMessage());
+    return e;
   }
 
   private static String hostOf(InetSocketAddress isa) {
@@ -956,13 +972,13 @@ public final class Net {
     } catch (IOException | UnsupportedOperationException e) {
       // A factory that makes only connected sockets: its connection cannot go through the engine. Offline and replaying
       // that means failing (nothing may leave); otherwise it connects directly, past whatever the engine would have done.
-      if (conditions.offline()) throw new ConnectException("failed to connect to " + host + " (port " + port + "): connect failed: ENETUNREACH (Network is unreachable)");
+      if (conditions.offline()) throw failed(new ConnectException("failed to connect to " + host + " (port " + port + "): connect failed: ENETUNREACH (Network is unreachable)"));
       if (mode == Mode.REPLAY) {
         String msg = "network replay: " + f.getClass().getName() + " makes only connected sockets, so its connection to "
             + host + ":" + port + " cannot be replayed";
         log(msg);
         unmatched.add(msg);
-        throw new ConnectException(msg);
+        throw failed(new ConnectException(msg));
       }
       log("network: " + host + ":" + port + " connected directly by " + f.getClass().getName() + " (it makes only connected sockets): no rule, mapping or condition reaches it");
       long t0 = System.nanoTime();

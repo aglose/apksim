@@ -777,7 +777,9 @@ def comment_walk(walk_dir, images, md, max_screens):
         elif not (p.get("ui_diff") or p.get("unstable")):
             md.append(f"- {code(p.get('why') or 'changed')}")
         md.append("")
-    for status, head in (("new", "New screens"), ("gone", "Screens no longer reached"), ("unknown", "Screens that could not be checked")):
+    for status, head in (("new", "New screens"), ("gone", "Screens no longer reached"), ("unknown", "Screens that could not be checked"),
+                         ("unstable", "Left out as unstable (content that changed between two reads, or requests that "
+                          "failed, in the baseline or this walk: docs/crawl.md \"Unstable screens\")")):
         some = [p for p in pairs if p["status"] == status]
         if some:
             md.append(f"**{head}:** " + "; ".join(f"`{p.get('id') or p.get('base')}`" + (f" ({code(p['why'])})" if p.get("why") else "") for p in some[:12]))

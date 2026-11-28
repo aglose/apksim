@@ -193,6 +193,57 @@ screen's subtree:
    its pixels in any combination; `crawl.json`'s `diffs` and `diff/` have the maps), `new` (the path does not reach a
    screen there) and `gone` (a screen of the base no path of the new build reaches).
 
+### Unstable screens
+
+A screen read at the wrong moment is no baseline: a seed that caught a list in its error state ("Could not load"), or
+half filled, has a later walk of the same build report that screen changed, or gone, which is noise in a pull request's
+evidence. So every screen a walk explores is checked once on arrival, and `unstable` in `crawl.json` (a reason, as one
+line; "UNSTABLE" on its card) when either holds:
+
+- **Its content changed between two reads.** Once the screen is read (after `settle` and the reads that agree on its
+  structure), it is read again `--stable-ms` (200 ms) later: one `ui-tree` round trip, after any wait that time already
+  covered (the inline capture, the deps read). Visible texts and the controls' states (checked, enabled, bounds) must be
+  what they were, clock strings (`HH:MM`) left out as everywhere else. A counter, a ticker, a request's answer arriving
+  after `settle` all show here: "its content changed when read again 200 ms later: 'tick 0012' gone; 'tick 0014'
+  appeared". Another structure on the second read says so too.
+- **Requests of the app failed while it was reached.** apksim counts the app's failed requests, with or without a
+  `--network` option (`network failures`, `NetFailures`): connects refused, unreachable or timed out, host names that
+  did not resolve, requests a replay (`--freeze-network`) had no answer for, and, while the tap reads the app's
+  connections, exchanges that ended with no answer (not a stream the app cancelled itself) or a 5xx. The count is read just before the replay's `restart` (or
+  taken as 0 for a launch made for it, or for an instance still on the screen its launch opened, which is read with no
+`restart`) and again after the second read: "2 requests of the app failed while it was
+  reached (last: api.example.com:443 connect failed: ...)". Not counted: a lookup the JDK answers from its cache of
+  failed ones (10 s), a 4xx, the JDK's own HttpURLConnection while no `--network` option is on, and native code's
+  sockets. A failure that has nothing to do with the screen (an analytics call) makes it unstable as well: the walk
+  cannot tell, and says at its end how many of its screens are unstable, with a hint when more than half are (an app
+  that cannot reach its servers from here).
+
+A launch's own failures before it (a standby's) are not counted: the count starts at each launch (and each test). One
+request can count more than once when it fails over (a second address, a retried pooled connection), and one that
+fails over to an answer still counts.
+
+It is decided where the screen is explored, so a screen found and never explored (a budget) has none, and a `flaky` one
+is not checked (it is already known not to replay). A screen walked again in a `--seed` walk gets this walk's answer;
+a carried one keeps the seed's. `--no-stability-check` turns both checks off (no extra read, no `network failures`).
+
+With `--diff-seed` (and `--base`), a pair that would be `changed`, `new` or `gone` where its screen is unstable in the
+seed (or the base build) or in this walk is `unstable` instead: its `was` is the status it would have had,
+`unstable_in` the sides (`base`, `walk`), its `why` says on which side and why, then what it would have said (`ui_diff`
+and `diffs` stay as computed, and the report shows them). Those pairs are also listed in `crawl.json`'s `unstable`
+(`id`, `base`, `was`, `in`, `why`), shown apart in `report.html`, printed at the end, and do not fail the exit status.
+A pair that was stable in the seed and is unstable only in this walk may be the change's own doing (a broken request,
+a screen that now flickers): the end of the run names those apart, and `--fail-on-unstable` counts them as differences
+that fail the exit status. A pair that compares `same` stays `same`, unstable or not. A walk of an unchanged build
+against its own seed therefore reports no changed, new or gone screen for such screens. `crawl-select.py` lists the
+baseline's unstable screens in its `--json` (`unstable`: id to reason) and notes the selected ones. A real change on a
+screen that is unstable in either walk is listed as `unstable`, not `changed`: look at that list too, and walk the
+seed again when it is long. The pair's older `unstable` key (combinations that never settle, whose captures are not
+compared) is unrelated and unchanged.
+
+The test app's `apksim://unstable?mode=tick` (a counter every 100 ms) and `?mode=fail` (a connect to a loopback port
+nothing listens on, as it opens) are the two cases: `scripts/crawl-check.py` step 15 walks them and the same build
+against that seed; `scripts/crawl-diff-seed-check.py` checks the comparison on a synthetic graph.
+
 ## Repeatable walks
 
 `restart` begins a replay with no activity, no saved state and no ViewModel, but the app's own data stays: its files,
@@ -380,7 +431,7 @@ with the seed's (carried screens get none: their `screen` event says `origin: ca
 {"event": "compare", "build": "new", "id": "Settings-1a2b", "base": "Settings-1a2b", "status": "changed", "why": "text 'Save' -> 'Done'", "ui_diff": {...}, "diffs": {"default": {"differs": true, "pixels": 5120, "map": "diff/Settings-1a2b/default.png"}}}
 ```
 
-`ui_diff` and `unstable` are present when the pair has them. A walked screen the seed lacks gets its line after the
+`ui_diff`, `unstable` and `was` (a pair left out as unstable, below "Unstable screens") are present when the pair has them. A walked screen the seed lacks gets its line after the
 capture stage, with `"base": null` and `"status": "new"`; a screen of the seed nothing reaches now (`gone`) is only in
 `crawl.json`. The lines come while the captures run, so a viewer sees
 a pair when its screen is finished rather than when the whole run ends; the walk itself still ends first (the
