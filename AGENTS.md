@@ -20,6 +20,9 @@ Read README.md for results and limits; this file covers how to work on the code.
    docs/ci-testbed.md, and docs/plan.md phase 0 for what is left.
 
 ## Layout
+- `apksim use [X.Y.Z|latest|default]` (`scripts/use.sh`) pins an installed release to another one; `apksim inspect
+  [optional|on|off]` sets the beam inspector and restarts the agent. Both are handled before the pin's hand-off
+  (docs/beam.md "Versions").
 - `apksim`: launcher (bash). Hands the launch to a standby when it can (`work/runtime/apksim-client`), otherwise
   builds the classpath, sandbox (`sandbox-exec`) and AOT cache flags, then runs `dev.apksim.Main`. Builtins only up
   to that hand-off: each fork there cost a few ms. Two of its settings are for memory (docs/perf-plan.md, "Memory,

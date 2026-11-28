@@ -888,6 +888,14 @@ months apart in either direction.
   the old one is dropped); `MIN_PROTOCOL` is raised only once no release that far back still serves pages, keeping at
   least the last three releases' protocols. Additive fields need no new protocol: both sides ignore what they do not
   know.
+- **Matching a site's version**: `apksim use X.Y.Z` (older or newer; also `latest`, `default`, or nothing to see
+  which) downloads that release into `~/.apksim/versions` and has the installed launcher hand everything to it
+  (`~/.apksim/use`), ending the agent, its sessions and the standbys first. Homebrew's or install.sh's copy is not
+  touched; `beam install|uninstall` stay with it, so launchd's jobs follow the pin. Versions share `~/.apksim`, so the
+  startup cache is rebuilt after a switch, and an older release may drop settings it does not know when it writes the
+  beam config. `scripts/use.sh`.
+- **The network inspector**: `apksim inspect [optional|on|off]` is `beam config inspect-network` (`optional` by
+  default) followed by `beam stop --force`, which ends running sessions.
 - **Protocols so far**: 1, the first release's; 2 (issue 173), a start may answer `need: "data"` (see "Phase 5 as
   built"). 0.20.0 and later speak 1-2. Additive since, in both protocols: hello's `asking` and the start's
   `source` (issues 177, 178); the start's `saved` and `dataFrom` and `GET /beam/saved` (issue 181, 0.21.0 and later).
