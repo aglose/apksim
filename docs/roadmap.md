@@ -91,7 +91,8 @@ current. Subagents for PR text, labels and thread replies use Haiku.
   while other lanes run is noise; only interleaved A/B runs count.
 - Each feature ships with a check that fails without it (a script and one line in `scripts/ci-smoke.sh`, or tests in
   the test app's suite) and with measured numbers in a doc of its own (`docs/<feature>.md`).
-- To keep merges clean, a lane adds only a line or two to AGENTS.md; the release's docs pass writes the rest.
+- To keep merges clean, a lane adds only a line or two to its `docs/internals/` file; the release's docs pass
+  writes the rest. AGENTS.md is loaded into every session and takes only rules every session needs.
 - Where two lanes meet: the coverage lane leaves `instrument.py`'s process handling to the test-processes lane; the
   viewer lane leaves routes in `serve/` to the serve lane; the conformance lane's fixes are small pull requests of
   their own.

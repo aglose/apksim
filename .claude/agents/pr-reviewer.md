@@ -20,9 +20,10 @@ told about, read files there; otherwise read them with `gh api` / `git show orig
   report to the session that started you; it decides what to fix.
 - Never start, stop or kill apksim instances, standbys or emulators (never `pkill`). Building or running checks is not
   your job; reading code, `git`, `gh` (read commands only) and `grep` are.
-- Read AGENTS.md's sections for the code the PR touches before judging it: most of the project's non-obvious
-  constraints are written there (the clock rules, what may run before the sandbox exists, what code may reference
-  org.webrtc or OkHttp, thread naming, test-run vs running-instance behaviour, Mac vs Linux paths).
+- Read AGENTS.md's rules and the `docs/internals/*.md` files for the code the PR touches (AGENTS.md's "Reference
+  notes" says which) before judging it: most of the project's non-obvious constraints are written there (the clock
+  rules, what may run before the sandbox exists, what code may reference org.webrtc or OkHttp, thread naming,
+  test-run vs running-instance behaviour, Mac vs Linux paths).
 
 ## What to look for, most important first
 1. **Correctness bugs**: wrong logic, off-by-one, null/empty cases, error paths that swallow or mis-report, resources
@@ -45,8 +46,10 @@ told about, read files there; otherwise read them with `gh api` / `git show orig
    covers its inputs.
 5. **Tests and checks**: is the new behaviour covered by a check that would fail without the fix (a test-app test, a
    `scripts/*-check.*`, `ci-smoke.sh`)? Is a new check wired into CI (`.github/workflows/ci.yml`, `ci-smoke.sh`)?
-6. **Docs**: new options, commands, classes or behaviour must be in AGENTS.md (and `website/docs/`, `website/pages/`,
-   `docs/`, or `README.md` where they belong), in the project's style; stale statements the PR makes false.
+6. **Docs**: new options, commands, classes or behaviour must be in the matching `docs/internals/*.md` file (and
+   `website/docs/`, `website/pages/`, `docs/`, or `README.md` where they belong), in the project's style; stale
+   statements the PR makes false. AGENTS.md is loaded into every session: a PR that adds more than a line or two of
+   subsystem detail to it should put that in `docs/internals/` instead.
 7. Simplification and reuse, only where it clearly matters (duplicate of an existing helper, dead code left behind).
    No style nits.
 

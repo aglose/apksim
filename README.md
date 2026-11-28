@@ -73,7 +73,7 @@ scripts/setup.sh
 ./apksim app.apk
 ```
 
-See [building and contributing](https://apksim.web.app/latest/building-and-contributing/) and [AGENTS.md](AGENTS.md) for rebuild commands, CI checks and architecture notes.
+See [building and contributing](https://apksim.web.app/latest/building-and-contributing/) and [AGENTS.md](AGENTS.md) for rebuild commands and rules, with per-subsystem architecture notes in [docs/internals](docs/internals).
 
 ## License
 

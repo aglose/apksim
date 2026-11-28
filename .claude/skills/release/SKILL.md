@@ -1,6 +1,6 @@
 ---
 name: release
-description: Merge every open apksim pull request, refresh the docs (website/, docs/, AGENTS.md, README.md) for what landed, then tag the next version and publish the release. Use when the owner says "release", "cut a release", "merge everything and publish", or "ship it".
+description: Merge every open apksim pull request, refresh the docs (website/, docs/, docs/internals/, README.md) for what landed, then tag the next version and publish the release. Use when the owner says "release", "cut a release", "merge everything and publish", or "ship it".
 ---
 
 # apksim release
@@ -56,7 +56,10 @@ origin/main`.
    PRs are merge commits) and `git diff --stat LAST_TAG..origin/main`.
 2. Update docs the changes made stale, and only those: `website/docs/*.md` and `website/pages/*.md` (options,
    features, results, limits, install and image tags), `README.md` (only if the top-level summary or links changed),
-   `AGENTS.md` (layout, commands, new classes and options), and the matching `docs/*.md`. Match the existing style:
+   the matching `docs/internals/*.md` (new classes, options, commands, what was measured: AGENTS.md's "Reference
+   notes" says which file has what), and the matching `docs/*.md`. `AGENTS.md` itself is loaded into every session
+   and stays short: change it only for a new top-level folder, an everyday command, or a rule every session must
+   know, a line or two each. Match the existing style:
    concrete numbers measured, what was checked, what is not done. Do not invent measurements; if a number needs a
    run, run it or leave the old one and say so.
 3. Image tag and version references: `grep -rn "ghcr.io/aglose/apksim:" README.md website docs packaging` and update
