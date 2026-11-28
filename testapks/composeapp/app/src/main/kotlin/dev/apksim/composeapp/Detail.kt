@@ -41,8 +41,8 @@ fun DetailScreen(number: Int, saved: Boolean, onSave: () -> Unit, onBack: () -> 
   var transport by rememberSaveable { mutableIntStateOf(0) }
   var packed by rememberSaveable { mutableStateOf(listOf(false, false, false)) }
   var date by rememberSaveable { mutableStateOf<Long?>(null) }
-  var picking by remember { mutableStateOf(false) }
-  var confirming by remember { mutableStateOf(false) }
+  var picking by rememberSaveable { mutableStateOf(false) }
+  var confirming by rememberSaveable { mutableStateOf(false) }
   val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
   Scaffold(
     modifier = Modifier.nestedScroll(scroll.nestedScrollConnection),

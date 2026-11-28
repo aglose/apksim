@@ -57,7 +57,8 @@ tap 734,1486 ok | MainActivity
 After each action the server waits for `settle`, reads `nodes`, and lists `+` added, `-` removed and `~` changed
 nodes against the last answer. A reference (`e1`) is never reused and stays with a node while it is on screen (the same
 text, or the same place with other text). A text-less clickable box holding one text node is folded into it, so a
-nav item or list row is one line; more than 30 changes end with a pointer to `nodes`. A node line is
+nav item or list row is one line; the answer lists changed, then added, then removed nodes, and more than 30 end with a pointer to `nodes` (so on a
+new screen it is what went that is cut, not what came). A node line is
 `ref "label" click|field`.
 
 ## Safety

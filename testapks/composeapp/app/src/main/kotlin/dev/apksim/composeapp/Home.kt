@@ -89,12 +89,13 @@ fun PlaceBadge(number: Int, size: Dp, modifier: Modifier = Modifier) {
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun HomeScreen(state: HomeState, count: Int, wide: Boolean, onOpen: (Int) -> Unit) {
+fun HomeScreen(state: HomeState, count: Int, wide: Boolean, listState: androidx.compose.foundation.lazy.LazyListState,
+    gridState: androidx.compose.foundation.lazy.grid.LazyGridState, onOpen: (Int) -> Unit) {
   val places = remember(state.query, state.onlySaved, state.saved) {
     (1..100).filter { (!state.onlySaved || it in state.saved) && (state.query.isBlank() || Place(it).run { name.contains(state.query.trim(), true) || city.contains(state.query.trim(), true) }) }
   }
   if (wide) {
-    LazyVerticalGrid(GridCells.Adaptive(240.dp), Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 112.dp),
+    LazyVerticalGrid(GridCells.Adaptive(240.dp), Modifier.fillMaxSize(), state = gridState, contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 112.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
       item(span = { GridItemSpan(maxLineSpan) }) { HomeHeader(state, count, places.size) }
       gridItems(places, key = { it }) { i ->
@@ -114,7 +115,7 @@ fun HomeScreen(state: HomeState, count: Int, wide: Boolean, onOpen: (Int) -> Uni
       }
     }
   } else {
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 112.dp),
+    LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 112.dp),
         verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
       item { HomeHeader(state, count, places.size) }
       itemsIndexed(places, key = { _, i -> i }) { index, i ->

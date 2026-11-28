@@ -111,6 +111,9 @@ fun Root(db: Db, startTab: Int = 0) {
   var tab by rememberSaveable { mutableIntStateOf(startTab) }
   var count by rememberSaveable { mutableIntStateOf(0) }
   val home = rememberHomeState()
+  // Held here, not in HomeScreen: a place's page replaces the tabs, and the list is where it was on the way back.
+  val homeList = androidx.compose.foundation.lazy.rememberLazyListState()
+  val homeGrid = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
   // The place whose page is open over the tabs (Detail.kt), 0 for none. Back closes it.
   var detail by rememberSaveable { mutableIntStateOf(0) }
   if (detail != 0) {
@@ -182,7 +185,7 @@ fun Root(db: Db, startTab: Int = 0) {
       }
       Box(Modifier.weight(1f)) {
         when (tab) {
-          0 -> HomeScreen(home, count, wide, onOpen = { detail = it })
+          0 -> HomeScreen(home, count, wide, homeList, homeGrid, onOpen = { detail = it })
           1 -> Trips(db)
           3 -> ShaderScreen()
           else -> SettingsScreen()

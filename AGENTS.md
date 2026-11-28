@@ -929,8 +929,8 @@ python3 scripts/drive.py 7400 'wait 3000' 'tap 720 1690' 'wait 3000' 'frames' 'f
 python3 scripts/bench.py 5 <apk> [<apk>...]   # launch times, cold and warm (--cold / --warm for one)
 ./apksim --stop-standbys                       # this folder's warm-launch standbys
 ```
-Coordinates are device pixels (phone: 822x1782, density 2). Test-app bottom nav: Home 130, Trips 300-410,
-Settings 550-690, Shader 720; y=1690. FAB is at 733,1533.
+Coordinates are device pixels (phone: 822x1782, density 2). Test-app bottom nav (four equal items): Home 0-205, Trips 205-411,
+Settings 411-616, Shader 616-822 (scripts tap 130, 300 or 350, 515 or 550, 720); y=1690. FAB is at 733,1533.
 The owner's own app, its paths, coordinates and sign-in are in `~/.config/apksim/NOTES.md` (private, not in the
 repo): read it before working with that app.
 
@@ -2099,12 +2099,13 @@ singleTask/singleTop activity is delivered to its onNewIntent. More of a device'
 (each found by a suite that passed on the emulator and failed here):
 - Compose's test clock posts to the UI thread behind what is queued there on a device; here the test is on the main
   thread, so the translator calls `TestActivities.beforeUiThreadAction` before Compose's `runOnUiThread`, which runs
-  the main queue first (GlobalSnapshotManager's apply). The rule's idling resource is noted where the translator
-  sees `RobolectricIdlingStrategy`'s constructor (so Espresso's waits also wait for Compose): ui-test 1.12 gave that
-  constructor a third argument, and until both shapes were matched `ComposeEspressoIdleTest` failed on Compose 1.12. Without it, with autoAdvance off, a state set in runOnIdle
+  the main queue first (GlobalSnapshotManager's apply). Without it, with autoAdvance off, a state set in runOnIdle
   never reached the composition. The looper stays PAUSED: Compose's Robolectric idling needs it
   (INSTRUMENTATION_TEST mode made it call Espresso.onIdle on the main thread; a device fingerprint made it wait for
   draw passes that never come).
+- The Compose rule's idling resource is noted where the translator sees `RobolectricIdlingStrategy`'s constructor, so
+  Espresso's waits also wait for Compose (`TestActivities.composeIdling`). ui-test 1.12 gave that constructor a third
+  argument; until both shapes were matched, `ComposeEspressoIdleTest` failed on Compose 1.12.
 - `Thread.sleep` in app and test code is translated to `TestActivities.sleep`: in a test run, on the main thread and
   outside a message dispatch, it runs the main queue's due messages while sleeping (the clock does not move), as a
   device's main thread would run beside the test thread. A journey polling its fake server for a request that a
