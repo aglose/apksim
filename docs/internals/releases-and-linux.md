@@ -25,7 +25,8 @@ and pid file, and in a checkout `work/`'s build outputs (`apksim.jar`, `lib`, `r
 `release`). Training's stages run outside the sandbox, so on macOS they work in a folder of their own in the home
 folder (`~/.apksim-train.XXXXXX`, removed after), on a copy of the test app checked against the release's hash, with
 a class cache, extracted libraries and resource table made there rather than read from `STATE/cache`, which apps may
-write. Still app-writable, and only read by sandboxed launches: `STATE/cache` (one app could plant translated classes
+write; the files of the class cache and table that `STATE` lacks are then put there, each by rename (a running
+instance maps the table). Still app-writable, and only read by sandboxed launches: `STATE/cache` (one app could plant translated classes
 for another), and the standby sockets in `$TMPDIR`. A standby keeps the profile it booted with (`--stop-standbys`). Standbys are keyed by install folder plus `STATE`. A release has no AOT cache (it is tied to its folder and
 JDK): the first launch without one, and the beam agent when it starts (`start_training` in the launcher; never a beamed launch, whose sandbox refuses the record stage's writes: issue 559), starts `train.sh --headless` detached (`STATE/train.pid`, log `STATE/train.log`)
 and goes on without it; a headless-trained cache is as fast as a windowed one (1.73 against 1.72 s). The launcher

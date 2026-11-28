@@ -101,8 +101,10 @@ rm -f "$STATE/train.failed"
 # to STATE after, as before. Elsewhere (Linux: no sandbox) the stages use STATE as they always did.
 TS="$STATE"
 if [[ "$(uname -s)" == Darwin ]]; then
+  # A training killed outright (SIGKILL, power loss) leaves its folder: those over a day old go.
+  find "$HOME" -maxdepth 1 -type d -name '.apksim-train.??????' -mmin +1440 -exec rm -rf {} + 2>/dev/null || true
   TS="$(mktemp -d "$HOME/.apksim-train.XXXXXX")"
-  trap 'rm -f "$CONF" "$NEW" "$REL" "$DL"; rm -rf "$TS"; [[ "$(cat "$STATE/train.pid" 2>/dev/null)" == "$$" ]] && rm -f "$STATE/train.pid"; true' EXIT
+  trap 'rm -f "$CONF" "$NEW" "$REL" "$DL" "$STATE/app.aot.new.$$" "$STATE/app.aot.root.$$"; rm -rf "$TS"; [[ "$(cat "$STATE/train.pid" 2>/dev/null)" == "$$" ]] && rm -f "$STATE/train.pid"; true' EXIT
   cp "$APK" "$TS/train.apk"; APK="$TS/train.apk"
   if [[ -n "$RELEASE_APK" && "$(shasum -a 256 "$APK" | cut -d' ' -f1)" != "$(tr -d ' \n' < "$ROOT/work/testapp.sha256")" ]]; then
     echo "train.sh: the test app changed while training started; not used" >&2
@@ -136,9 +138,18 @@ stage create --jvm -XX:AOTMode=create --jvm "-XX:AOTConfiguration=$CONF" --jvm "
 # Into place by rename, so running instances keep the cache they mapped; the root last, as launches check it. From the
 # private folder, a copy beside it first (another volume than the home folder is possible with APKSIM_HOME).
 if [[ "$TS" != "$STATE" ]]; then
-  cp "$NEW" "$STATE/app.aot.new.$$" && NEW="$STATE/app.aot.new.$$"
-  mkdir -p "$STATE/cache"
-  for d in classes framework; do [[ -d "$TS/cache/$d" ]] && cp -R "$TS/cache/$d" "$STATE/cache/" 2>/dev/null || true; done
+  cp "$NEW" "$STATE/app.aot.new.$$" || { echo "train.sh: could not copy the startup cache into $STATE" >&2; exit 1; }
+  NEW="$STATE/app.aot.new.$$"
+  # The test app's translated classes and the framework's resource table, so its next launch is warm, as before. Only
+  # files STATE lacks (both are named by what they hold), each by rename: a running instance maps the table, and a
+  # file copied over in place is truncated under it. Not through a link an app put in place of a folder.
+  if [[ ! -L "$STATE/cache" ]]; then
+    (cd "$TS/cache" 2>/dev/null && find classes framework -type f 2>/dev/null) | while IFS= read -r f; do
+      d="$STATE/cache/$f"
+      [[ -e "$d" || -L "$d" || -L "$(dirname "$d")" ]] && continue
+      mkdir -p "$(dirname "$d")" && cp "$TS/cache/$f" "$d.train.$$" && mv -f "$d.train.$$" "$d" || rm -f "$d.train.$$"
+    done
+  fi
 fi
 mv -f "$NEW" "$STATE/app.aot"
 # An installed release's cache is for that release too (the launcher compares app.aot.release with work/release).
@@ -146,5 +157,5 @@ mv -f "$NEW" "$STATE/app.aot"
 # stamp would be read-only and the next training would fail to overwrite it.
 if [[ -f "$ROOT/work/release" ]]; then cat "$ROOT/work/release" > "$REL"; else : > "$REL"; fi
 mv -f "$REL" "$STATE/app.aot.release"
-printf '%s' "$ROOT" > "$STATE/app.aot.root"
+printf '%s' "$ROOT" > "$STATE/app.aot.root.$$" && mv -f "$STATE/app.aot.root.$$" "$STATE/app.aot.root"
 ls -la "$STATE/app.aot"
