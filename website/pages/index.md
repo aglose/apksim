@@ -26,7 +26,7 @@ apksim app-debug.apk
 </div>
 <div class="device-wrap" markdown>
 <figure class="device" markdown>
-![The apksim test app's home screen in Material 3 Expressive: a search field, a counter card, a list of places and a navigation bar with Home, Trips, Settings and Shader](site-assets/app-light.png){ .only-light }
+![The apksim test app's home screen in Material 3 Expressive, dark appearance: a search field, a counter card, a list of places and a navigation bar with Home, Trips, Settings and Shader](site-assets/app-light.png){ .only-light }
 ![The apksim test app's Trips screen in dark mode: three trip cards and a note field](site-assets/app-dark.png){ .only-dark }
 </figure>
 <p class="hero-note">Captured directly by apksim, headless.</p>

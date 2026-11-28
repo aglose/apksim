@@ -874,8 +874,9 @@ Read README.md for results and limits; this file covers how to work on the code.
   website/requirements.txt`; nothing else of apksim needs it).
   In a table, a code span's `\|` becomes `|` with a break allowed after it. `website/assets/site.css` holds the
   site's colours (light and a blue-grey dark), type and table styling; `app-light.png`/`app-dark.png` there are the
-  test app's `shot` output (Home, and Trips with `appearance dark`), shown on the landing page: retake them when the
-  test app's look changes.
+  test app's `shot` output (Home and Trips, both with `--appearance dark`: the app is shown dark in the docs, as
+  Greenroom opens its bundled copy), shown on the landing page; the simulator window page's `win-*.png` are dark too:
+  retake them when the test app's look changes.
   The workflow builds on pull requests that touch a source, and deploys every version on a push to `main` that
   touches one and whenever a release is published (which is what moves `/latest/`). Its `build` job is not a required
   check (ci.yml skips its jobs for these paths), so look at it before merging a docs change.

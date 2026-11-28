@@ -174,7 +174,7 @@ Zooming scales the window on your Mac's display without changing the Android dev
 </div>
 <div class="menu-preview" markdown>
 <figure class="menu-preview-frame menu-preview-frame--screen" markdown>
-![ComposeApp with Show Layout Bounds enabled showing red and blue bounds overlays](site-assets/win-layout-bounds.png)
+![ComposeApp in dark appearance with Show Layout Bounds enabled showing red and blue bounds overlays](site-assets/win-layout-bounds.png)
 </figure>
 <div class="menu-preview-meta" markdown>
 **Show Layout Bounds** draws Android's layout and clip bounds over Views and Compose nodes. Pair with **Slow Animations** (`⌘T`) to inspect transitions frame by frame.
