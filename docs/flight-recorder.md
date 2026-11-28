@@ -162,10 +162,14 @@ A bundle is meant to be sent to someone else, so by default it leaves out:
 - pasted text (Cmd+V, `paste`), wherever it goes: `{"pasted": true, "redacted": true}` per character;
 - that same text in the requests that carried it (a sign-in's body holds the password its field was typed into): the
   recorder keeps each stretch of left-out characters in memory (Delete takes the last one back; a touch, another key or
-  other text ends the stretch), and a save writes every request begun after it was typed whose body or URL holds it, as
-  written, form- or percent-encoded or JSON-escaped, with as many `x` in its place, which is what a replay types. The
-  entry is marked `_apksimRedactedInput` and `counts.harRedactedInput` counts them. Only text of 4 characters or more
-  is looked for (shorter turns up by chance), only in requests, and not in a body over 32 MB;
+  other text ends the stretch), and a save writes every request begun after it was typed whose body or URL holds it
+  with as many `x` in its place, which is what a replay types. Each character is found as itself, percent-encoded
+  (`+` for a space) or as a JSON escape (`\uXXXX` too), in any mix, and not inside a longer word ("pass" in
+  "passport"). The entry is marked `_apksimRedactedInput` and `counts.harRedactedInput` counts them. Only with the
+  `input` channel on (without it nothing knows what was typed), only text of 4 characters or more (shorter turns up by
+  chance), only in a request's URL and body (not its headers, a compressed body, WebSocket messages or answers), and
+  not in a body over 32 MB. A run edited after a tap (Delete once the field was touched again) is not the field's text
+  and is not found: compare `counts.redactedInput` with `counts.harRedactedInput` before sending a bundle of a sign-in;
 - clipboard text (`clipboard set TEXT` is kept as its length);
 - `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` headers (`--network-redact` adds more names);
 - database values, unless `db+values` is on: bound arguments, ContentValues, query results, and literals written into

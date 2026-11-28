@@ -464,7 +464,8 @@ sandbox refuses, an address with no route). Loopback connects are left out, as a
 Replaying, a connect to a host and port the recording has such entries for, and no answer from, fails with the recorded
 exception's class and message (after the recorded time with `--network-replay-timing recorded`); the entries are
 served in order, the last repeating. A host and port that also has answers in the recording is connected as before: its
-failures were passing, and failing every connect to it would lose the answers. Not kept: a name that did not resolve
+failures were passing, and failing every connect to it would lose the answers (any exchange counts, also one that
+got no whole answer). Not kept: a name that did not resolve
 (the app's lookup fails before any connect; replaying, every name resolves to a placeholder), and connects that fail
 while `rec off net` has the capture paused.
 

@@ -60,6 +60,12 @@ public final class ReplayMatchCheck {
     check(("/login?p=" + x + "&u=1").equals(text(Recording.scrub("/login?p=p%40ss%20%22w%22%201%2B1&u=1".getBytes(StandardCharsets.UTF_8), secret))),
         "scrub: percent-encoded (%20 for a space)");
     check((x + " and " + x).equals(text(Recording.scrub((secret + " and " + secret).getBytes(StandardCharsets.UTF_8), secret))), "scrub: as written, each time");
+    check(("{\"p\":\"" + "x".repeat(9) + "\"}").equals(text(Recording.scrub("{\"p\":\"p\\u0026ss\\u003d123\\u00e9\"}".getBytes(StandardCharsets.UTF_8), "p&ss=123\u00e9"))),
+        "scrub: \\uXXXX escapes (Gson's & and =, a non-ASCII letter)");
+    check("p=xxxxxxxx&u=1".equals(text(Recording.scrub("p=my%20pass!&u=1".getBytes(StandardCharsets.UTF_8), "my pass!"))), "scrub: Uri.encode's form (%20, ! as itself)");
+    check("p=xxxxxxxx".equals(text(Recording.scrub("p=p%c3%a9%2fw%40rd1".getBytes(StandardCharsets.UTF_8), "p\u00e9/w@rd1"))), "scrub: lower-case percent hex");
+    check(Recording.scrub("{\"q\":\"passport\",\"n\":\"compass\"}".getBytes(StandardCharsets.UTF_8), "pass") == null, "scrub: not inside a longer word");
+    check("{\"q\":\"xxxx\"}".equals(text(Recording.scrub("{\"q\":\"pass\"}".getBytes(StandardCharsets.UTF_8), "pass"))), "scrub: a whole word is found");
     check(Recording.scrub("nothing here".getBytes(StandardCharsets.UTF_8), secret) == null, "scrub: null when the text is not there");
     check(Recording.scrub("abc abc".getBytes(StandardCharsets.UTF_8), "abc") == null, "scrub: text under " + Recording.TYPED_MIN + " characters is not looked for");
     byte[] binary = {0, (byte) 0xff, 'h', 'u', 'n', 't', 'e', 'r', (byte) 0xfe};

@@ -387,6 +387,8 @@ public final class Net {
   static void connectFailed(String host, int port, String error, long startWall, long ms) {
     Recording r = recording;
     if (r == null || mode != Mode.LIVE || host == null) return;
+    // A name that did not resolve is not a connect: replaying, every name resolves, and the app's lookup is its own.
+    if (error.contains("UnknownHostException")) return;
     Recording.Entry e = new Recording.Entry();
     e.wallMs = startWall;
     e.started = java.time.Instant.ofEpochMilli(startWall).toString();

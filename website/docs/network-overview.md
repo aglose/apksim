@@ -10,7 +10,7 @@ apksim --network-profile 3g app.apk                      # or offline, lossy, la
 The recording is a standard HAR 1.2 file, so browser dev tools and proxies can read it, and it can be edited by hand.
 `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` are redacted by default (`--network-redact` adds
 names). A replayed request must match on method, URL and body (`--network-match` adds headers, `--network-ignore-query`
-and `--network-ignore-header` for cache busters). One that doesn't gets a 599, is logged with the closest recorded
+and `--network-ignore-header` for cache busters, `--network-loose` for query values made at run time). One that doesn't gets a 599, is logged with the closest recorded
 entry, and in a test run fails the test.
 
 It works on the app's own HTTP stack, through the JDK calls R8 never renames, so minified builds record too.

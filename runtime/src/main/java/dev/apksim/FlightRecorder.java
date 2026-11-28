@@ -179,8 +179,10 @@ final class FlightRecorder {
         Rec.NET.clear(now);
         Net.clearCaptured();  // the in-memory capture; a --network record file keeps its own
         redacted = 0;
-        leftOut.clear();
-        typing = null;
+        synchronized (leftOut) {
+          leftOut.clear();
+          typing = null;
+        }
         List<Checkpoint> gone;
         synchronized (checkpoints) {
           gone = retire(new ArrayList<>(checkpoints));
@@ -305,7 +307,8 @@ final class FlightRecorder {
   /**
    * Text left out of the journal as it was typed or pasted, kept in memory only so that a save can take it out of the
    * requests that carried it (Recording.Typed: a sign-in's body holds the password the journal does not). One run per
-   * stretch of left-out characters into one field; Delete takes its last character back. Main thread.
+   * stretch of left-out characters into one field; Delete takes its last character back. Written on the main thread
+   * and read by a save, which a crash makes on the crashing thread: all under `leftOut`'s lock.
    */
   private static final class LeftOut {
     final long fromWall = System.currentTimeMillis();
@@ -325,6 +328,12 @@ final class FlightRecorder {
   private static final int LEFT_OUT_RUNS = 64;
 
   private static void leftOut(boolean pasted, int ch) {
+    synchronized (leftOut) {
+      leftOutLocked(pasted, ch);
+    }
+  }
+
+  private static void leftOutLocked(boolean pasted, int ch) {
     if (typing == null || typing.pasted != pasted) {
       typing = new LeftOut(pasted);
       leftOut.add(typing);
@@ -347,16 +356,18 @@ final class FlightRecorder {
   /** The runs a save looks for in its requests: [0] when each began, [1] its text. Runs out of the window are dropped. */
   private static Object[] leftOutNow() {
     long keep = Rec.keepFromWallMs();
-    leftOut.removeIf(r -> r != typing && r.lastWall < keep);
-    List<LeftOut> use = new ArrayList<>();
-    for (LeftOut r : leftOut) if (!r.unknown && r.text.length() >= 4) use.add(r);
-    long[] from = new long[use.size()];
-    String[] text = new String[use.size()];
-    for (int i = 0; i < from.length; i++) {
-      from[i] = use.get(i).fromWall;
-      text[i] = use.get(i).text.toString();
+    synchronized (leftOut) {
+      leftOut.removeIf(r -> r != typing && r.lastWall < keep);
+      List<LeftOut> use = new ArrayList<>();
+      for (LeftOut r : leftOut) if (!r.unknown && r.text.length() >= 4) use.add(r);
+      long[] from = new long[use.size()];
+      String[] text = new String[use.size()];
+      for (int i = 0; i < from.length; i++) {
+        from[i] = use.get(i).fromWall;
+        text[i] = use.get(i).text.toString();
+      }
+      return new Object[] {from, text};
     }
-    return new Object[] {from, text};
   }
 
   /** An input event about to be dispatched to the app (main thread). `uptime`: the app's SystemClock.uptimeMillis. */
@@ -391,13 +402,18 @@ final class FlightRecorder {
       // What goes into a password field stays on this Mac; a replay types a placeholder there.
       m.put("redacted", true);
       redacted++;
-      leftOut(false, t == SimWindow.CHAR ? (int) e.value() : keyChar((int) e.value(), (int) e.x()));
+      // A modifier's own key event (Shift going down) types nothing.
+      if (t == SimWindow.CHAR || !android.view.KeyEvent.isModifierKey((int) e.value())) {
+        leftOut(false, t == SimWindow.CHAR ? (int) e.value() : keyChar((int) e.value(), (int) e.x()));
+      }
     } else {
       // Delete takes the last left-out character back; anything else that begins (a touch, a key, other text) ends the run.
-      if (t == SimWindow.KEY && (int) e.value() == android.view.KeyEvent.KEYCODE_DEL) {
-        if (typing != null && typing.text.length() > 0) typing.text.setLength(typing.text.offsetByCodePoints(typing.text.length(), -1));
-      } else if (t == SimWindow.DOWN || t == SimWindow.TOUCH2_DOWN || t == SimWindow.KEY || t == SimWindow.CHAR || t == SimWindow.BACK) {
-        typing = null;
+      synchronized (leftOut) {
+        if (t == SimWindow.KEY && (int) e.value() == android.view.KeyEvent.KEYCODE_DEL) {
+          if (typing != null && typing.text.length() > 0) typing.text.setLength(typing.text.offsetByCodePoints(typing.text.length(), -1));
+        } else if (t == SimWindow.DOWN || t == SimWindow.TOUCH2_DOWN || t == SimWindow.KEY || t == SimWindow.CHAR || t == SimWindow.BACK) {
+          typing = null;
+        }
       }
       m.put("x", e.x());
       m.put("y", e.y());

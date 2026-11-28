@@ -201,7 +201,7 @@ final class Recording {
 
   /** Entries marked `_apksimRedactedInput`, by their key without the body. */
   private final Map<String, List<Entry>> byRedacted = new HashMap<>();
-  /** Connects that failed while recording, by "host:port" (lower case), and the "host:port"s some entry has an answer from. */
+  /** Connects that failed while recording, by "host:port" (lower case), and the "host:port"s some exchange went to. */
   private final Map<String, List<Entry>> failedConnects = new HashMap<>();
   private final Set<String> answeredHosts = new java.util.HashSet<>();
   /**
@@ -217,11 +217,12 @@ final class Recording {
       failedConnects.computeIfAbsent(e.url.toLowerCase(Locale.ROOT), k -> new ArrayList<>()).add(e);
       return;
     }
+    // Any exchange with the host and port, answered whole or not: its server was there, whatever connect failed once.
+    String hp = hostPort(e.url);
+    if (hp != null) answeredHosts.add(hp);
     if (!e.replayable()) return;
     byKey.computeIfAbsent(e.key, k -> new ArrayList<>()).add(e);
     if (e.redactedInput) byRedacted.computeIfAbsent(key(e.method, e.url, e.reqHeaders, null, true, false), k -> new ArrayList<>()).add(e);
-    String hp = hostPort(e.url);
-    if (hp != null) answeredHosts.add(hp);
   }
 
   /** "host:port" of an http(s) URL, lower case, with the scheme's port when it names none; null without a host. */
@@ -598,33 +599,104 @@ final class Recording {
   static final int TYPED_MIN = 4;
 
   /**
-   * `data` with `secret` replaced by as many `x` wherever it stands as written, form- or percent-encoded, or escaped
-   * as JSON; null when it is not there. Bytes, so a body that is not text is searched too.
+   * `data` with `secret` replaced by as many `x` wherever it stands; null when it is not there. Each character may be
+   * written as itself (UTF-8), percent-encoded (either case of hex; `+` for a space), or as a JSON escape (`\"`, `\\`,
+   * `\/`, a `u` escape of four hex digits: Gson writes `& = ' < >` so), in any mix, so the forms URLEncoder, Uri.encode, org.json, Gson and
+   * the like give are all found. Where the text begins or ends with a letter or digit, the byte beside it must not be
+   * one: "pass" is not found in "passport". Bytes, so a body that is not text is searched too.
    */
   static byte[] scrub(byte[] data, String secret) {
     if (data == null || data.length == 0 || secret.length() < TYPED_MIN) return null;
-    String form = java.net.URLEncoder.encode(secret, StandardCharsets.UTF_8);
-    StringBuilder json = new StringBuilder();
-    for (int i = 0; i < secret.length(); i++) {
-      char c = secret.charAt(i);
-      if (c == '"' || c == '\\') json.append('\\');
-      json.append(c);
+    int[] cps = secret.codePoints().toArray();
+    byte[][] raw = new byte[cps.length][];
+    for (int i = 0; i < cps.length; i++) raw[i] = new String(Character.toChars(cps[i])).getBytes(StandardCharsets.UTF_8);
+    boolean wordStart = Character.isLetterOrDigit(cps[0]), wordEnd = Character.isLetterOrDigit(cps[cps.length - 1]);
+    java.io.ByteArrayOutputStream out = null;
+    int copied = 0;
+    for (int at = 0; at < data.length; at++) {
+      if (wordStart && at > 0 && alnum(data[at - 1])) continue;
+      int end = scrubMatch(data, at, cps, raw, 0);
+      if (end < 0 || wordEnd && end < data.length && alnum(data[end])) continue;
+      if (out == null) out = new java.io.ByteArrayOutputStream(data.length);
+      out.write(data, copied, at - copied);
+      for (int i = 0; i < secret.length(); i++) out.write('x');
+      copied = end;
+      at = end - 1;
     }
-    Set<String> forms = new java.util.LinkedHashSet<>();
-    // The longest first: an encoded form holds the plain one when nothing in it needed encoding.
-    for (String f : new String[] {form.replace("+", "%20").replace("*", "%2A"), form.replace("+", "%20"), form,
-        json.toString().replace("/", "\\/"), json.toString(), secret}) {  // org.json writes a slash as \/
-      forms.add(new String(f.getBytes(StandardCharsets.UTF_8), StandardCharsets.ISO_8859_1));
+    if (out == null) return null;
+    out.write(data, copied, data.length - copied);
+    return out.toByteArray();
+  }
+
+  private static boolean alnum(byte b) {
+    return b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z';
+  }
+
+  /** Where the text from character `i` on ends when it stands at `at` in some mix of its written forms; -1 if it does not. */
+  private static int scrubMatch(byte[] d, int at, int[] cps, byte[][] raw, int i) {
+    if (i == cps.length) return at;
+    int cp = cps[i];
+    byte[] r = raw[i];
+    // As itself.
+    if (startsWith(d, at, r)) {
+      int end = scrubMatch(d, at + r.length, cps, raw, i + 1);
+      if (end >= 0) return end;
     }
-    String hay = new String(data, StandardCharsets.ISO_8859_1);
-    String x = "x".repeat(secret.length());
-    boolean found = false;
-    for (String f : forms) {
-      if (!hay.contains(f)) continue;
-      hay = hay.replace(f, x);
-      found = true;
+    // Percent-encoded, byte by byte, and a form's + for a space.
+    if (cp == ' ' && at < d.length && d[at] == '+') {
+      int end = scrubMatch(d, at + 1, cps, raw, i + 1);
+      if (end >= 0) return end;
     }
-    return found ? hay.getBytes(StandardCharsets.ISO_8859_1) : null;
+    int p = at;
+    boolean percent = true;
+    for (byte x : r) {
+      if (p + 2 >= d.length || d[p] != '%' || hex(d[p + 1]) < 0 || hex(d[p + 2]) < 0 || (hex(d[p + 1]) << 4 | hex(d[p + 2])) != (x & 0xff)) {
+        percent = false;
+        break;
+      }
+      p += 3;
+    }
+    if (percent) {
+      int end = scrubMatch(d, p, cps, raw, i + 1);
+      if (end >= 0) return end;
+    }
+    // A JSON escape: the two-character ones, and a u escape for each UTF-16 unit.
+    if (at + 1 < d.length && d[at] == '\\') {
+      if ((cp == '"' || cp == '\\' || cp == '/') && d[at + 1] == cp) {
+        int end = scrubMatch(d, at + 2, cps, raw, i + 1);
+        if (end >= 0) return end;
+      }
+      p = at;
+      boolean unicode = true;
+      for (char u : Character.toChars(cp)) {
+        if (p + 5 >= d.length || d[p] != '\\' || d[p + 1] != 'u') {
+          unicode = false;
+          break;
+        }
+        int v = 0;
+        for (int k = 2; k < 6; k++) v = hex(d[p + k]) < 0 ? -1 << 20 : v << 4 | hex(d[p + k]);
+        if (v != u) {
+          unicode = false;
+          break;
+        }
+        p += 6;
+      }
+      if (unicode) {
+        int end = scrubMatch(d, p, cps, raw, i + 1);
+        if (end >= 0) return end;
+      }
+    }
+    return -1;
+  }
+
+  private static boolean startsWith(byte[] d, int at, byte[] w) {
+    if (at + w.length > d.length) return false;
+    for (int k = 0; k < w.length; k++) if (d[at + k] != w[k]) return false;
+    return true;
+  }
+
+  private static int hex(byte b) {
+    return b >= '0' && b <= '9' ? b - '0' : b >= 'a' && b <= 'f' ? b - 'a' + 10 : b >= 'A' && b <= 'F' ? b - 'A' + 10 : -1;
   }
 
   /** Forgets every entry (the flight recorder's `rec clear`; only for a recording with no file). */

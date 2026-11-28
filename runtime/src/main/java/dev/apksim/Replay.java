@@ -634,6 +634,7 @@ final class Replay {
    * that carried input the recording left out.
    */
   private String requests() {
+    if (requests != null) return null;  // reported already (a crash, then the end)
     try {
       requests = dev.apksim.net.Net.replayReport();
     } catch (RuntimeException e) {

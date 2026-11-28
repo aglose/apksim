@@ -120,8 +120,9 @@ three things used to need options worked out by hand.
 **The password.** The journal leaves characters typed into a password field out ([flight-recorder.md](flight-recorder.md)
 "Privacy") and a replay types `x` for each, so the sign-in request's body is not the recorded one. The recorder now
 takes the same text out of the requests that carried it: while it leaves characters out it keeps them in memory, and at
-a save every request begun after they were typed whose body or URL holds them (as written, form- or percent-encoded, or
-JSON-escaped; 4 characters or more) is written with as many `x` in their place and marked `_apksimRedactedInput`. The
+a save every request begun after they were typed whose body or URL holds them (each character as itself,
+percent-encoded or a JSON escape; 4 characters or more, not inside a longer word; the `input` channel must be on) is
+written with as many `x` in their place and marked `_apksimRedactedInput`. The
 recorded body is then the one the replay sends, and matches exactly; the bundle no longer holds the password in its
 HAR either. A marked entry also answers a request with its method and URL whose body differs (`matched:
 ["redacted-input"]`): the body is the part the replay cannot type, for instance when Delete was used in a way the
