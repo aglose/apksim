@@ -26,7 +26,8 @@ comment   writes Markdown for the pull request from verify's and diff's results,
           one folder under stable names for the caller to host (`--image-base URL` is put in front of their names).
 run       baseline (unless --baseline DIR has one), verify, diff, comment, in WORK.
 
-Options after `--` go to every apksim launch (`--network-host`, `--network-trust`, `--feature`, `--data-slots`...);
+Options after `--` go to every apksim launch (`--network-host`, `--network-trust`, `--feature`...), except that
+`--data-slots` and `--fresh` go to the walks only: a replay runs in its own slot, restored from the recording;
 `--base-option`/`--new-option` to one build's only. diff reuses the baseline's crawl.py and apksim options unless it
 is given its own. Name the APK or the recording first: an option this script does not know goes to crawl.py with what
 follows it. Standard library only; needs crawl.py, crawl-select.py and the apksim launcher beside it (an
@@ -177,8 +178,8 @@ def print_baseline_summary(s, depth, out):
     if s["crashes"]:
         say(f"  {plural(s['crashes'], 'crash', 'crashes')} found on the base build: see report.html")
     if s["screens"] <= 2:
-        say("  Only the start was found. An app behind a sign-in is walked signed in only from a prepared data slot "
-            "(crawl.py --keep-data; the crawler never signs in: docs/bug-to-pr.md \"Before you start\").")
+        say("  Very few screens. If that is a sign-in screen: an app behind a sign-in is walked signed in only from a prepared "
+            "data slot (crawl.py --keep-data; the crawler never signs in: docs/bug-to-pr.md \"Before you start\").")
 
 
 def cmd_baseline(a, crawl_opts, sim):
@@ -273,6 +274,12 @@ def regions_of(map_path):
         return None
 
 
+def replay_options(sim):
+    """The shared launch options a replay may have: it runs in a data slot of its own, restored from the checkpoint,
+    so the walks' --data-slots (a prepared sign-in slot) and --fresh must not reach it."""
+    return without_option(without_option(sim, "--data-slots"), "--fresh", takes_value=False)
+
+
 def replay_one(name, bundle, apk, opts, out, timeout, result):
     d = os.path.join(out, name)
     shutil.rmtree(d, ignore_errors=True)
@@ -309,7 +316,7 @@ def replay_one(name, bundle, apk, opts, out, timeout, result):
     unmatched = []
     for n in r["notes"]:
         if n.startswith("requests the recording has no answer for:"):
-            unmatched = [u.strip() for u in n.split(":", 1)[1].split(";") if u.strip()]
+            unmatched = [u.strip().split("?", 1)[0] for u in n.split(":", 1)[1].split(";") if u.strip()]  # no query strings: they can hold tokens
     r["requests"] = {"answered": len(answered), "unanswered": len(unmatched), "unanswered_list": unmatched[:20]}
     if first:
         files = first.get("files", "").split()
@@ -369,10 +376,21 @@ def verdict_of(base, new, expect):
     for r, which in ((base, "base"), (new, "new")):
         if r["result"] not in ("matched", "diverged", "crashed"):
             return None, f"the replay on the {which} build could not run ({r['result']}): {r.get('error', '')}"
+    if base["result"] == "crashed":
+        # A recording that ends in the crash (the recorder saves one by itself): the bug is the crash.
+        if expect == "same":
+            return False, f"the base build crashes on the recorded steps ({base.get('crash')}): not a recording to expect no change from."
+        if new["result"] == "crashed":
+            return False, f"both builds crash on the recorded steps (base: {base.get('crash')}; new: {new.get('crash')})."
+        return True, (f"the base build crashes on the recorded steps ({base.get('crash')}) and the new build plays them to the end "
+                      "without crashing. Look at the new build's last pictures: the replay shows it no longer crashes, not what it shows instead.")
+    for r, which in ((base, "base"), (new, "new")):
+        if r["result"] == "matched" and not r["points"]:
+            return None, (f"the replay on the {which} build compared no screen (a recording without the screen channel, e.g. "
+                          "`--rec input`): there is nothing to tell the builds apart by. Record with `--rec all`.")
     if base["result"] != "matched":
-        how = "crashed" if base["result"] == "crashed" else f"differs from the recording at `{base['first']['label']}`"
-        return False, (f"the base build {how}, so the recording does not show this build's behaviour and nothing can be "
-                       "said about the change. Was it recorded on this build, with the same launch options?")
+        return False, (f"the base build differs from the recording at `{base['first']['label']}`, so the recording does not show "
+                       "this build's behaviour and nothing can be said about the change. Was it recorded on this build, with the same launch options?")
     if expect == "same":
         if new["result"] == "matched":
             return True, "both builds replay the recording to the same screens: no visible change along the recorded steps."
@@ -399,7 +417,7 @@ def cmd_verify(a, sim):
     res, threads = {}, []
     for name, apk, extra in (("base", a.base, a.base_option), ("new", a.new, a.new_option)):
         t = threading.Thread(target=replay_one, args=(name, os.path.abspath(a.bundle), os.path.abspath(apk),
-                                                      sim + shlex.split(extra or ""), out, a.timeout, res))
+                                                      replay_options(sim) + shlex.split(extra or ""), out, a.timeout, res))
         threads.append(t)
         t.start()
         if a.serial:
@@ -416,7 +434,7 @@ def cmd_verify(a, sim):
     for r in (base, new):
         if r["requests"]["unanswered"]:
             warnings.append(f"{r['name']}: {plural(r['requests']['unanswered'], 'request')} had no recorded answer (answered 599): "
-                            + "; ".join(r["requests"]["unanswered_list"][:3]))
+                            + "; ".join("`" + u.replace("`", "'") + "`" for u in r["requests"]["unanswered_list"][:3]))
     lines = [f"Replay of `{os.path.basename(a.bundle)}`" + (f" ({info['package']})" if info["package"] else "") + ":",
              "- base " + build_line(base, info["requests"]),
              "- new " + build_line(new, info["requests"]),
@@ -521,14 +539,14 @@ def cmd_diff(a, crawl_opts, sim):
         except OSError:
             pass
         dump(os.path.join(out, STATE_FILE), result)
-        say("diff: nothing to walk. Every screen of the baseline is carried unchanged.")
+        say("diff: nothing to walk." + (" The unplaced files above are not covered by this." if sel.get("unplaced") else " Every screen of the baseline is carried unchanged."))
         return 0
 
     opts = crawl_opts or how.get("crawl_options") or []
     for refused in ("--seed", "--only", "--only-file", "--base", "--base-option", "--out", "--start"):
         if has_option(opts, refused):
             die(f"diff does not take {refused}")
-    opts = without_option(without_option(opts, "--record-deps", takes_value=False), "--max-depth")
+    opts = without_option(without_option(without_option(opts, "--record-deps", takes_value=False), "--deps-packages"), "--max-depth")
     if not has_option(opts, "--diff-controls"):
         opts += ["--diff-controls", sel.get("diff_controls") or "changed"]
     depth = how.get("depth")
@@ -680,7 +698,7 @@ def comment_walk(walk_dir, images, md, max_screens):
         sid, bid = p["id"], p.get("base") or p["id"]
         ns, bs = by_id.get(sid, {}), base_by_id.get(bid, {})
         title = ns.get("title") or bs.get("title") or sid
-        md.append(f"#### Changed: {md_escape(title)} (`{sid}`)")
+        md.append(f"#### Changed: `{md_escape(title)}` (`{sid}`)")
         md.append("")
         for line in ui_diff_lines(p.get("ui_diff") or {}):
             md.append("- " + line)
@@ -726,7 +744,7 @@ def comment_walk(walk_dir, images, md, max_screens):
     md.append(f"Unchanged: {plural(len(walked_same), 'screen')} walked again and found the same, {carried} carried from the baseline without a walk (nothing they depend on changed).")
     if walked_same:
         md.append("")
-        md.append("<details><summary>Walked again, same</summary>\n\n" + "\n".join(f"- `{p['id']}` {md_escape(by_id.get(p['id'], {}).get('title') or '')}" for p in walked_same[:60]) + "\n\n</details>")
+        md.append("<details><summary>Walked again, same</summary>\n\n" + "\n".join(f"- `{p['id']}` `{md_escape(by_id.get(p['id'], {}).get('title') or '')}`" for p in walked_same[:60]) + "\n\n</details>")
     crashes = [f for f in doc.get("findings", []) if f.get("kind") == "crash" and f.get("build", "new") == "new"]
     if crashes:
         md.append("")
@@ -751,7 +769,7 @@ def cmd_comment(a):
     if v is not None:
         comment_verify(v, images, md)
     if have_walk:
-        comment_walk(os.path.abspath(a.walk), images, md, a.max_screens)
+        comment_walk(os.path.abspath(a.walk), images, md, a.pictures)
     os.makedirs(md_dir, exist_ok=True)
     with open(out, "w") as f:
         f.write("\n".join(md).rstrip() + "\n")
@@ -775,19 +793,27 @@ def cmd_run(a, crawl_opts, sim):
         say(f"run: using the baseline in {base_dir} (same base build)")
     else:
         if a.baseline and os.path.isfile(os.path.join(base_dir, "crawl.json")):
-            say(f"run: the baseline in {base_dir} is of another build; walking again")
+            say(f"run: the baseline in {base_dir} is of another build; it is left as it is, and this build is walked into {os.path.join(work, 'baseline')}")
+            base_dir = os.path.join(work, "baseline")
         ns = argparse.Namespace(apk=a.base, out=base_dir, depth=a.depth, rounds=a.rounds, base_option=a.base_option)
         cmd_baseline(ns, crawl_opts, sim)
     say()
     v = cmd_verify(argparse.Namespace(bundle=a.bundle, base=a.base, new=a.new, out=os.path.join(work, "verify"), expect=a.expect,
                                       base_option=a.base_option, new_option=a.new_option, timeout=a.timeout, serial=a.serial), sim)
     say()
-    cmd_diff(argparse.Namespace(apk=a.new, baseline=base_dir, repo=a.repo, diff=a.diff, changed=a.changed, out=os.path.join(work, "diff"),
-                                cautious=a.cautious, new_option=a.new_option, ignore=a.ignore), [], sim)
+    failed = None
+    try:
+        cmd_diff(argparse.Namespace(apk=a.new, baseline=base_dir, repo=a.repo, diff=a.diff, changed=a.changed, out=os.path.join(work, "diff"),
+                                    cautious=a.cautious, new_option=a.new_option, ignore=a.ignore), [], sim)
+    except SystemExit as e:  # the verdict is still worth its comment
+        failed = e.code or 2
+        shutil.rmtree(os.path.join(work, "diff"), ignore_errors=True)
     say()
     cmd_comment(argparse.Namespace(out=os.path.join(work, "comment.md"), verify=os.path.join(work, "verify"), walk=os.path.join(work, "diff"),
-                                   images=a.images, image_base=a.image_base, max_screens=a.max_screens))
-    return v
+                                   images=a.images, image_base=a.image_base, pictures=a.pictures))
+    if failed:
+        say("run: the diff step failed (above); the comment has the replay's verdict only")
+    return failed or v
 
 
 def main(argv=None):
@@ -796,10 +822,10 @@ def main(argv=None):
     if "--" in argv:
         i = argv.index("--")
         argv, sim = argv[:i], argv[i + 1:]
-    ap = argparse.ArgumentParser(prog="pr-evidence.py", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(prog="pr-evidence.py", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter, allow_abbrev=False)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    b = sub.add_parser("baseline", help="walk the base build and record what each screen depends on")
+    b = sub.add_parser("baseline", allow_abbrev=False, help="walk the base build and record what each screen depends on")
     b.add_argument("apk")
     b.add_argument("--out", required=True)
     b.add_argument("--depth", type=int, default=3, help="explore the screens fewer than N actions from a start; those N away are found and not explored (crawl.py --max-depth; default 3)")
@@ -826,9 +852,9 @@ def main(argv=None):
     def comment_opts(p):
         p.add_argument("--images", metavar="DIR", help="where to copy the pictures (default FILE-images beside the Markdown)")
         p.add_argument("--image-base", metavar="URL", help="where the pictures will be hosted: put in front of their names")
-        p.add_argument("--max-screens", type=int, default=12, help="changed screens shown with pictures (default 12)")
+        p.add_argument("--pictures", type=int, default=12, metavar="N", help="changed screens shown with pictures (default 12)")
 
-    v = sub.add_parser("verify", help="replay the recording on both builds and print a verdict")
+    v = sub.add_parser("verify", allow_abbrev=False, help="replay the recording on both builds and print a verdict")
     v.add_argument("bundle")
     v.add_argument("--base", required=True)
     v.add_argument("--new", required=True)
@@ -836,20 +862,20 @@ def main(argv=None):
     builds(v)
     replay_opts(v)
 
-    d = sub.add_parser("diff", help="walk the screens the change can reach on the new build, against the baseline")
+    d = sub.add_parser("diff", allow_abbrev=False, help="walk the screens the change can reach on the new build, against the baseline")
     d.add_argument("apk")
     d.add_argument("--baseline", required=True, metavar="DIR")
     d.add_argument("--out", default="pr-evidence/diff")
     d.add_argument("--new-option", default="", metavar="OPTS", help="apksim options added for the new build's launches")
     select_opts(d)
 
-    c = sub.add_parser("comment", help="Markdown for the pull request")
+    c = sub.add_parser("comment", allow_abbrev=False, help="Markdown for the pull request")
     c.add_argument("--out", required=True, metavar="FILE.md")
     c.add_argument("--verify", default="pr-evidence/verify", metavar="DIR", help="verify's --out (default pr-evidence/verify)")
     c.add_argument("--walk", default="pr-evidence/diff", metavar="DIR", help="diff's --out (default pr-evidence/diff)")
     comment_opts(c)
 
-    r = sub.add_parser("run", help="baseline, verify, diff and comment in one folder")
+    r = sub.add_parser("run", allow_abbrev=False, help="baseline, verify, diff and comment in one folder")
     r.add_argument("bundle")
     r.add_argument("--base", required=True)
     r.add_argument("--new", required=True)

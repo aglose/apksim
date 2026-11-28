@@ -39,7 +39,7 @@ pr-evidence.py comment --out evidence/comment.md --verify evidence/verify --walk
 ```
 
 Or all at once: `pr-evidence.py run bug.apkrec --base BASE.apk --new NEW.apk --work evidence --repo . --diff origin/main...HEAD`
-(add `--baseline base-map` to reuse a map). Run them in the background if your shell call would time out: the map
+(add `--baseline base-map` to reuse a map; in the Linux image, which has no git, `--changed PATH...` instead of `--diff`). Run them in the background if your shell call would time out: the map
 takes minutes on a large app.
 
 ## Reading the verdict
@@ -52,6 +52,8 @@ takes minutes on a large app.
   `evidence/verify/new/points/KK-recorded.jpg` and `KK-replayed.jpg` and confirm the new picture is the intended
   behaviour: the replay proves a change at that step, not that it is the right change. A divergence much earlier than
   the bug's step means the fix changed something else too: say so.
+- A recording that ends in a crash: the base must crash on the replay; PASS means the new build played the same steps
+  without crashing.
 - `new ...: matched` with FAIL: along the recorded steps nothing visible changed. The fix is not in this build, is
   behind a flag, or changes low-contrast pixels (a channel must differ by more than 64). For a refactor that should
   change nothing, run with `--expect same`.

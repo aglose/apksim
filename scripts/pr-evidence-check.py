@@ -19,7 +19,9 @@ twice.
      left out and counted, the screen reported changed with its text going from "ble yes" to "ble no";
    - comment: the verdict, that screen's table with before, after and difference images copied under stable names.
 3. `verify --expect same` of the base build against itself exits 0; without `--expect same` it exits 1.
-4. `comment --image-base URL` names the images under that address.
+4. The verdict for a recorded crash, for both builds crashing and for a replay that compared nothing, and the options
+   a replay is not given (`--data-slots`, `--fresh`), on made-up results.
+5. `comment --image-base URL` names the images under that address.
 
 --image IMAGE runs all of it inside the Linux image (this script mounted, pr-evidence.py the image's own). OUT
 (default work/pr-evidence-check) is emptied first.
@@ -296,6 +298,20 @@ def inside(apk, out):
     t = run_evidence(out, "verify-notfixed", ["verify", bundle, "--base", apk, "--new", apk, "--out", os.path.join(out, "notfixed"),
                                              "--", "--network-trust", cert], 1)
     check("**FAIL**" in t and "nothing visible changed" in t, "an unchanged build is not a fix: FAIL, and it says why", t[-600:])
+
+    print("== verdicts and options without a replay")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("pr_evidence", evidence())
+    pe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pe)
+    ok_ = {"result": "matched", "points": 5}
+    crash = {"result": "crashed", "points": 2, "crash": "crashed after open x"}
+    check(pe.verdict_of(crash, ok_, "fix")[0] is True, "a recorded crash the new build no longer has is a fix")
+    check(pe.verdict_of(crash, crash, "fix")[0] is False and pe.verdict_of(crash, ok_, "same")[0] is False,
+          "both builds crashing is not, nor is a crash recording with --expect same")
+    check(pe.verdict_of({"result": "matched", "points": 0}, ok_, "same")[0] is None, "a replay that compared no screen gives no verdict")
+    check(pe.replay_options(["--data-slots", "map", "--fresh", "--network-trust", "c.pem"]) == ["--network-trust", "c.pem"],
+          "the walks' --data-slots and --fresh do not reach a replay")
 
     print("== comment --image-base")
     hosted = os.path.join(out, "hosted.md")

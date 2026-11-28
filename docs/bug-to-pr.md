@@ -39,7 +39,9 @@ Five things decide whether the result means anything. Check them first.
    change touches is one of those, walk one level deeper. `baseline` counts them.
 5. **Record on the base build, with the options you will replay with.** `verify` can say something only when the
    recording replays on the base build. Launch options the recording does not keep (`--network-trust`, `--build`,
-   `--permissions`, camera) go after `--` on every step.
+   `--permissions`, camera) go after `--` on every step. (`--data-slots` and `--fresh` after `--` reach the walks only:
+   a replay always runs in a slot of its own, restored from the recording.) Record with the screen channel (`--rec
+   all`): a recording without pictures gives no verdict.
 
 Two limits of the comparison itself: a replay counts a pixel only when one colour channel differs by more than 64 of
 255, so a change in low-contrast text (dark grey on dark blue) can replay as "matched"; and anything on screen that is
@@ -92,6 +94,8 @@ How to read it:
 - **requests: N recorded, M asked** compares what the recording holds with what the replay asked for. Fewer asked on
   the new build is a request the fix no longer makes; "without a recorded answer" is one the recording does not have
   (answered 599), which is normal for analytics with a timestamp and a finding for anything else.
+- A recording that ends in a crash (the recorder saves one by itself) is a bug too: the base build must crash on the
+  replay, and the verdict is PASS when the new build plays the same steps to the end without crashing.
 - Exit 0 for PASS. For a change that should show nothing (a refactor), `--expect same` passes when both builds match.
   Exit 1 for FAIL, 2 when a replay could not run (another signing key, a build without an activity of the recorded
   stack).
@@ -144,6 +148,8 @@ Markdown with the verdict lines, the recorded, replayed and difference pictures 
 changed screen (before, after, difference, the changed texts), new and gone screens, and what was unchanged. The
 pictures are copied into `evidence/comment-images/` (`--images DIR`) under names that do not change between runs
 (`replay-recorded.jpg`, `replay-new.jpg`, `replay-diff.png`, `screen-<id>-<combination>-before|after|diff.png`).
+Read it before posting: it quotes the app's screen texts and the addresses (without query strings) of requests the
+recording had no answer for.
 
 The script hosts nothing. A pull request shows only images it can fetch, so upload that folder where reviewers can
 read it (a CI artifact store with public links, a bucket, a branch) and pass its address:
@@ -166,7 +172,11 @@ scripts/pr-evidence.py run bug.apkrec --base app-base.apk --new app-pr.apk --wor
 ```
 
 `run` uses `--baseline DIR` when it is a map of the same base build (by the APK's hash), and walks one otherwise. Its
-exit status is the verdict's. In the Linux image the script is on the `PATH` (`--entrypoint pr-evidence.py`).
+exit status is the verdict's; when the diff step fails, the comment is still written, with the verdict alone. A
+`--baseline` of another build is left untouched and the base is walked into `WORK/baseline`; one of the same build is
+reused whatever depth it was walked to. In the Linux image the script is on the `PATH` (`--entrypoint pr-evidence.py`),
+but the image has no git: name the files there with `--changed PATH...` (`git diff --name-only` on the runner) instead
+of `--diff`.
 
 A coding agent can follow the same steps from the skill in
 [docs/skills/apksim-bug-to-pr/SKILL.md](skills/apksim-bug-to-pr/SKILL.md): copy that folder into your repository's
