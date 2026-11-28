@@ -12,7 +12,7 @@ import android.widget.TextView
 
 /**
  * apksim://login: an app behind a username and password form, for `crawl.py --autofill` (scripts/crawl-check.py's
- * sign-in walks, docs/crawl.md "Apps behind a sign-in"). Signed out it shows the form ("Username", "Password", "Sign
+ * sign-in walks, docs/crawl.md "Signed-in walks"). Signed out it shows the form ("Username", "Password", "Sign
  * in"); the test values below sign in, which is kept in the app's preferences, and the screen then shows "Signed in
  * as tester" with an "Account" button that opens [LoginAccountActivity]. A walk that never signs in finds only the
  * form and its error. Plain views; the values are this test app's own, not anyone's.

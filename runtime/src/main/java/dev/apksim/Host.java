@@ -761,14 +761,14 @@ public class Host {
     }
   }
 
+  /** The saved sign-in for this app (`work/autofill`), or null: none saved, or --no-autofill. */
+  private Autofill autofill;
+
   /**
    * `restart [URL]`: every activity finished and destroyed (ViewModels cleared), then the start activity (--activity,
    * else the launcher one) started again with no saved state, or with URL the app's activity for that ACTION_VIEW intent. App statics, the
    * Application and data persist. Screenshot tests start every screen this way, so none sees what another left.
    */
-  /** The saved sign-in for this app (`work/autofill`), or null: none saved, or --no-autofill. */
-  private Autofill autofill;
-
   private String restart(String url) throws Exception {
     String pkg = System.getProperty("apksim.package");
     Intent intent = startIntent();

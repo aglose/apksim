@@ -95,9 +95,11 @@ Three ways to walk what a signed-in user sees, from least to most set-up:
   `restart` shows a password field while the sign-in looks for its form, the walk waits (up to 20 s) until it has
   filled the form and pressed the button, then for the screen to settle, before it reads anything; so the root is the
   signed-in screen, and what the sign-in writes is part of the data the app had at its start (no relaunch for it). A
-  `restart` looks for the form again, as a launch does. crawl.json's `signin.states` counts how each sign-in ended
-  (`done: filled Username, Password; pressed Sign in`, `gave up: ...`, or `waiting: ...` when the form stayed unfilled:
-  its labels do not match the saved names). Every instance (`-j N`) and relaunch signs in again against the real
+  `restart` looks for the form again, as a launch does, for 10 s: a form reached later in the walk (a re-authentication
+  screen) is left alone. A form left unfilled once is not waited for again, so a mismatch costs 20 s once, not per
+  replay. crawl.json's `signin.states` counts how each sign-in ended
+  (`done: filled Username, Password; pressed Sign in`, `gave up: ...`, or `not filled: ...` when the form stayed
+  unfilled: its labels do not match the saved names). Every instance (`-j N`) and relaunch signs in again against the real
   server, so a walk of 200 screens may sign in dozens of times: fine for a test account, not for one that locks after
   repeated sign-ins. The test app's `apksim://login` (`LoginActivity`: `tester` / `apksim-test`) is the check
   (`crawl-check.py`, 14).

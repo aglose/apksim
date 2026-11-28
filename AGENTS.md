@@ -1652,7 +1652,7 @@ segment joins (logcat: "Unexpected audio track timestamp discontinuity") and Med
 Apps that sign in on every cold start can be signed in by apksim itself (`Autofill.java`): it reads
 `work/autofill/<package>.properties` (mode 600, written by the owner), finds fields by their label/placeholder in
 the accessibility tree, fills them, checks they stuck, presses `submit`, and logs field names only; a `restart` makes it
-look for the form again, and the `autofill` command answers where it is (`waiting`, `filling`, `done: filled A, B;
+look for the form again for 10 s (`idle: ...` after that), and the `autofill` command answers where it is (`waiting`, `filling`, `done: filled A, B;
 pressed X`, `gave up: ...`, or none saved / `--no-autofill`). `crawl.py --autofill` waits on it before reading a screen
 with a password field (docs/crawl.md "Signed-in walks"; the test app's `apksim://login`, `tester` / `apksim-test`,
 `LoginActivity`, checked by `crawl-check.py`); without it the crawler passes `--no-autofill`. Never read,

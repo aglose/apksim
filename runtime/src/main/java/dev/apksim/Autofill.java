@@ -27,8 +27,9 @@ import java.util.Properties;
  * Each key names a field by the text a person would read for it: its placeholder or hint, or the label just above
  * it. Fields are found through the accessibility tree (framework API, so minified apps work too), filled with
  * ACTION_SET_TEXT, and then the button whose text is `submit` is pressed. It signs in at most once per launch (and
- * once again after each `restart`, which starts the app's activities as a launch does), only when every named field is
- * on screen, and logs which fields it filled, never their values. The `autofill` command reports where it is
+ * once again after a `restart`, which starts the app's activities as a launch does, if the form shows within
+ * {@link #REARM_NANOS}: past that the app is taken for signed in, so a form reached later, a re-authentication say, is
+ * left alone), only when every named field is on screen, and logs which fields it filled, never their values. The `autofill` command reports where it is
  * ({@link #state}), so a script (scripts/crawl.py --autofill) can wait for the sign-in before it reads the screen.
  */
 final class Autofill {
@@ -41,16 +42,18 @@ final class Autofill {
   private int fills;
   private Map<String, Nodes.Node> filled;  // The nodes filled last, found again by identity: a filled field loses its placeholder.
   private Nodes.Node filledButton;
-  private String outcome;  // How the last sign-in ended (`filled ...`, `gave up: ...`); null while it has not.
+  private String outcome;  // How the last sign-in ended (`filled ...`, `gave up: ...`, `idle: ...`); null while it has not.
+  private long armedUntilNanos;  // After a restart: when to stop looking for a form that has not shown; 0 at launch.
+  static final long REARM_NANOS = 10_000_000_000L;
 
   private Autofill() {}
 
   /**
    * `waiting` (no form with every named field yet), `filling` (filled, checking the values stuck), `done: filled A, B;
-   * pressed X` or `gave up: WHY`. Never a value.
+   * pressed X`, `gave up: WHY` or `idle: ...` (no form within REARM_NANOS of a restart). Never a value.
    */
   synchronized String state() {
-    if (done) return outcome != null && outcome.startsWith("gave up") ? outcome : "done: " + outcome;
+    if (done) return outcome != null && (outcome.startsWith("gave up") || outcome.startsWith("idle")) ? outcome : "done: " + outcome;
     return fills > 0 ? "filling" : "waiting";
   }
 
@@ -64,6 +67,7 @@ final class Autofill {
     filledButton = null;
     outcome = null;
     nextLookNanos = 0;
+    armedUntilNanos = System.nanoTime() + REARM_NANOS;
   }
 
   /** The autofill for this package, or null when its owner saved none. */
@@ -97,6 +101,11 @@ final class Autofill {
   synchronized void tick(java.util.function.Supplier<List<View>> rootViews) {
     long now = System.nanoTime();
     if (done || now < nextLookNanos) return;
+    if (fills == 0 && seenSinceNanos == 0 && armedUntilNanos != 0 && now > armedUntilNanos) {
+      done = true;
+      outcome = "idle: no form within " + REARM_NANOS / 1_000_000_000L + " s of the restart";
+      return;
+    }
     List<View> roots = rootViews.get();
     nextLookNanos = now + 500_000_000L;
     if (fills > 0) {

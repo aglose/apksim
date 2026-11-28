@@ -558,7 +558,7 @@ class Instance(snapshot.Worker):
 
     def say(self, cmd):
         """Sends a command; an instance that ends meanwhile raises Gone with what the log says."""
-        if not cmd.startswith(("ui-", "activity", "nodes", "permission", "pick ", "shot ", "stats", "ping", "deps")):
+        if not cmd.startswith(("ui-", "activity", "nodes", "permission", "pick ", "shot ", "stats", "ping", "deps", "autofill")):
             self._cached_data_state = None
         try:
             return self.send(cmd)
@@ -1045,14 +1045,21 @@ class Instance(snapshot.Worker):
         """--autofill: when the screen shows a password field while the app's saved sign-in (Autofill, the `autofill`
         command) looks for its form, waits until it has filled the form and pressed its button (AUTOFILL_WAIT_S at most),
         then for the screen to settle, so a replay starts signed in and the start's data is read after the sign-in wrote
-        it. A screen with no password field is read as it is: the app is signed in already, or has no form to fill."""
-        if not self.ctx.get("autofill"):
+        it. A screen with no password field is read as it is: the app is signed in already, or has no form to fill.
+        A form the sign-in left unfilled once is not waited for again (ctx autofill_stuck): it would cost every replay."""
+        if not self.ctx.get("autofill") or self.ctx.get("autofill_stuck"):
             return
         state = self.say("autofill")
         if state.startswith(("unknown", "error")):
             self.ctx["autofill"] = False  # an apksim older than the command: launches still sign in, unseen
             log("--autofill: this apksim has no `autofill` command; the walk does not wait for the sign-in")
             return
+        if state.startswith(("none", "off")):
+            self.ctx["autofill"] = False  # nothing saved for the app: nothing to wait for (signin_warning says so)
+            self.ctx["autofill_states"].setdefault(state, 1)
+            return
+        if state not in ("waiting", "filling"):
+            return  # done, gave up or idle: this start's sign-in has ended (counted when it was waited for)
         if state == "waiting":
             self.settle(SETTLE)
             _act, recs = self.read_ui()
@@ -1062,12 +1069,15 @@ class Instance(snapshot.Worker):
         while state in ("waiting", "filling") and time.time() < deadline:
             time.sleep(0.25)
             state = self.say("autofill")
+        if state == "waiting" or state.startswith("idle"):
+            # The form sat on screen and was never filled (its labels do not match the saved names, most likely).
+            self.ctx["autofill_stuck"] = True
+            state = (f"not filled: the password form was on screen and the saved sign-in did not fill it (do the form's "
+                     "labels match the saved names?); the walk no longer waits for it")
         self.note_signin(state)
         self.settle(SETTLE)
 
     def note_signin(self, state):
-        if state == "waiting":
-            state = f"waiting: the form was on screen {AUTOFILL_WAIT_S} s and was not filled (do its labels match the saved names?)"
         with self.ctx["lock"]:
             states = self.ctx["autofill_states"]
             first = state not in states
@@ -1765,17 +1775,19 @@ class Explorer:
         self.t_explore = time.time() - t0
 
     def signin_warning(self, start):
-        """A start screen with a password field: the walk sees what a signed-out user sees (docs/crawl.md "Apps behind a
-        sign-in")."""
+        """A start screen with a password field: the walk sees what a signed-out user sees (docs/crawl.md "Signed-in
+        walks")."""
         where = start or "the launcher activity"
         states = self.ctx["autofill_states"]
         if not getattr(self.args, "autofill", False):
             how = ("--autofill signs each launch in with the sign-in saved for the app (STATE/autofill/PACKAGE.properties), "
                    "or start from a signed-in slot with --keep-data")
+        elif any(s.startswith("none") for s in states):
+            how = "--autofill found no sign-in saved for this app (STATE/autofill/PACKAGE.properties)"
         elif not self.ctx.get("autofill"):
             how = "--autofill could not be followed (see above)"
-        elif any(s.startswith("none") for s in states) or not states:
-            how = "--autofill found no sign-in saved for this app (STATE/autofill/PACKAGE.properties)"
+        elif not states:
+            how = "--autofill: the sign-in never looked at this screen"
         else:
             how = "--autofill did not sign in: " + "; ".join(states)
         line = f"warning: the start screen ({where}) has a password field: the walk stays signed out. {how}"
