@@ -181,8 +181,8 @@ Still in a bundle: response bodies, the app's data folder (`checkpoint/data.zip`
 logs, and typed text a request carries in another form (hashed, encrypted, a token made from it), or sent by a request
 that began before the save's window or was typed with keys whose characters the key map does not give. A password
 that did not come through input dispatch is left out of requests when apksim's autofill put it in its field, when it is
-in a View's password field as a touch or a key begins, or when it was the clipboard's while a password field had the
-focus (Ctrl+V, the Paste menu); one that an accessibility `setText` put in a Compose field is not. And a checkpoint is the app's own state, taken as it is:
+in a View's password field as a touch or a key begins, or when Ctrl+V pasted it into a password field; one that the
+Paste menu or an accessibility `setText` put in a Compose field is not. And a checkpoint is the app's own state, taken as it is:
 `checkpoint/state.bin` (the saved instance state, which can hold a password field's text) and the data folder
 (whatever the app stored) are not searched. Treat a bundle from a signed-in session like the device itself.
 

@@ -50,6 +50,21 @@ public final class ReplayMatchCheck {
   public static void main(String[] args) throws Exception {
     Recording.Match match = new Recording.Match(Set.of("method", "url", "body"), Set.of("t"), Set.of(), Set.of());
 
+    // ---- a replay's own password, blanked in what the app sends with the recorded one's length (Net.blank)
+    NetEngine.Request req = new NetEngine.Request();
+    req.method = "POST";
+    req.url = "https://h/v1?p=another%20pass";
+    req.headers.add(new String[] {"Content-Length", "25"});
+    req.body = "{\"password\":\"another pass\"}".getBytes(StandardCharsets.UTF_8);
+    req.bodySha = Recording.sha256(req.body);
+    check(req.blanked() == req, "with no kept password a request is itself");
+    Net.blank(java.util.List.of(new Net.Blank("another pass", 5)));
+    NetEngine.Request bl = req.blanked();
+    check(bl.url.equals("https://h/v1?p=xxxxx") && text(bl.body).equals("{\"password\":\"xxxxx\"}")
+        && bl.bodySha.equals(Recording.sha256(bl.body)) && bl.headers.get(0)[1].equals(String.valueOf(bl.body.length)), "a kept password is blanked in URL and body");
+    check(text(req.body).contains("another pass") && req.url.contains("another"), "and the request itself is as it was");
+    Net.blank(java.util.List.of());
+
     // ---- scrub: every form the text can take in a request
     String secret = "p@ss \"w\" 1+1";
     String x = "x".repeat(secret.length());

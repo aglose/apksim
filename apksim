@@ -612,6 +612,8 @@ STANDBY_ON=""
 if [[ "$OS" == Darwin ]]; then [[ "${APKSIM_STANDBY:-1}" != 0 ]] && STANDBY_ON=1
 elif [[ "$OS" == Linux && ( "${APKSIM_STANDBY:-}" == 1 || "${APKSIM_STANDBY:-}" == cold ) ]]; then STANDBY_ON=1; fi
 WARM_OK="" COLD_OPT=""
+# The replay's own (its plain JVM has read it): an app must not learn where the key file is.
+unset APKSIM_SECRETS_KEY_FILE
 # Passwords typed while recording are kept, sealed to this key (apksim rec secrets on; Secrets.java).
 [[ -f "${HOME:-}/.apksim-secrets/public.key" ]] && EXTRA+=("-Dapksim.rec.seal=$HOME/.apksim-secrets/public.key")
 if [[ -n "$STANDBY_ON" && -x "$CLIENT" && -z "${APKSIM_NOCACHE:-}" && -z "${APKSIM_SANDBOX_TEST:-}" && -z "$STANDBY_SOCK" ]]; then

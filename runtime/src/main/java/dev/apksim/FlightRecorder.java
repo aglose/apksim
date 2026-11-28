@@ -318,6 +318,8 @@ final class FlightRecorder {
     boolean unknown;
     /** Its name in the journal (`"secret": "s1"`) for a run typed or pasted into a password field, else null. */
     final String secret;
+    /** How many events typed it. */
+    int events;
 
     LeftOut(boolean pasted, boolean password) {
       this.pasted = pasted;
@@ -340,6 +342,7 @@ final class FlightRecorder {
       }
       if (ch <= 0) typing.unknown = true;
       else typing.text.appendCodePoint(ch);
+      typing.events++;
       return typing.secret;
     }
   }
@@ -364,12 +367,20 @@ final class FlightRecorder {
     }
   }
 
-  /** The focused password field's own text (a View's; Compose reports only bullets) and what a paste would put there. */
+  /** The focused password field's own text, for a View's (Compose reports only bullets); cheap: every touch asks. */
   private static void passwordField() {
-    if (!passwordFocused()) return;
     try {
       View root = Host.keyTarget(Host.rootViews());
       if (root != null && root.findFocus() instanceof TextView tv && password(tv)) leftOutValue(tv.getText());
+    } catch (RuntimeException e) {
+      // as it was
+    }
+  }
+
+  /** Ctrl+V into a password field: what it puts there. */
+  private static void pastedByKey() {
+    if (!passwordFocused()) return;
+    try {
       android.content.ClipboardManager c = (android.content.ClipboardManager)
           org.robolectric.RuntimeEnvironment.getApplication().getSystemService(android.content.Context.CLIPBOARD_SERVICE);
       android.content.ClipData d = c == null ? null : c.getPrimaryClip();
@@ -447,6 +458,7 @@ final class FlightRecorder {
       }
     } else {
       if (t == SimWindow.DOWN || (t == SimWindow.KEY && !typed)) passwordField();
+      if (chord && (int) e.value() == android.view.KeyEvent.KEYCODE_V) pastedByKey();
       // Delete takes the last left-out character back; anything else that begins (a touch, a key, other text) ends the run.
       synchronized (leftOut) {
         if (t == SimWindow.KEY && !chord && (int) e.value() == android.view.KeyEvent.KEYCODE_DEL) {
@@ -1588,20 +1600,21 @@ final class FlightRecorder {
    * placeholders show too), and answers their values when they are to be kept (Secrets), else null.
    */
   private static byte[] secrets(Map<String, Object> manifest, List<Ring.Item<Map<String, Object>>> events) {
-    Set<String> used = new java.util.LinkedHashSet<>();
-    for (Ring.Item<Map<String, Object>> e : events) if (e.value().get("secret") instanceof String s) used.add(s);
+    Map<String, Integer> used = new LinkedHashMap<>();
+    for (Ring.Item<Map<String, Object>> e : events) if (e.value().get("secret") instanceof String s) used.merge(s, 1, Integer::sum);
     if (used.isEmpty()) return null;
     Map<String, String> values = new LinkedHashMap<>();
     List<Object> items = new ArrayList<>();
     synchronized (leftOut) {
-      for (String name : used) {
+      for (String name : used.keySet()) {
         LeftOut run = null;
         for (LeftOut r : leftOut) if (name.equals(r.secret) && !r.unknown) run = r;
         Map<String, Object> item = new LinkedHashMap<>();
         item.put("name", name);
         if (run != null) {
           item.put("length", run.text.length());
-          if (Secrets.usable(run.text.toString())) values.put(name, run.text.toString());
+          // Only a run the journal has whole: one a checkpoint split is already half in the field a replay restores.
+          if (run.events == used.get(name) && Secrets.usable(run.text.toString())) values.put(name, run.text.toString());
         }
         items.add(item);
       }
@@ -1609,7 +1622,7 @@ final class FlightRecorder {
     Map<String, Object> m = new LinkedHashMap<>();
     m.put("items", items);
     manifest.put("secrets", m);
-    return values.isEmpty() ? null : Secrets.json(values);
+    return values.isEmpty() || Secrets.sealingKey() == null ? null : Secrets.json(values);
   }
 
   /** Seals the values for this recording, if its owner keeps them; the manifest then names the sealed file's id. */
@@ -1617,7 +1630,10 @@ final class FlightRecorder {
     java.security.PublicKey to = Secrets.sealingKey();
     String apk = System.getProperty("apksim.apk");
     String signers = to == null || apk == null ? null : signers(Path.of(apk));
-    if (signers == null) return;
+    if (signers == null) {
+      System.err.println("[apksim] rec: the passwords were not kept: the APK's signer cannot be read");
+      return;
+    }
     try {
       String id = Secrets.newId();
       byte[] sealed = Secrets.seal(to, values, Secrets.binding(id, pkg, signers.substring(signers.indexOf(':') + 1)));

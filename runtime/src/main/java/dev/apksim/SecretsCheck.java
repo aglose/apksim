@@ -50,9 +50,9 @@ public final class SecretsCheck {
     check(!any, "nor cut short anywhere");
     check(Secrets.parse("{\"s1\":\"a\\nb\",\"x\":\"v\",\"s2\":3,\"s3\":\"ok\"}".getBytes()).equals(Map.of("s3", "ok")), "only named, typable values are taken");
     Path f = Files.createTempFile("secrets", ".properties");
-    Files.writeString(f, "s1=hunter22\n");
-    check(Secrets.file(f).equals(Map.of("s1", "hunter22")), "a --secrets file");
-    Files.writeString(f, "password=hunter22\n");
+    Files.writeString(f, "# mine\ns1= hunter\\n=22 \n");
+    check(Secrets.file(f).equals(Map.of("s1", " hunter\\n=22 ")), "a --secrets file, values as written");
+    Files.writeString(f, "hunter22\n");
     try {
       Secrets.file(f);
       check(false, "a file with another name is refused");

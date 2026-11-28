@@ -114,7 +114,8 @@ final class Replay {
       plan.load(in);
     }
     out = Path.of(plan.getProperty("out"));
-    manifest = ReplayPlan.map(json(Files.readString(dir.resolve("manifest.json"))));
+    byte[] manifestBytes = Files.readAllBytes(dir.resolve("manifest.json"));
+    manifest = ReplayPlan.map(json(new String(manifestBytes, StandardCharsets.UTF_8)));
     checkpoint = ReplayPlan.map(manifest.get("checkpoint"));
     cpUptime = (long) num(checkpoint.get("uptime"));
     cpWall = (long) num(checkpoint.get("wall"));
@@ -133,22 +134,26 @@ final class Replay {
     threshold = th < 1 ? Math.max(16, th * total) : th;
     // Passwords the owner kept, or gave (Secrets): typed for their placeholders, and blanked in what the app sends before
     // it is matched with the recording, where they are blank too.
-    Map<String, String> values = Secrets.fromLauncher();
+    Path input = dir.resolve("input.jsonl");
+    byte[] journal = Files.isRegularFile(input) ? Files.readAllBytes(input) : null;
+    Map<String, byte[]> read = new LinkedHashMap<>();
+    read.put("manifest.json", manifestBytes);
+    read.put("input.jsonl", journal);
+    Map<String, String> values = Secrets.take(read);
     Map<String, int[]> typedOf = new LinkedHashMap<>();
     Map<String, Integer> eventsOf = new LinkedHashMap<>();
     if (!values.isEmpty()) blank(values);
-    Path input = dir.resolve("input.jsonl");
-    if (!values.isEmpty() && Files.isRegularFile(input)) {
-      for (String line : Files.readAllLines(input, StandardCharsets.UTF_8)) {
-        if (!line.contains("\"secret\"")) continue;
+    if (!values.isEmpty() && journal != null) {
+      for (String line : new String(journal, StandardCharsets.UTF_8).split("\n")) {
+        if (line.isBlank()) continue;
         Map<String, Object> m = ReplayPlan.map(json(line));
         if ((long) num(m.get("t")) >= cpUptime && m.get("secret") instanceof String s) eventsOf.merge(s, 1, Integer::sum);
       }
     }
     // --input none: the checkpoint only (scripts/journey.py drives from there).
-    if (Files.isRegularFile(input) && !"none".equals(plan.getProperty("input"))) {
+    if (journal != null && !"none".equals(plan.getProperty("input"))) {
       int down = 0;
-      try (java.io.BufferedReader lines = Files.newBufferedReader(input, StandardCharsets.UTF_8)) {
+      try (java.io.BufferedReader lines = new java.io.BufferedReader(new java.io.StringReader(new String(journal, StandardCharsets.UTF_8)))) {
         for (String line; (line = lines.readLine()) != null; ) {
           if (line.isBlank()) continue;
           Map<String, Object> m = ReplayPlan.map(json(line));

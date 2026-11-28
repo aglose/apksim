@@ -3,7 +3,6 @@ package dev.apksim;
 import dev.apksim.serve.Json;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.Reader;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
@@ -27,7 +26,6 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
 import java.util.concurrent.TimeUnit;
 import javax.crypto.Cipher;
 import javax.crypto.KeyAgreement;
@@ -178,17 +176,50 @@ public final class Secrets {
     }
   }
 
-  /** The values for this replay (`--replay-secrets FD`), read once from the pipe the launcher left open; never null. */
-  static Map<String, String> fromLauncher() {
+  private static Map<String, String> given = Map.of();
+  private static Map<String, String> digests = Map.of();
+
+  /**
+   * The values for this replay (`--replay-secrets FD`), read from the pipe the launcher left open before any app code
+   * runs (Main), with the digests of the bundle's files the plan read.
+   */
+  static void readLauncher() {
     String fd = System.getProperty("apksim.replay.secrets");
-    if (fd == null || !fd.matches("[0-9]+")) return Map.of();
+    if (fd == null || !fd.matches("[0-9]+")) return;
     try (InputStream in = Files.newInputStream(Path.of("/dev/fd/" + fd))) {
       byte[] b = in.readNBytes(MAX_FILE);
-      return b.length == 0 ? Map.of() : parse(b);
+      if (b.length == 0) throw new IOException("nothing came");
+      given = parse(b);
+      Map<String, String> d = new LinkedHashMap<>();
+      if (Json.parse(new String(b, StandardCharsets.UTF_8)) instanceof Map<?, ?> m) {
+        for (String f : List.of("manifest.json", "input.jsonl")) d.put(f, String.valueOf(m.get(f)));
+      }
+      digests = d;
     } catch (IOException | RuntimeException e) {
-      System.err.println("[apksim] replay: the passwords could not be read: " + e.getMessage());
-      return Map.of();
+      given = Map.of();
+      System.err.println("[apksim] replay: x is typed for the passwords, which could not be read: " + e.getClass().getSimpleName());
     }
+  }
+
+  /** The values, if these files are still what the plan read; `files`: their bytes, the ones the replay goes by. */
+  static Map<String, String> take(Map<String, byte[]> files) {
+    Map<String, String> v = given;
+    given = Map.of();
+    if (v.isEmpty()) return v;
+    for (Map.Entry<String, String> d : digests.entrySet()) {
+      byte[] b = files.get(d.getKey());
+      String sha;
+      try {
+        sha = b == null ? "" : java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(b));
+      } catch (GeneralSecurityException e) {
+        sha = null;
+      }
+      if (!d.getValue().equals(sha)) {
+        System.err.println("[apksim] replay: x is typed for the passwords: " + d.getKey() + " changed after it was unpacked");
+        return Map.of();
+      }
+    }
+    return v;
   }
 
   // ---------------------------------------------------------------- outside the sandbox
@@ -209,19 +240,18 @@ public final class Secrets {
     }
   }
 
-  /** `--secrets FILE`: `s1=VALUE` lines (java.util.Properties). */
+  /** `--secrets FILE`: `s1=VALUE` lines. */
   static Map<String, String> file(Path f) throws IOException {
-    Properties p = new Properties();
-    try (Reader r = Files.newBufferedReader(f)) {
-      p.load(r);
-    } catch (IllegalArgumentException e) {
-      throw new IOException(f + " is not a properties file");
-    }
+    // Taken as written (no escapes, spaces kept), and never shown: a line with no name may be a password itself.
     Map<String, String> out = new LinkedHashMap<>();
-    for (String k : p.stringPropertyNames()) {
-      if (!k.matches(NAME)) throw new IOException(f + ": '" + k + "' is not a secret's name (s1, s2...)");
-      if (!usable(p.getProperty(k))) throw new IOException(f + ": " + k + " is empty, too long or has a control character");
-      out.put(k, p.getProperty(k));
+    int n = 0;
+    for (String line : Files.readAllLines(f, StandardCharsets.UTF_8)) {
+      n++;
+      if (line.isBlank() || line.startsWith("#")) continue;
+      int eq = line.indexOf('=');
+      if (eq < 0 || !line.substring(0, eq).matches(NAME)) throw new IOException(f + ", line " + n + ": not a secret's name (s1, s2...) and = and its value");
+      if (!usable(line.substring(eq + 1))) throw new IOException(f + ", line " + n + ": the value is empty, too long or has a control character");
+      out.put(line.substring(0, eq), line.substring(eq + 1));
     }
     return out;
   }
@@ -235,13 +265,24 @@ public final class Secrets {
     return System.getProperty("os.name", "").startsWith("Mac");
   }
 
+  /** There is no key (and not: it could not be read, when a new one would take its place). */
+  private static final class NoKey extends IOException {
+    NoKey(String why) {
+      super(why);
+    }
+  }
+
   /** The private and public key together (base64), from the Keychain or the key file. Never logged. */
   private static String privateText() throws IOException {
     Path f = keyFile();
-    if (f != null) return Files.readString(f).strip();
+    if (f != null) {
+      if (!Files.exists(f)) throw new NoKey("no key at " + f);
+      return Files.readString(f).strip();
+    }
     if (!mac()) throw new IOException("no Keychain here: set APKSIM_SECRETS_KEY_FILE, or pass --secrets FILE");
     String[] out = security(null, "find-generic-password", "-a", "apksim", "-s", SERVICE, "-w");
-    if (!out[0].equals("0")) throw new IOException("the key is not in the Keychain, or the Keychain is locked (security unlock-keychain)");
+    if (out[0].equals("44")) throw new NoKey("the key is not in the Keychain");  // errSecItemNotFound
+    if (!out[0].equals("0")) throw new IOException("the Keychain did not give the key (locked? security unlock-keychain)");
     return out[1].strip();
   }
 
@@ -284,14 +325,14 @@ public final class Secrets {
             + ids(state).size() + " recordings)" : "off: a replay types x for a password (apksim rec secrets on)";
       }
       case "on" -> {
-        if (Files.exists(pub)) return "already on";
         // A key made before (`off` leaves it, so what it sealed still opens) is used again.
         String text = null;
         try {
           text = privateText();
-        } catch (IOException e) {
-          if (keyFile() == null && !mac()) throw e;
+        } catch (NoKey e) {
+          // made below
         }
+        if (text != null && Files.exists(pub)) return "already on";
         byte[] pubBytes;
         if (text != null) {
           byte[] own = Base64.getDecoder().decode(text);
@@ -341,7 +382,7 @@ public final class Secrets {
       return;
     }
     // `security -i` takes its commands from stdin, so the key is in no process's arguments.
-    security("add-generic-password -U -a apksim -s \"" + SERVICE + "\" -w " + text + "\n", "-i");
+    security("add-generic-password -a apksim -s \"" + SERVICE + "\" -w " + text + "\n", "-i");
     if (!text.equals(privateText())) throw new IOException("the key did not reach the Keychain");
   }
 

@@ -28,7 +28,7 @@ import java.util.zip.ZipFile;
  * reads the bundle, finds the APK it was recorded with (or takes `--apk` for another build of it from the same
  * signer), unpacks the checkpoint's data folder and `.device` folder into a data slot of its own (`rp<12 hex>-0`, as
  * apksim beam unpacks a handed-off slot), puts the rest of the bundle in `STATE/replay/rp<12 hex>/`, and prints the
- * launch, one argument a line, which the launcher then runs: the device, appearance, locale, font scale, time zone and
+ * passwords to type (one line, mostly empty) and the launch, one argument a line, which the launcher then runs: the device, appearance, locale, font scale, time zone and
  * animator scale of the checkpoint, `--network replay` of the bundle's HAR, and `--replay-dir`, which {@link Replay}
  * reads inside the app's process. Options it does not know are passed on to that launch as they are (`--headless`,
  * `--control auto`, `--network-trust CERT`...), after its own, so they win.
@@ -221,7 +221,11 @@ public final class ReplayPlan {
         // --loose: a request that differs from a recorded one only in query values (made at run time) gets its answer.
         if (loose) launch.add("--network-loose");
       }
-      passwords(secrets, m, pkg, apk, state, live || !har, pass);
+      passwords(secrets, m, pkg, apk, state, live || !har, input, pass);
+      if (!typed.isEmpty()) {
+        // Another running app may write the unpacked bundle (it is in STATE): the instance checks what it reads.
+        for (String f : new String[] {"manifest.json", "input.jsonl"}) typed.put(f, Files.exists(dir.resolve(f)) ? sha256(dir.resolve(f)) : "");
+      }
       launch.addAll(pass);
       launch.add(apk.toString());
       return launch;
@@ -229,7 +233,7 @@ public final class ReplayPlan {
   }
 
   /** The passwords to type, which main() hands to the launcher on a pipe, never in the launch's arguments. */
-  private static Map<String, String> typed = Map.of();
+  private static Map<String, String> typed = new java.util.LinkedHashMap<>();
 
   /** Options with which what the app sends is kept or shown somewhere: no real password is typed then. */
   private static final java.util.Set<String> KEEPS = java.util.Set.of("--network", "--network-unmatched", "--network-inspect", "--rec", "--jvm", "--debug");
@@ -239,11 +243,11 @@ public final class ReplayPlan {
    * recording; FILE: its `s1=VALUE` lines; off: x for each. A live replay sends them to the real server, so it types
    * them only when asked by name.
    */
-  private static void passwords(String how, Map<String, Object> m, String pkg, Path apk, Path state, boolean live, List<String> pass)
+  private static void passwords(String how, Map<String, Object> m, String pkg, Path apk, Path state, boolean live, String input, List<String> pass)
       throws Refused, IOException {
     Map<String, Object> s = map(m.get("secrets"));
-    if (s == null || "off".equals(how) || how == null && live) {
-      if (s != null && how == null) System.err.println("apksim replay: x is typed for passwords (a live replay types them only with --secrets store or --secrets FILE)");
+    if (s == null || input.equals("none") || "off".equals(how) || how == null && live) {
+      if (s != null && how == null && live && !input.equals("none")) System.err.println("apksim replay: x is typed for passwords (a live replay types them only with --secrets store or --secrets FILE)");
       return;
     }
     String keeps = null;
@@ -259,7 +263,8 @@ public final class ReplayPlan {
     }
     String id = s.get("id") instanceof String i ? i : null;
     String signers = signers(apk);  // the build about to run, not what the bundle says of it
-    String why = id == null ? "none were kept for it" : signers == null ? "the APK's signer cannot be read" : null;
+    String why = id == null ? "none were kept for it" : !pkg.equals(packageOf(apk)) ? "the APK is another app"
+        : signers == null ? "the APK's signer cannot be read" : null;
     if (why == null) {
       try {
         typed = Secrets.kept(state, id, pkg, certs(signers));
@@ -331,6 +336,14 @@ public final class ReplayPlan {
   /** The certificate digests of a "scheme:certs" signer string: a v2 and a v3 signature by one key are one signer. */
   private static String certs(String signers) {
     return signers.substring(signers.indexOf(':') + 1);
+  }
+
+  private static String packageOf(Path apk) {
+    try {
+      return ApkCache.manifestPackage(apk);
+    } catch (IOException | RuntimeException e) {
+      return null;
+    }
   }
 
   private static String signers(Path apk) {

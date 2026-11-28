@@ -19,6 +19,7 @@ public final class Main {
       Timing.mark("jvm-main");
       initTestEnvironmentAhead();
     }
+    Secrets.readLauncher();
     if (Boolean.getBoolean("apksim.profile")) Sampler.start();
     java.util.Map<String, String> downloadHeaders = takeDownloadHeaders();
     boolean downloadNetrc = Boolean.parseBoolean(System.clearProperty("apksim.downloadNetrc"));
